@@ -1,18 +1,18 @@
-"""Tests for remote configuration and distributed-mode validation."""
+"""Tests for shared configuration loading and core runtime settings."""
 
 import pytest
 
-from apixis.core.config import core_config
+from apixis.core.config import base, core_config
 
 
 def test_remote_config_requires_explicit_true(monkeypatch):
     local = {"REMOTE_GATEWAY": {"enable": False}}
     monkeypatch.setattr(
-        core_config, "_load_from_remote", lambda **kwargs: pytest.fail("remote load")
+        base, "_load_from_remote", lambda **kwargs: pytest.fail("remote load")
     )
-    monkeypatch.setattr(core_config, "_load_from_yaml", lambda path: local)
+    monkeypatch.setattr(base, "_load_from_yaml", lambda path: local)
 
-    assert core_config._load_config("config.yaml") is local
+    assert base._load_config("config.yaml") is local
 
 
 def test_enabled_remote_config_is_loaded_and_local_wins(monkeypatch):
@@ -22,21 +22,21 @@ def test_enabled_remote_config_is_loaded_and_local_wins(monkeypatch):
             "base_url": "http://gateway",
             "config_endpoint": "/config",
         },
-        "SERVER": {"worker_count": 4},
+        "SERVER": {"node_name": "local-node"},
     }
     calls = []
-    monkeypatch.setattr(core_config, "_load_from_yaml", lambda path: local)
+    monkeypatch.setattr(base, "_load_from_yaml", lambda path: local)
     monkeypatch.setattr(
-        core_config,
+        base,
         "_load_from_remote",
         lambda **kwargs: calls.append(kwargs)
-        or {"SERVER": {"worker_count": 2, "base_dir": "/remote"}},
+        or {"SERVER": {"node_name": "remote-node", "base_dir": "/remote"}},
     )
 
-    result = core_config._load_config("config.yaml")
+    result = base._load_config("config.yaml")
 
     assert calls == [{"base_url": "http://gateway", "endpoint": "/config"}]
-    assert result["SERVER"] == {"worker_count": 4, "base_dir": "/remote"}
+    assert result["SERVER"] == {"node_name": "local-node", "base_dir": "/remote"}
 
 
 def test_remote_event_channel_is_ignored_when_local_section_is_missing(
@@ -54,19 +54,19 @@ def test_remote_event_channel_is_ignored_when_local_section_is_missing(
             "type": "rabbitmq",
             "rabbitmq": {"url": "amqp://shared-gateway-mailbox/"},
         },
-        "SERVER": {"worker_count": 2},
+        "SERVER": {"node_name": "remote-node"},
     }
-    monkeypatch.setattr(core_config, "_load_from_yaml", lambda path: local)
+    monkeypatch.setattr(base, "_load_from_yaml", lambda path: local)
     monkeypatch.setattr(
-        core_config,
+        base,
         "_load_from_remote",
         lambda **kwargs: remote,
     )
 
-    result = core_config._load_config("config.yaml")
+    result = base._load_config("config.yaml")
 
     assert "EVENT_CHANNEL" not in result
-    assert result["SERVER"] == {"worker_count": 2}
+    assert result["SERVER"] == {"node_name": "remote-node"}
     assert remote["EVENT_CHANNEL"]["type"] == "rabbitmq"
 
 
@@ -83,9 +83,9 @@ def test_remote_event_channel_cannot_fill_partial_local_section(monkeypatch):
         },
         "EVENT_CHANNEL": local_event_channel,
     }
-    monkeypatch.setattr(core_config, "_load_from_yaml", lambda path: local)
+    monkeypatch.setattr(base, "_load_from_yaml", lambda path: local)
     monkeypatch.setattr(
-        core_config,
+        base,
         "_load_from_remote",
         lambda **kwargs: {
             "EVENT_CHANNEL": {
@@ -96,7 +96,7 @@ def test_remote_event_channel_cannot_fill_partial_local_section(monkeypatch):
         },
     )
 
-    result = core_config._load_config("config.yaml")
+    result = base._load_config("config.yaml")
 
     assert result["EVENT_CHANNEL"] == local_event_channel
     assert "topic_prefix" not in result["EVENT_CHANNEL"]["kafka"]
@@ -106,41 +106,12 @@ def test_remote_event_channel_cannot_fill_partial_local_section(monkeypatch):
 @pytest.mark.parametrize("enable", [1, "true", None])
 def test_remote_enable_must_be_boolean(monkeypatch, enable):
     monkeypatch.setattr(
-        core_config,
+        base,
         "_load_from_yaml",
         lambda path: {"REMOTE_GATEWAY": {"enable": enable}},
     )
     with pytest.raises(ValueError, match="must be a boolean"):
-        core_config._load_config("config.yaml")
-
-
-@pytest.mark.parametrize(
-    ("data_store", "cache_store", "expected"),
-    [
-        ("sqlite", "redis", "DATA_STORE.type=sqlite"),
-        ("mysql", "builtin", "CACHE.store_type=builtin"),
-    ],
-)
-def test_remote_mode_rejects_single_node_backends(
-    data_store, cache_store, expected
-):
-    config = {
-        "REMOTE_GATEWAY": {"enable": True},
-        "DATA_STORE": {"type": data_store},
-        "CACHE": {"store_type": cache_store},
-    }
-    with pytest.raises(ValueError, match=expected):
-        core_config._validate_config_compatibility(config)
-
-
-def test_remote_mode_accepts_mysql_and_redis():
-    core_config._validate_config_compatibility(
-        {
-            "REMOTE_GATEWAY": {"enable": True},
-            "DATA_STORE": {"type": "mysql"},
-            "CACHE": {"store_type": "redis"},
-        }
-    )
+        base._load_config("config.yaml")
 
 
 def test_remote_node_id_is_uuid4_hex():
@@ -154,3 +125,51 @@ def test_external_channel_defaults_are_available():
     assert core_config.EVENT_CHANNEL_TYPE in {"kafka", "rabbitmq"}
     assert core_config.KAFKA_BOOTSTRAP_SERVERS
     assert core_config.RABBITMQ_URL.startswith("amqp")
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("nested.value", 42),
+        ("nested.zero", 0),
+        ("nested.disabled", False),
+        ("nested.empty", ""),
+        ("nested.null", "fallback"),
+        ("nested.absent", "fallback"),
+        ("nested.value.child", "fallback"),
+        ("missing", "fallback"),
+    ],
+)
+def test_get_config_uses_shared_mapping_and_preserves_falsey_values(
+    monkeypatch, path, expected
+):
+    """Lookup works in base.py without an undefined or duplicated _config."""
+    monkeypatch.setattr(base, "_config", {
+        "nested": {"value": 42, "zero": 0, "disabled": False, "empty": "", "null": None}
+    })
+
+    assert base._get_config(path, "fallback") == expected
+    assert core_config._get_config(path, "fallback") == expected
+
+
+def test_yaml_missing_or_empty_file_uses_defaults(tmp_path):
+    path = tmp_path / "config.yaml"
+    assert base._load_from_yaml(str(path)) == {}
+    path.write_text("", encoding="utf-8")
+    assert base._load_from_yaml(str(path)) == {}
+
+
+def test_yaml_rejects_non_mapping(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("- item\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="must contain a YAML mapping"):
+        base._load_from_yaml(str(path))
+
+
+@pytest.mark.parametrize("remote", [[], {"enable": True}, {
+    "enable": True, "base_url": "http://gateway", "config_endpoint": " "
+}])
+def test_remote_configuration_validation_is_preserved(monkeypatch, remote):
+    monkeypatch.setattr(base, "_load_from_yaml", lambda path: {"REMOTE_GATEWAY": remote})
+    with pytest.raises(ValueError, match="REMOTE_GATEWAY"):
+        base._load_config("config.yaml")

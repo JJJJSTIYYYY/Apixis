@@ -25,6 +25,7 @@ from apixis.core.event.event_pipe import (
     event_to_payload,
 )
 from apixis.core.event.handler_registry import ApixHandlerRegistry
+from apixis.core.config.core_config import EVENT_LOOP_BACKPRESSURE
 
 from .test_event_pipe import FakeClient, make_event, make_gateway, response
 
@@ -610,7 +611,7 @@ class TestEventLoopRemainingBranches:
         await asyncio.gather(*handler._dispatch_tasks)
         dispatch.assert_awaited_once_with(event, [])
         acknowledge.assert_called_once_with()
-        assert handler._dispatch_semaphore._value == 1000
+        assert handler._dispatch_semaphore._value == EVENT_LOOP_BACKPRESSURE
 
     @pytest.mark.asyncio
     async def test_consumer_releases_semaphore_when_get_fails(self, monkeypatch):

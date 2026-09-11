@@ -2,7 +2,7 @@
 
 # APIXIS
 
-A event-driven graph orchestration core.
+An event-driven graph orchestration core.
 
 </div>
 
@@ -11,7 +11,7 @@ A event-driven graph orchestration core.
 ## DOCS
 
 - [Preview](./docs/README.md)
-- [APIX Core Runtime](./docs/core/README.md)
+- [Apixis Core Runtime](./docs/core/README.md)
 - [Event System](./docs/core/event/README.md)
 - [Graph Runtime](./docs/core/graph/README.md)
 

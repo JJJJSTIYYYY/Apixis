@@ -21,6 +21,7 @@ from apixis.core.utils.exception import (
     EventHandlerAlreadyRegisteredError,
     EventHandlerNotRegisteredError,
 )
+from apixis.core.config.core_config import EVENT_LOOP_BACKPRESSURE
 
 
 @pytest.fixture(autouse=True)
@@ -855,7 +856,7 @@ async def test_chain_resolution_failure_acknowledges_event_and_keeps_consuming(r
             assert resolve.call_count == 2
             logger.error.assert_called_once()
     await loop.stop()
-    assert loop._dispatch_semaphore._value == 1000
+    assert loop._dispatch_semaphore._value == EVENT_LOOP_BACKPRESSURE
 
 
 def test_subscribe_defers_validation_to_one_registry_pass():

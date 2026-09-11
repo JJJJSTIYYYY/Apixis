@@ -2,7 +2,11 @@ import asyncio
 from datetime import datetime
 import traceback
 
-from apixis.core.config.core_config import SHOW_EVENT_DISPATCH
+from apixis.core.config.core_config import (
+    BACKGROUND_HANDLER_BACKPRESSURE, 
+    EVENT_LOOP_BACKPRESSURE, 
+    SHOW_EVENT_DISPATCH
+)
 from apixis.core.event.base import ApixEvent
 from apixis.core.event.handler_registry import (
     ApixHandlerRegistry,
@@ -26,10 +30,10 @@ class ApixEventLoop:
         self._event_consumer_task: asyncio.Task | None = None
 
         self._dispatch_tasks: set[asyncio.Task] = set()
-        self._dispatch_semaphore = asyncio.Semaphore(1000) # back pressure
+        self._dispatch_semaphore = asyncio.Semaphore(EVENT_LOOP_BACKPRESSURE) # back pressure
 
         self._background_handler_tasks: set[asyncio.Task] = set()
-        self._background_handler_semaphore = asyncio.Semaphore(1000)
+        self._background_handler_semaphore = asyncio.Semaphore(BACKGROUND_HANDLER_BACKPRESSURE)
 
         self.started = False
 

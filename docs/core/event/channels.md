@@ -186,10 +186,7 @@ EVENT_CHANNEL:
     prefetch_count: 100
 ```
 
-启用远程模式时还有两个跨节点约束：
-
-- `DATA_STORE.type=sqlite` 不可用，应选择分布式数据存储。
-- `CACHE.store_type=builtin` 不可用，应选择共享缓存后端。
+Apixis 核心不管理数据库或共享缓存，远程事件模式无需配置 `DATA_STORE` 或 `CACHE`。
 
 `EVENT_CHANNEL` 是节点本地配置，不会从远程配置中心继承，避免多个节点错误消费同一个 mailbox 身份。
 

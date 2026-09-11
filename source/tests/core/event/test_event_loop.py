@@ -14,6 +14,7 @@ import pytest
 from apixis.core.event.base import ApixEvent, EventType, ApixEventHandler
 from apixis.core.event.handler_registry import ApixHandlerRegistry
 from apixis.core.event.event_loop import ApixEventLoop
+from apixis.core.config.core_config import EVENT_LOOP_BACKPRESSURE
 
 
 # ============================
@@ -473,7 +474,7 @@ class TestDispatchEvent:
                     ["missing"],
                 )
 
-        assert handler._dispatch_semaphore._value == 1000
+        assert handler._dispatch_semaphore._value == EVENT_LOOP_BACKPRESSURE
 
 
 # ============================
@@ -670,7 +671,7 @@ class TestEventConsumerLoop:
             task.add_done_callback(handler._on_dispatch_done)
             results = await asyncio.gather(task, return_exceptions=True)
             assert isinstance(results[0], RuntimeError)
-            assert handler._dispatch_semaphore._value == 1000
+            assert handler._dispatch_semaphore._value == EVENT_LOOP_BACKPRESSURE
             assert not handler._dispatch_tasks
 
         task_done.assert_called_once_with()

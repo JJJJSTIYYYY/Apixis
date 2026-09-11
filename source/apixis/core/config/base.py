@@ -1,5 +1,4 @@
 import os
-import platform
 from collections.abc import Mapping
 from typing import Any
 
@@ -7,33 +6,13 @@ import httpx
 import yaml
 
 
-# Global configuration settings for Apix Core.
+# Global configuration settings for Apixis Core.
 VERSION = "0.0.1"
 
 # These sections describe resources owned by one concrete node.  They must
 # never be inherited from the gateway, otherwise several nodes may consume the
 # same mailbox configuration and lose destination isolation.
 _NODE_LOCAL_CONFIG_SECTIONS = frozenset({"EVENT_CHANNEL"})
-
-OPERATION_SYSTEM = platform.system().lower()
-
-_DEFAULT_PROXY_ENV = {
-    "HTTP_PROXY": os.environ.get("HTTP_PROXY"),
-    "HTTPS_PROXY": os.environ.get("HTTPS_PROXY"),
-    "NO_PROXY": os.environ.get("NO_PROXY"),
-}
-
-_PROVIDER_BASE_URL = {
-    "ollama:local": "http://localhost:11434",
-    "ollama": "https://ollama.com",
-    "openai": "https://api.openai.com/v1",
-    "qwen": "https://dashscope.aliyuncs.com/v1",
-    "deepseek": "https://api.deepseek.com/v1",
-    "moonshot": "https://api.moonshot.cn/v1",
-    "xiaomimimo": "https://api.xiaomimimo.com/v1",
-    "minimax": "https://api.minimaxi.com/v1"
-}
-
 
 def _load_from_yaml(path: str) -> dict[str, Any]:
     """Load configuration from a local YAML file."""
@@ -166,6 +145,7 @@ def _load_config(path: str) -> dict[str, Any]:
 
 
 def _get_config(path: str, default=None):
+    """Read a dotted path, falling back for missing, non-mapping or null values."""
     value = _config
 
     for key in path.split("."):
@@ -180,32 +160,5 @@ def _get_config(path: str, default=None):
     return default if value is None else value
 
 
-def _validate_config_compatibility(config: Mapping[str, Any]) -> None:
-    """Reject storage backends that cannot be shared by remote nodes."""
-    remote = config.get("REMOTE_GATEWAY")
-    if not isinstance(remote, Mapping) or remote.get("enable") is not True:
-        return
-
-    data_store = config.get("DATA_STORE", {})
-    cache = config.get("CACHE", {})
-    data_store_type = (
-        data_store.get("type", "sqlite")
-        if isinstance(data_store, Mapping)
-        else "sqlite"
-    )
-    cache_store_type = (
-        cache.get("store_type", "builtin")
-        if isinstance(cache, Mapping)
-        else "builtin"
-    )
-    conflicts: list[str] = []
-    if data_store_type == "sqlite":
-        conflicts.append("DATA_STORE.type=sqlite")
-    if cache_store_type == "builtin":
-        conflicts.append("CACHE.store_type=builtin")
-    if conflicts:
-        raise ValueError(
-            "REMOTE_GATEWAY requires distributed storage backends; "
-            + ", ".join(conflicts)
-            + " cannot be used in remote node mode."
-        )
+# Load once in the module that owns configuration lookup.
+_config = _load_config("./config.yaml")
