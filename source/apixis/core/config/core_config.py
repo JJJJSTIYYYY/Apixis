@@ -3,7 +3,7 @@
 from typing import Literal
 from uuid import uuid4
 
-from apixis.core.config.base import VERSION, _get_config
+from apixis.core.config.base import _get_config
 
 
 # Remote gateway and node identity
@@ -82,11 +82,6 @@ RABBITMQ_QUEUE_PREFIX = _get_config(
 RABBITMQ_PREFETCH_COUNT = _get_config(
     "EVENT_CHANNEL.rabbitmq.prefetch_count", 100
 )
-
-
-# Resource cleanup remains part of Core, independently of Agent and storage.
-# Accept the original key so existing cleanup intervals remain effective.
 CACHE_CLEAN_INTERVAL = _get_config(
-    "RUNTIME.cache_clean_interval",
-    _get_config("AGENT_RUNTIME.cache_clean_interval", 300),
+    "LIFESPAN.resource_clean_interval", 300
 )

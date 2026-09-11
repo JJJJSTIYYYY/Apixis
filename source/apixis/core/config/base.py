@@ -5,10 +5,6 @@ from typing import Any
 import httpx
 import yaml
 
-
-# Global configuration settings for Apixis Core.
-VERSION = "0.0.1"
-
 # These sections describe resources owned by one concrete node.  They must
 # never be inherited from the gateway, otherwise several nodes may consume the
 # same mailbox configuration and lose destination isolation.
