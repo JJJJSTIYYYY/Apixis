@@ -1,0 +1,61 @@
+imagination.md
+todo.md
+
+# MacOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# virtual env
+.venv/
+venv/
+env/
+
+# cache
+.pytest_cache/
+.mypy_cache/
+
+# Node / Vite / Vue / Electron
+node_modules/
+dist/
+dist-electron/
+.vite/
+out
+build
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env & IDE
+.env
+.env.*
+*.local
+
+.vscode/
+.idea/
+.VSCodeCounter/
+
+# Runtime / Data
+.apix_data
+source/config.yaml
+
+# logs
+logs/
+*.log
+cache/
+tmp/
+temp/
+
+# Extra
+*.sqlite3
+*.db
