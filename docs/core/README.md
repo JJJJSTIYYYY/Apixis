@@ -1,16 +1,16 @@
 # APIX Core Runtime
 
-`apix.core` 是 APIX 的底层运行时，包含两套相互协作但职责清晰的基础设施：
+`apixis.core` 是 APIX 的底层运行时，包含两套相互协作但职责清晰的基础设施：
 
-- `apix.core.event`：异步事件发布、通配符订阅、确定性排序、出队解析当前处理器链，以及本地或远程事件通道。
-- `apix.core.graph`：基于事件系统驱动的状态图，包括节点、路由、状态合并、流式输出、运行上下文、快照恢复与人在环中断。
+- `apixis.core.event`：异步事件发布、通配符订阅、确定性排序、出队解析当前处理器链，以及本地或远程事件通道。
+- `apixis.core.graph`：基于事件系统驱动的状态图，包括节点、路由、状态合并、流式输出、运行上下文、快照恢复与人在环中断。
 
-`apix.core.utils` 目前主要定义 Core Runtime 对外抛出的异常类型。
+`apixis.core.utils` 目前主要定义 Core Runtime 对外抛出的异常类型。
 
 ## 模块结构
 
 ```text
-apix/core/
+apixis/core/
 ├── event/
 │   ├── base.py               # Event and handler data models
 │   ├── event_loop.py         # Event consumption and dispatch
@@ -58,7 +58,7 @@ Graph Runtime 并不在 `NodeGraph` 对象中保存每次调用的状态。一�
 import asyncio
 from typing import Annotated, TypedDict
 
-from apix.core.graph import AutoMerge, END, GraphManager, START
+from apixis.core.graph import AutoMerge, END, GraphManager, START
 
 
 class AgentState(TypedDict, total=False):
@@ -116,7 +116,7 @@ asyncio.run(main())
 ### 事件系统
 
 ```python
-from apix.core.event import (
+from apixis.core.event import (
     APIX_EVENT_LOOP,
     APIX_EVENT_REGISTRY,
     APIX_HANDLER_REGISTRY,
@@ -133,7 +133,7 @@ from apix.core.event import (
 ### 图运行时
 
 ```python
-from apix.core.graph import (
+from apixis.core.graph import (
     AutoMerge,
     BaseNode,
     Command,
@@ -147,7 +147,7 @@ from apix.core.graph import (
     START,
 )
 
-from apix.core.graph.context import (
+from apixis.core.graph.context import (
     GraphContext,
     get_current_namespace,
     get_current_run_id,
@@ -155,7 +155,7 @@ from apix.core.graph.context import (
     get_stream_writer,
 )
 
-from apix.core.graph.interrupter import (
+from apixis.core.graph.interrupter import (
     Block,
     interrupt,
     interrupted_hook,
@@ -169,7 +169,7 @@ from apix.core.graph.interrupter import (
 `NodeGraph` 会在调用时执行 `APIX_EVENT_LOOP.start()`，因此一般不需要手动启动事件循环。应用关闭或测试收尾时应主动停止事件循环：
 
 ```python
-from apix.core.event import APIX_EVENT_LOOP, EVENT_PIPE
+from apixis.core.event import APIX_EVENT_LOOP, EVENT_PIPE
 
 
 async def shutdown_core_runtime() -> None:

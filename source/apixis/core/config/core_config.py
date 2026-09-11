@@ -306,19 +306,19 @@ KAFKA_BOOTSTRAP_SERVERS = _get_config(
     "EVENT_CHANNEL.kafka.bootstrap_servers", ["localhost:9092"]
 )
 KAFKA_TOPIC_PREFIX = _get_config(
-    "EVENT_CHANNEL.kafka.topic_prefix", "apix.mailbox"
+    "EVENT_CHANNEL.kafka.topic_prefix", "apixis.mailbox"
 )
 KAFKA_GROUP_ID_PREFIX = _get_config(
-    "EVENT_CHANNEL.kafka.group_id_prefix", "apix.node"
+    "EVENT_CHANNEL.kafka.group_id_prefix", "apixis.node"
 )
 RABBITMQ_URL = _get_config(
     "EVENT_CHANNEL.rabbitmq.url", "amqp://guest:guest@localhost/"
 )
 RABBITMQ_EXCHANGE = _get_config(
-    "EVENT_CHANNEL.rabbitmq.exchange", "apix.events"
+    "EVENT_CHANNEL.rabbitmq.exchange", "apixis.events"
 )
 RABBITMQ_QUEUE_PREFIX = _get_config(
-    "EVENT_CHANNEL.rabbitmq.queue_prefix", "apix.mailbox"
+    "EVENT_CHANNEL.rabbitmq.queue_prefix", "apixis.mailbox"
 )
 RABBITMQ_PREFETCH_COUNT = _get_config(
     "EVENT_CHANNEL.rabbitmq.prefetch_count", 100
@@ -366,12 +366,12 @@ DATA_STORE_TYPE: Literal["sqlite", "mysql"] = _get_config(
 
 SQLITE_DATABASE = _get_config(
     "DATA_STORE.sqlite.database",
-    os.path.join(BASE_DIR, "sqlite", "apix.sqlite3"),
+    os.path.join(BASE_DIR, "sqlite", "apixis.sqlite3"),
 )
 
 MYSQL_BASE_URL = _get_config("DATA_STORE.mysql.base_url", "localhost")
 MYSQL_PORT = _get_config("DATA_STORE.mysql.port", 3307)
-MYSQL_USER = _get_config("DATA_STORE.mysql.user", "apix")
+MYSQL_USER = _get_config("DATA_STORE.mysql.user", "apixis")
 MYSQL_PASSWORD = _get_config("DATA_STORE.mysql.password", "apixapix")
 MYSQL_DATABASE = _get_config("DATA_STORE.mysql.database", "apix_database")
 MYSQL_CHARSET = _get_config("DATA_STORE.mysql.charset", "utf8mb4")

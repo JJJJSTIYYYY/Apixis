@@ -1,6 +1,6 @@
 # 处理器注册、排序与当前链缓存
 
-本页详细说明 `apix.core.event.handler_registry` 的用户级行为。
+本页详细说明 `apixis.core.event.handler_registry` 的用户级行为。
 
 ## subscribe()
 
@@ -20,7 +20,7 @@ subscribe(
 装饰器接受异步函数或 `ApixEventHandler` 实例，并原样返回被装饰对象。订阅、过滤、优先级和边界校验统一由 `register_handler()` 在装饰器实际应用时完成；单独调用 `subscribe(...)` 只创建装饰器。`core_func`、`on_has_error` 和 `on_accepted` 接收 `ApixEvent`；`on_error` 接收 `(event, exception)`。所有回调均为异步函数，返回 `None`。
 
 ```python
-from apix.core.event import ApixEvent, subscribe
+from apixis.core.event import ApixEvent, subscribe
 
 
 @subscribe("agent.*", priority=10)
@@ -44,7 +44,7 @@ async def observe_agent_event(event: ApixEvent) -> None:
 ## 带通知的处理器
 
 ```python
-from apix.core.event import ApixEvent, ApixEventHandler, subscribe
+from apixis.core.event import ApixEvent, ApixEventHandler, subscribe
 
 
 async def process_request(event: ApixEvent) -> None:
@@ -110,7 +110,7 @@ ApixEventHandler(
 )
 ```
 
-`on_error` 的类型为 `EventHandlerErrorFunc = Callable[[ApixEvent, Exception], Awaitable[None]]`，可从 `apix.core.event` 导入。
+`on_error` 的类型为 `EventHandlerErrorFunc = Callable[[ApixEvent, Exception], Awaitable[None]]`，可从 `apixis.core.event` 导入。
 
 - `core_func`、`on_has_error`、`on_accepted` 中任何一个抛出未捕获异常或超时，都先记录错误，再调用 `on_error(event, exception)`；第二个参数是原始异常对象。
 - `on_error` 成功返回不会移除已记录的错误，也不会重试失败的函数。后续 handler 仍可通过 `on_has_error` 感知该失败。
@@ -319,7 +319,7 @@ patterns = get_unmatched_subscriptions("observe_agent_event")
 ### ApixEventHandler
 
 ```python
-from apix.core.event import ApixEventHandler
+from apixis.core.event import ApixEventHandler
 ```
 
 该类封装核心函数和两个前置状态通知函数：
@@ -361,7 +361,7 @@ from apix.core.event import ApixEventHandler
 ## 插件清理模板
 
 ```python
-from apix.core.event import (
+from apixis.core.event import (
     ApixEvent,
     subscribe,
     unsubscribe,

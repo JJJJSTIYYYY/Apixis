@@ -1,6 +1,6 @@
 # Core 异常类型
 
-`apix.core.utils.exception` 定义事件系统和 Graph Runtime 的公共异常。事件模块会重新导出这些类型，通常可以直接从 `apix.core.event` 导入。
+`apixis.core.utils.exception` 定义事件系统和 Graph Runtime 的公共异常。事件模块会重新导出这些类型，通常可以直接从 `apixis.core.event` 导入。
 
 ## 事件异常
 
@@ -47,7 +47,7 @@
 ## 导入示例
 
 ```python
-from apix.core.event import (
+from apixis.core.event import (
     EventChannelError,
     EventChannelPermissionError,
     EventChannelUnavailableError,
@@ -60,7 +60,7 @@ from apix.core.event import (
 或从定义模块导入：
 
 ```python
-from apix.core.utils.exception import GraphNodeError
+from apixis.core.utils.exception import GraphNodeError
 ```
 
 ## 错误处理边界

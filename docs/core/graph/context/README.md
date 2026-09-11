@@ -13,7 +13,7 @@ result = await graph.invoke({"value": 1})
 如果需要从外部 abort、检查快照或在失败后恢复，应保留 context：
 
 ```python
-from apix.core.graph.context import GraphContext
+from apixis.core.graph.context import GraphContext
 
 
 context = GraphContext()
@@ -113,7 +113,7 @@ history = context.get_all_snapshots()
 标准恢复流程：
 
 ```python
-from apix.core.graph.context import GraphContext
+from apixis.core.graph.context import GraphContext
 
 
 context = GraphContext()
@@ -241,7 +241,7 @@ active 调用 abort 后：
 Graph Runtime 在节点执行期间通过 `ContextVar` 绑定当前 `GraphContext`：
 
 ```python
-from apix.core.graph.context import (
+from apixis.core.graph.context import (
     get_current_namespace,
     get_current_run_id,
     get_graph_context,

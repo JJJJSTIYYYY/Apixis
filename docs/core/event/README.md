@@ -1,6 +1,6 @@
 # 事件系统
 
-`apix.core.event` 提供进程级异步事件运行时。它负责：
+`apixis.core.event` 提供进程级异步事件运行时。它负责：
 
 - 创建和发布 `ApixEvent`。
 - 按大小写敏感的 glob 模式匹配处理器。
@@ -32,7 +32,7 @@
 ```python
 import asyncio
 
-from apix.core.event import (
+from apixis.core.event import (
     APIX_EVENT_LOOP,
     EVENT_PIPE,
     ApixEvent,
@@ -170,7 +170,7 @@ await EVENT_PIPE.join()
 `APIX_EVENT_REGISTRY` 只记录成功发布过的精确事件名，不保存事件对象，也不负责分发：
 
 ```python
-from apix.core.event import APIX_EVENT_REGISTRY
+from apixis.core.event import APIX_EVENT_REGISTRY
 
 observed = APIX_EVENT_REGISTRY.get_registered_events()
 print(observed)  # frozenset[str]
@@ -179,7 +179,7 @@ print(observed)  # frozenset[str]
 它的主要用途是诊断订阅是否覆盖了真实事件：
 
 ```python
-from apix.core.event import get_unmatched_subscriptions
+from apixis.core.event import get_unmatched_subscriptions
 
 unmatched = get_unmatched_subscriptions("my_plugin_handler")
 ```

@@ -1,6 +1,6 @@
 # Graph Runtime
 
-`apix.core.graph` 用事件系统驱动有向状态图。用户通过 `GraphManager` 声明节点和转移，编译得到 `NodeGraph`，再使用 `invoke()` 或 `stream()` 执行。
+`apixis.core.graph` 用事件系统驱动有向状态图。用户通过 `GraphManager` 声明节点和转移，编译得到 `NodeGraph`，再使用 `invoke()` 或 `stream()` 执行。
 
 ## 核心类型
 
@@ -25,7 +25,7 @@
 ```python
 from typing import TypedDict
 
-from apix.core.graph import END, GraphManager, START
+from apixis.core.graph import END, GraphManager, START
 
 
 class State(TypedDict, total=False):
@@ -205,7 +205,7 @@ def fan_out(state: State) -> Command:
 ```python
 from typing import Annotated, Any, TypedDict
 
-from apix.core.graph import (
+from apixis.core.graph import (
     AutoMerge,
     GraphManager,
     ParallelNode,
@@ -262,7 +262,7 @@ graph = (
 普通 `Node` 一次只返回一个 `Command`。除通用的 `ParallelNode` 外，工具节点等需要自行生成多份命令的组件也可以继承 `BaseNode`：
 
 ```python
-from apix.core.graph import BaseNode, Command
+from apixis.core.graph import BaseNode, Command
 
 
 class BatchNode(BaseNode):
@@ -326,7 +326,7 @@ async for chunk in graph.stream(initial_state, graph_context=None):
 节点使用 `get_stream_writer()` 发出自定义对象：
 
 ```python
-from apix.core.graph.context import get_stream_writer
+from apixis.core.graph.context import get_stream_writer
 
 
 async def generate(state: dict) -> dict:
@@ -368,8 +368,8 @@ manager.add_node(slow_node, timeout=2.5)
 插件如果需要观察某个图的调度，可以订阅 namespace 化后的 `GRAPH_DISPATCH`：
 
 ```python
-from apix.core.event import ApixEvent, subscribe
-from apix.core.graph import GRAPH_DISPATCH, get_node_name_in_namespace
+from apixis.core.event import ApixEvent, subscribe
+from apixis.core.graph import GRAPH_DISPATCH, get_node_name_in_namespace
 
 
 namespace = "agent-runtime"

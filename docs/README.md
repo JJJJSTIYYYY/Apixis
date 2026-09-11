@@ -1,6 +1,6 @@
 # APIX 文档
 
-本目录保存 APIX 的项目文档。当前已完成 `source/apix/core` 的使用文档，内容以项目源码及 `source/tests/core`、`source/tests/integration` 中验证过的行为为准。
+本目录保存 APIX 的项目文档。当前已完成 `source/apixis/core` 的使用文档，内容以项目源码及 `source/tests/core`、`source/tests/integration` 中验证过的行为为准。
 
 ## Core Runtime
 

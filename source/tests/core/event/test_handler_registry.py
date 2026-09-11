@@ -492,7 +492,7 @@ async def test_dispatch_skips_name_missing_from_registry():
     unsubscribe("handler")
     event = ApixEvent("event-id", EventType.WORKFLOW, "event.one", None, 0)
     event_loop = ApixEventLoop(APIX_HANDLER_REGISTRY)
-    with patch("apix.core.event.event_loop.logger") as logger:
+    with patch("apixis.core.event.event_loop.logger") as logger:
         result = await event_loop._dispatch_event(
             event,
             chain,
@@ -848,7 +848,7 @@ async def test_chain_resolution_failure_acknowledges_event_and_keeps_consuming(r
     pipe, loop = runtime
     with patch.object(APIX_HANDLER_REGISTRY, "get_handlers_chain_for_event",
                       side_effect=[RuntimeError("resolution failed"), []]) as resolve:
-        with patch("apix.core.event.event_loop.logger") as logger:
+        with patch("apixis.core.event.event_loop.logger") as logger:
             await pipe.post_event(event_type=EventType.INFO, event_name="event.one")
             await pipe.post_event(event_type=EventType.INFO, event_name="event.two")
             await asyncio.wait_for(pipe.join(), 1)

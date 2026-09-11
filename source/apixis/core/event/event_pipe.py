@@ -786,7 +786,7 @@ class ApixEventPipe:
         return ApixEvent(
             event_id="event-" + uuid4().hex,
             event_type=EventType.LIFECYCLE,
-            event_name="apix.node.online" if online else "apix.node.offline",
+            event_name="apixis.node.online" if online else "apixis.node.offline",
             context={
                 "tag": self.node_name,
                 "node_id": self.mq_id,

@@ -330,7 +330,7 @@ class TestDispatchEvent:
 
         event = _make_event()
 
-        with patch("apix.core.event.base.logger") as mock_logger:
+        with patch("apixis.core.event.base.logger") as mock_logger:
             result = await handler._dispatch_event(
                 event,
                 handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
@@ -358,7 +358,7 @@ class TestDispatchEvent:
 
         event = _make_event()
 
-        with patch("apix.core.event.base.logger") as mock_logger:
+        with patch("apixis.core.event.base.logger") as mock_logger:
             result = await handler._dispatch_event(
                 event,
                 handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
@@ -389,7 +389,7 @@ class TestDispatchEvent:
 
         event = _make_event()
 
-        with patch("apix.core.event.base.logger"):
+        with patch("apixis.core.event.base.logger"):
             await handler._dispatch_event(
                 event,
                 handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
@@ -420,7 +420,7 @@ class TestDispatchEvent:
 
         event = _make_event()
 
-        with patch("apix.core.event.base.logger"):
+        with patch("apixis.core.event.base.logger"):
             await handler._dispatch_event(
                 event,
                 handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
@@ -467,7 +467,7 @@ class TestDispatchEvent:
             mock_get_handlers,
         ):
             event = _make_event()
-            with patch("apix.core.event.event_loop.logger"):
+            with patch("apixis.core.event.event_loop.logger"):
                 await handler._dispatch_event(
                     event,
                     ["missing"],
@@ -528,7 +528,7 @@ class TestRunBackgroundHandler:
         registry.register_handler(entry)
         event = _make_event()
 
-        with patch("apix.core.event.base.logger") as mock_logger:
+        with patch("apixis.core.event.base.logger") as mock_logger:
             await handler._run_background_handler(entry.name, event)
             mock_logger.error.assert_called()
 
@@ -563,7 +563,7 @@ class TestRunBackgroundHandler:
         registry.register_handler(entry)
         event = _make_event()
 
-        with patch("apix.core.event.base.logger") as mock_logger:
+        with patch("apixis.core.event.base.logger") as mock_logger:
             await handler._run_background_handler(entry.name, event)
             mock_logger.error.assert_called()
 
@@ -661,7 +661,7 @@ class TestEventConsumerLoop:
                 AsyncMock(side_effect=RuntimeError("dispatch failed")),
             ),
             patch(
-                "apix.core.event.event_loop.EVENT_PIPE.task_done"
+                "apixis.core.event.event_loop.EVENT_PIPE.task_done"
             ) as task_done,
         ):
             await handler._dispatch_semaphore.acquire()

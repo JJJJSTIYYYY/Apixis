@@ -31,7 +31,7 @@ class GraphContextSnapshot(TypedDict):
 
     State is deep-copied when the snapshot is taken. Restoring a snapshot
     deep-copies the complete mapping again, including state fields marked with
-    :class:`~apix.core.graph.base.KeepRef`.
+    :class:`~apixis.core.graph.base.KeepRef`.
     """
 
     timestamp: float

@@ -19,7 +19,7 @@ except ImportError:
     typing.NotRequired = NotRequired
     sys.modules["typing"].NotRequired = NotRequired
 
-# ---- Now safe to import apix modules ----
+# ---- Now safe to import apixis modules ----
 import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock

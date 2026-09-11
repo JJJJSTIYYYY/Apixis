@@ -1,6 +1,6 @@
 # 图中断与恢复控制
 
-`apix.core.graph.interrupter` 用于在节点内部暂停图，向外部发布一个 `Block`，等待人工、工具或其他系统给出结果后继续执行。
+`apixis.core.graph.interrupter` 用于在节点内部暂停图，向外部发布一个 `Block`，等待人工、工具或其他系统给出结果后继续执行。
 
 该机制与 `NodeGraph.stream()` 相互独立：中断通过事件系统发布，流式 chunk 通过 `StreamWriter` 发布。
 
@@ -20,9 +20,9 @@
 ```python
 import asyncio
 
-from apix.core.graph import GraphManager, START
-from apix.core.graph.context import GraphContext
-from apix.core.graph.interrupter import Block, interrupt
+from apixis.core.graph import GraphManager, START
+from apixis.core.graph.context import GraphContext
+from apixis.core.graph.interrupter import Block, interrupt
 
 
 pending_reviews: asyncio.Queue[Block] = asyncio.Queue()
@@ -75,7 +75,7 @@ async def run() -> dict:
 如果 hook 生命周期不属于某个 `NodeGraph`，可以直接注册：
 
 ```python
-from apix.core.graph.interrupter import Block, interrupted_hook
+from apixis.core.graph.interrupter import Block, interrupted_hook
 
 
 @interrupted_hook(namespace="document-review", exist_ok=False)
@@ -98,7 +98,7 @@ graph__interrupted
 直接注册的 hook 不由图清理。卸载时使用：
 
 ```python
-from apix.core.event import unsubscribe
+from apixis.core.event import unsubscribe
 
 unsubscribe(on_document_review.__name__)
 ```

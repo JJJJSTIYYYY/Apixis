@@ -15,7 +15,7 @@
 全局实例：
 
 ```python
-from apix.core.event import EVENT_PIPE
+from apixis.core.event import EVENT_PIPE
 ```
 
 常用接口：
@@ -84,10 +84,10 @@ await EVENT_PIPE.join()
 
 `error_stack` 按顺序保存错误记录字典，每条包含 `handler_name`、`phase`、`exception_type`、`message` 和 traceback 文本。反序列化后恢复为 `ApixEventError`，因此下游仍可通过 `has_error` 判断前置错误。
 
-内部辅助函数位于 `apix.core.event.event_pipe`：
+内部辅助函数位于 `apixis.core.event.event_pipe`：
 
 ```python
-from apix.core.event.event_pipe import (
+from apixis.core.event.event_pipe import (
     encode_event,
     event_from_payload,
     event_to_payload,
@@ -176,13 +176,13 @@ EVENT_CHANNEL:
   kafka:
     bootstrap_servers:
       - "localhost:9092"
-    topic_prefix: "apix.mailbox"
-    group_id_prefix: "apix.node"
+    topic_prefix: "apixis.mailbox"
+    group_id_prefix: "apixis.node"
 
   rabbitmq:
     url: "amqp://guest:guest@localhost/"
-    exchange: "apix.events"
-    queue_prefix: "apix.mailbox"
+    exchange: "apixis.events"
+    queue_prefix: "apixis.mailbox"
     prefetch_count: 100
 ```
 

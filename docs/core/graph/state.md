@@ -26,7 +26,7 @@ new_value = current_value.__add__(update_value)
 ```python
 from typing import Annotated, TypedDict
 
-from apix.core.graph import AutoMerge
+from apixis.core.graph import AutoMerge
 
 
 class State(TypedDict, total=False):
@@ -75,7 +75,7 @@ class MessageStore:
 `Reset(value)` 为一次更新显式绕过 `AutoMerge`：
 
 ```python
-from apix.core.graph import Command, Reset
+from apixis.core.graph import Command, Reset
 
 
 def clear_messages(state: State) -> Command:
@@ -93,7 +93,7 @@ def clear_messages(state: State) -> Command:
 ```python
 from typing import Annotated, TypedDict
 
-from apix.core.graph import KeepRef
+from apixis.core.graph import KeepRef
 
 
 class RuntimeState(TypedDict, total=False):

@@ -328,7 +328,7 @@ class TestGatewayRemainingBranches:
         owned = SimpleNamespace(aclose=AsyncMock())
         constructor = lambda **kwargs: owned
         monkeypatch.setattr(
-            "apix.core.event.event_pipe.httpx.AsyncClient", constructor
+            "apixis.core.event.event_pipe.httpx.AsyncClient", constructor
         )
         gateway = GatewayChannel(
             base_url="http://gateway/",
@@ -600,11 +600,11 @@ class TestEventLoopRemainingBranches:
         get_event = AsyncMock(side_effect=[event, asyncio.CancelledError()])
         dispatch = AsyncMock()
         monkeypatch.setattr(
-            "apix.core.event.event_loop.EVENT_PIPE.get", get_event
+            "apixis.core.event.event_loop.EVENT_PIPE.get", get_event
         )
         monkeypatch.setattr(handler, "_dispatch_event", dispatch)
         acknowledge = MagicMock()
-        monkeypatch.setattr("apix.core.event.event_loop.EVENT_PIPE.task_done", acknowledge)
+        monkeypatch.setattr("apixis.core.event.event_loop.EVENT_PIPE.task_done", acknowledge)
 
         await handler._event_consumer_loop()
         await asyncio.gather(*handler._dispatch_tasks)
@@ -621,7 +621,7 @@ class TestEventLoopRemainingBranches:
         handler = ApixEventLoop(registry)
         initial_value = handler._dispatch_semaphore._value
         monkeypatch.setattr(
-            "apix.core.event.event_loop.EVENT_PIPE.get",
+            "apixis.core.event.event_loop.EVENT_PIPE.get",
             AsyncMock(side_effect=RuntimeError("get failed")),
         )
         with pytest.raises(RuntimeError, match="get failed"):

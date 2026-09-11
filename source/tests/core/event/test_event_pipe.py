@@ -252,7 +252,7 @@ class TestGatewayChannel:
         client = FakeClient([response(503), response(503), response(200)])
         gateway = make_gateway(client)
         sleep = AsyncMock()
-        monkeypatch.setattr("apix.core.event.event_pipe.asyncio.sleep", sleep)
+        monkeypatch.setattr("apixis.core.event.event_pipe.asyncio.sleep", sleep)
 
         await gateway.put(make_event(), recipient="node-b")
 
@@ -264,7 +264,7 @@ class TestGatewayChannel:
         client = FakeClient([response(503), response(503), response(503)])
         gateway = make_gateway(client)
         monkeypatch.setattr(
-            "apix.core.event.event_pipe.asyncio.sleep", AsyncMock()
+            "apixis.core.event.event_pipe.asyncio.sleep", AsyncMock()
         )
 
         with pytest.raises(httpx.HTTPStatusError):
@@ -279,7 +279,7 @@ class TestGatewayChannel:
         )
         gateway = make_gateway(client)
         sleep = AsyncMock()
-        monkeypatch.setattr("apix.core.event.event_pipe.asyncio.sleep", sleep)
+        monkeypatch.setattr("apixis.core.event.event_pipe.asyncio.sleep", sleep)
 
         await gateway.put(make_event(), recipient="node-b")
         sleep.assert_awaited_once_with(0.1)
@@ -341,8 +341,8 @@ class TestApixEventPipeLifecycle:
         await pipe.stop()
 
         assert [entry[0] for entry in client.requests] == ["POST", "GET", "POST"]
-        assert client.requests[0][2]["json"]["event"]["event_name"] == "apix.node.online"
-        assert client.requests[2][2]["json"]["event"]["event_name"] == "apix.node.offline"
+        assert client.requests[0][2]["json"]["event"]["event_name"] == "apixis.node.online"
+        assert client.requests[2][2]["json"]["event"]["event_name"] == "apixis.node.offline"
 
     @pytest.mark.asyncio
     async def test_disabled_lifecycle_does_not_contact_gateway(self):
