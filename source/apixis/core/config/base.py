@@ -101,7 +101,11 @@ def _load_config(path: str) -> dict[str, Any]:
         4. Remove node-local sections such as EVENT_CHANNEL from remote data.
         5. Merge local configuration over the filtered remote configuration.
     """
-    local_config = _load_from_yaml(path)
+    try:
+        local_config = _load_from_yaml(path)
+
+    except FileNotFoundError:
+        local_config = {}
 
     remote_center = local_config.get("REMOTE_GATEWAY")
     if remote_center is None:
