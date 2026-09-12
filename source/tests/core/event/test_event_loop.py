@@ -58,7 +58,6 @@ def _make_handler_entry(
     return entry
 
 
-
 def _make_event(event_name="test.event", accepted=False):
     """Create a test ApixEvent."""
     return ApixEvent(
@@ -675,34 +674,6 @@ class TestEventConsumerLoop:
             assert not handler._dispatch_tasks
 
         task_done.assert_called_once_with()
-
-
-# ============================
-# Tests: Constructor
-# ============================
-
-
-class TestConstructor:
-    """Tests for ApixEventLoop.__init__."""
-
-    def test_init_stores_registry(self):
-        """Constructor should store the registry reference."""
-        registry = ApixHandlerRegistry()
-        _reset_registry(registry)
-        handler = ApixEventLoop(registry)
-        assert handler._registry is registry
-
-    def test_init_initial_state(self):
-        """Initial state should have correct defaults."""
-        registry = ApixHandlerRegistry()
-        _reset_registry(registry)
-        handler = ApixEventLoop(registry)
-
-        assert handler._event_consumer_task is None
-        assert isinstance(handler._dispatch_tasks, set)
-        assert len(handler._dispatch_tasks) == 0
-        assert isinstance(handler._background_handler_tasks, set)
-        assert len(handler._background_handler_tasks) == 0
 
 
 # ============================

@@ -97,13 +97,13 @@ async def test_interrupted_hook_rejects_non_block_event_context():
 
     try:
         [handler_name] = APIX_HANDLER_REGISTRY.get_handlers_chain_for_event(
-            "graph__interrupted"
+            "graph_<global>_interrupted"
         )
         handler = APIX_HANDLER_REGISTRY.get_handler(handler_name)
         event = ApixEvent(
             event_id="event-id",
             event_type=EventType.WORKFLOW,
-            event_name="graph__interrupted",
+            event_name="graph_<global>_interrupted",
             context={},
             timestamp=time.time(),
         )
@@ -117,7 +117,8 @@ async def test_interrupted_hook_rejects_non_block_event_context():
         unsubscribe(invalid_context_hook.__name__)
 
 
-async def test_graph_pauses_and_resumes_at_multiple_breakpoints():
+@pytest.mark.parametrize("namespace", [None, "", "<global>", "review-flow"])
+async def test_graph_pauses_and_resumes_at_multiple_breakpoints(namespace):
     """One node may pause repeatedly without mixing block identity or input."""
     blocks: asyncio.Queue[Block] = asyncio.Queue()
 
@@ -130,7 +131,7 @@ async def test_graph_pauses_and_resumes_at_multiple_breakpoints():
         GraphManager()
         .add_node(review)
         .add_edge(START, "review")
-        .compile_graph(using_namespace="review-flow")
+        .compile_graph(using_namespace=namespace)
     )
 
     @graph.add_interrupted_hook
@@ -143,7 +144,7 @@ async def test_graph_pauses_and_resumes_at_multiple_breakpoints():
     first = await asyncio.wait_for(blocks.get(), timeout=1)
     assert invocation.done() is False
     assert first.run_id == context.run_id
-    assert first.namespace == "review-flow"
+    assert first.namespace == (namespace or "<global>")
     assert first.with_data == {"step": 1}
     first.resolve("approved")
 
@@ -168,6 +169,26 @@ async def test_graph_pauses_and_resumes_at_multiple_breakpoints():
 
     with pytest.raises(RuntimeError, match="NodeGraph has been decomposed"):
         graph.add_interrupted_hook(capture_review_block)
+
+
+@pytest.mark.parametrize("namespace", [None, "", "<global>"])
+async def test_public_global_hook_resumes_default_graph(namespace):
+    """A standalone hook uses the same global event name as graph dispatch."""
+    async def review(state):
+        return {"answer": await interrupt()}
+
+    graph = GraphManager().add_node(review).add_edge(START, "review").compile_graph()
+
+    @interrupted_hook(namespace=namespace, exist_ok=False)
+    async def resolve_global_block(block):
+        assert block.namespace == "<global>"
+        block.resolve("approved")
+
+    try:
+        result = await asyncio.wait_for(graph.invoke({}), timeout=1)
+        assert result == {"answer": "approved"}
+    finally:
+        unsubscribe(resolve_global_block.__name__)
 
 
 async def test_external_block_cancel_aborts_graph_at_saved_snapshot():

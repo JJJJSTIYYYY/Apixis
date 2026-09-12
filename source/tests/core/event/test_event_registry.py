@@ -29,9 +29,6 @@ def test_event_registry_class_and_singleton_are_exported():
     assert event_package.ApixEventRegistry is ApixEventRegistry
     assert event_package.APIX_EVENT_REGISTRY is APIX_EVENT_REGISTRY
     assert ApixEventRegistry() is APIX_EVENT_REGISTRY
-    assert not hasattr(event_package, "EVENT_REGISTRY")
-    assert not hasattr(event_package, "record_event")
-    assert not hasattr(event_package, "get_registered_events")
 
 
 def test_record_event_stores_exact_case_sensitive_names_once():

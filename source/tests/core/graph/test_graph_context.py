@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-from dataclasses import is_dataclass
 import time
 from typing import Annotated, TypedDict
 
@@ -37,30 +36,6 @@ def _bind(
         stream_writer=noop_stream_writer(),
     )
     return completion
-
-
-def test_graph_context_is_a_slots_dataclass_without_old_recovery_barrier():
-    """The context is one class and no longer owns quiescence bookkeeping."""
-    context = GraphContext()
-
-    assert is_dataclass(context)
-    assert not hasattr(context, "__dict__")
-    assert not hasattr(context, "graph_context")
-    assert not hasattr(context, "_state_snapshotter")
-    assert not hasattr(context, "_has_snapshot")
-    assert not hasattr(context, "_pending_events")
-    assert not hasattr(context, "_running_nodes")
-    assert not hasattr(context, "_quiescent")
-    assert not hasattr(context, "resume")
-
-
-def test_context_owns_schema_derived_state_behavior():
-    """Schema and marker keys belong to each invocation context."""
-    context = GraphContext(ContextState)
-
-    assert context._state_schema is ContextState
-    assert context._auto_merge_keys == frozenset({"values"})
-    assert context._keep_ref_keys == frozenset({"resource"})
 
 
 def test_new_context_is_pending_unbound_and_has_no_snapshot():

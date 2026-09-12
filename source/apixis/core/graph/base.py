@@ -236,7 +236,7 @@ END = "__end__"
 
 
 GRAPH_DISPATCH = "__graph_dispatch__"
-"""Predefined event name used to dispatch a graph context to its target node."""
+"""Base name qualified by get_graph_dispatch_name for graph events and handlers."""
 
 _namespace_graphs: dict[str, NodeGraph] = {}
 """Compiled graph indexed by its exclusive listener namespace."""
@@ -250,14 +250,18 @@ def acquire_namespace(
     *,
     replace_existed: bool = False,
 ) -> NodeGraph:
-    """Create a graph after acquiring its exclusive namespace.
+    """Validate and acquire the graph's exclusive namespace.
 
     An occupied namespace is rejected by default. With ``replace_existed=True``, its
-    current graph is decomposed before the replacement is constructed. The new
-    graph is registered only after its constructor succeeds, so a failed graph
-    factory cannot leave a partially acquired namespace.
+    current graph is decomposed before ownership is transferred. Glob characters
+    are rejected before changing ownership. The caller must release ownership
+    if subsequent listener registration fails.
     """
     namespace = graph.namespace
+    if any(character in namespace for character in "*?[]"):
+        raise ValueError(
+            f"Graph namespace `{namespace}` must not contain glob characters (*?[])."
+        )
     if namespace in namespace_set:
         if not replace_existed:
             raise ValueError(
@@ -271,14 +275,10 @@ def acquire_namespace(
     return graph
 
 
-def release_namespace(graph_or_namespace: NodeGraph | str) -> None:
+def release_namespace(graph: NodeGraph) -> None:
     """Release ``graph`` only when it still owns its namespace."""
-    if isinstance(graph_or_namespace, str):
-        namespace = graph_or_namespace
-    else:
-        namespace = graph_or_namespace.namespace
-
-    if _namespace_graphs.get(namespace) is graph_or_namespace:
+    namespace = graph.namespace
+    if _namespace_graphs.get(namespace) is graph:
         _namespace_graphs.pop(namespace)
 
 
@@ -313,39 +313,26 @@ NodeFunction: TypeAlias = (
 """A synchronous or asynchronous callable that receives graph state."""
 
 
-def get_node_name_in_namespace(
-    node_name: str,
-    namespace: str | None,
+def get_graph_dispatch_name(
+    namespace: str | None = None,
     missing_ok: bool = True,
 ) -> str:
-    """Return the event name for a graph node in one namespace.
+    """Return the event and handler name for graph dispatch.
+
+    Use the returned name with ``subscribe`` and as the graph handler boundary
+    in ``between_handlers``. No node name is needed.
 
     Args:
-        node_name: Node name to qualify.
-        namespace: Namespace to append. ``None`` and an empty string select
-            the global namespace, which does not modify the node name. ``*``
-            selects the same node from every non-global namespace when the
-            result is used as an event subscription pattern.
+        namespace: Graph namespace. ``None`` and an empty string select
+            ``<global>``. ``*`` produces a subscription pattern matching
+            every graph, including the global graph. A wildcard pattern
+            cannot identify a single handler for ``between_handlers``.
         missing_ok: If ``False``, require a concrete namespace to be owned by
-            a currently compiled graph. The wildcard namespace is always
-            accepted.
+            a compiled graph. The wildcard namespace ``*`` is always accepted.
     """
-    if not namespace:
-        return node_name
+    namespace = namespace or "<global>"
 
-    if not missing_ok and namespace != '*' and namespace not in namespace_set:
+    if not missing_ok and namespace != "*" and namespace not in namespace_set:
         raise KeyError(f"Namespace `{namespace}` not found in current namespace set.")
 
-    return f"{node_name}_{namespace}"
-
-
-def _get_node_listener_name(node_name: str, namespace: str | None) -> str:
-    """Return the process-unique handler name for one graph node listener.
-
-    Listener identity intentionally remains separate from the event name used
-    for dispatch. This preserves the reserved ``graph_listener_`` prefix for
-    lifecycle cleanup and avoids collisions with ordinary user handlers.
-    """
-    if namespace:
-        return f"graph_listener_{namespace}_{node_name}"
-    return f"graph_listener_{node_name}"
+    return f"{GRAPH_DISPATCH}_{namespace}"

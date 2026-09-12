@@ -48,7 +48,7 @@ Graph Runtime 并不在 `NodeGraph` 对象中保存每次调用的状态。一�
 
 - 同一个编译图可以并发执行多次，因为状态和节点路由目标都由调用级 `GraphContext` 隔离。
 - 一次调用内部也可通过 `Command(goto=[...])` 并发调度多个图节点；每个节点使用独立 state 副本，但共享该调用的只读 context。
-- 事件系统只负责图级 dispatch 和 namespace 隔离，不再用具体节点名承担内部路由职责；插件需要观察节点调度时，可订阅 `GRAPH_DISPATCH` 并检查 `event.context.target_node_name`。
+- 事件系统只负责图级 dispatch 和 namespace 隔离，不再用具体节点名承担内部路由职责；插件需要观察节点调度时，可订阅 `graph.dispatch_name`；只有需要筛选特定节点时，才检查 `event.context.target_node_name`。图的处理器名也为 `graph.dispatch_name`，可直接用于 `between_handlers`。
 
 ## 最小示例
 

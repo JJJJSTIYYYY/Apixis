@@ -24,6 +24,7 @@ from apixis.core.graph import (
 )
 from apixis.core.graph.context import GraphContext
 from apixis.core.graph.context import noop_stream_writer
+from apixis.core.graph.base import namespace_set, get_graph_dispatch_name
 
 
 def _graph_context(
@@ -64,7 +65,7 @@ def test_apply_command_rejects_non_dict_update():
         graph.apply_command(Command(update=[]), START, _graph_context())
 
 
-@pytest.mark.parametrize("using_namespace", [None, ""])
+@pytest.mark.parametrize("using_namespace", [None, "", "<global>"])
 def test_empty_listener_namespace_uses_global_namespace(using_namespace):
     """None and an empty string both select the global listener namespace."""
     graph = NodeGraph(
@@ -73,7 +74,7 @@ def test_empty_listener_namespace_uses_global_namespace(using_namespace):
         using_namespace=using_namespace,
     )
 
-    assert graph._listener_namespace == "<global>"
+    assert graph.namespace == "<global>"
 
 
 def test_listener_namespace_uses_supplied_value():
@@ -84,13 +85,7 @@ def test_listener_namespace_uses_supplied_value():
         using_namespace="agent-runtime",
     )
 
-    assert graph._listener_namespace == "agent-runtime"
-
-
-def test_reserved_global_namespace_token_is_rejected():
-    """The display-only global namespace label cannot become a real name."""
-    with pytest.raises(ValueError, match="preserved namespace"):
-        NodeGraph({}, {START: END}, using_namespace="<global>")
+    assert graph.namespace == "agent-runtime"
 
 
 def test_set_max_steps_is_fluent_and_updates_runtime_limit():
@@ -374,23 +369,6 @@ def test_node_graph_rejects_non_class_state_schema():
         )
 
 
-def test_state_schema_metadata_lives_on_graph_context():
-    """NodeGraph retains only a factory for invocation-local state behavior."""
-    graph = NodeGraph(
-        {},
-        {START: END},
-        state_schema=AutoMergeState,
-    )
-    context = graph._context_factory()
-
-    assert not hasattr(graph, "_state_schema")
-    assert not hasattr(graph, "_auto_merge_keys")
-    assert not hasattr(graph, "_keep_ref_keys")
-    assert context._state_schema is AutoMergeState
-    assert context._auto_merge_keys == frozenset({"values", "total"})
-    assert context._keep_ref_keys == frozenset()
-
-
 @pytest.mark.asyncio
 async def test_finish_and_fail_do_not_replace_completed_future():
     """Late END or failure events cannot overwrite an invocation result."""
@@ -432,14 +410,14 @@ def test_is_active_context_rejects_owned_but_unbound_context():
     """Ownership alone is insufficient without invocation runtime fields."""
     graph = NodeGraph({}, {START: END})
     context = GraphContext()
-    context._context_namespace = graph._listener_namespace
+    context._context_namespace = graph.namespace
 
     assert graph._is_active_context(context) is False
 
 
 @pytest.mark.asyncio
-async def test_is_active_context_uses_context_lifecycle_as_source_of_truth():
-    """Completed contexts need no duplicate graph-owned run registry."""
+async def test_is_active_context_rejects_aborted_context():
+    """An aborted context is no longer eligible for node dispatch."""
     graph = NodeGraph({}, {START: END})
     context = _bound_context(graph, "completed-run", {"value": 1})
     assert graph._is_active_context(context) is True
@@ -447,8 +425,6 @@ async def test_is_active_context_uses_context_lifecycle_as_source_of_truth():
     context.abort()
 
     assert graph._is_active_context(context) is False
-    assert not hasattr(graph, "_active_runs")
-    assert not hasattr(graph, "_active_runs_lock")
 
 
 @pytest.mark.asyncio
@@ -622,8 +598,8 @@ async def test_execute_node_ignores_error_after_attempt_becomes_stale():
 
 
 @pytest.mark.asyncio
-async def test_post_next_failure_needs_no_quiescence_rollback(monkeypatch):
-    """Posting failures no longer interact with deleted recovery counters."""
+async def test_post_next_propagates_event_pipe_failure(monkeypatch):
+    """Posting failures propagate to the caller with the selected target retained."""
     graph = NodeGraph({}, {START: END})
     context = GraphContext()
 
@@ -636,8 +612,6 @@ async def test_post_next_failure_needs_no_quiescence_rollback(monkeypatch):
         await graph._post_next(END, context)
 
     assert context.target_node_name == END
-    assert not hasattr(context, "_pending_events")
-    assert not hasattr(context, "_quiescent")
 
 
 def test_decompose_unregisters_only_graph_handlers_and_is_idempotent():
@@ -651,13 +625,13 @@ def test_decompose_unregisters_only_graph_handlers_and_is_idempotent():
         {START: "node", "node": END},
         using_namespace="decompose",
     )
-    graph_handler_names = set(graph._listener_handler_names)
+    graph_handler_names = set(graph._registered_handler_names)
 
     graph.decompose()
     graph.decompose()
 
     assert graph._decomposed is True
-    assert graph._listener_handler_names == []
+    assert graph._registered_handler_names == []
     assert graph_handler_names.isdisjoint(
         APIX_HANDLER_REGISTRY.registry
     )
@@ -673,7 +647,7 @@ def test_dispatch_listener_registration_collision_does_not_leak_handler():
     async def conflicting_handler(event):
         pass
 
-    conflicting_handler.__name__ = "graph_listener_rollback___graph_dispatch__"
+    conflicting_handler.__name__ = get_graph_dispatch_name("rollback")
     subscribe("foreign")(conflicting_handler)
 
     with pytest.raises(EventHandlerAlreadyRegisteredError):
@@ -683,14 +657,14 @@ def test_dispatch_listener_registration_collision_does_not_leak_handler():
             using_namespace="rollback",
         )
 
-    assert "graph_listener_rollback_START" not in (
-        APIX_HANDLER_REGISTRY.registry
-    )
     assert APIX_HANDLER_REGISTRY.get_handler(
         conflicting_handler.__name__
     ).subscribe == ["foreign"]
+    assert "rollback" not in namespace_set
 
     unsubscribe(conflicting_handler.__name__)
+    graph = NodeGraph({}, {START: END}, using_namespace="rollback")
+    assert graph.namespace in namespace_set
 
 
 @pytest.mark.asyncio
@@ -731,8 +705,11 @@ async def test_decompose_rejects_active_invocation():
     with pytest.raises(RuntimeError, match="invocations are active"):
         graph.decompose()
 
+    with pytest.raises(RuntimeError, match="invocations are active"):
+        NodeGraph({}, {START: END}, using_namespace=graph.namespace, exist_ok=True)
+
     assert graph._decomposed is False
-    assert graph._listener_handler_names
+    assert graph._registered_handler_names
 
     release.set()
     assert await invocation == {"finished": True}

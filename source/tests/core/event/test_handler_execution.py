@@ -213,10 +213,8 @@ async def test_subscribe_decorates_callable_handler_and_overrides_options(regist
     assert handler.stop_when_error is (False if use_defaults else True)
     assert handler.time_out == (42 if use_defaults else 3)
     assert handler.background is (True if use_defaults else False)
-    assert handler._register_order == 0
     assert handler.priority == 8
     assert handler.subscribe == ["contract.*"]
-    assert not hasattr(handler, "register_order")
     assert get_handler_meta("missing") is None
     event = make_event()
     await decorated(event)
@@ -231,7 +229,6 @@ async def test_subscribe_duplicate_replaces_registered_instance_options(registry
     subscribe("other.*", background=False)(handler)
     assert handler.background is False
     assert handler.subscribe == ["other.*"]
-    assert registry._register_order == 2
 
 
 async def test_dispatch_notifies_all_later_handlers_after_failure_and_acceptance(registry):

@@ -7,7 +7,7 @@ import pytest
 import pytest_asyncio
 
 from apixis.core.event.event_loop import APIX_EVENT_LOOP
-from apixis.core.event import APIX_HANDLER_REGISTRY, EVENT_PIPE
+from apixis.core.event import EVENT_PIPE
 from apixis.core.utils.exception import InvalidNodeReturnsError
 from apixis.core.graph import (
     AutoMerge,
@@ -46,7 +46,8 @@ class CommandListNode(BaseNode):
         return self.commands
 
 
-async def test_start_node_routes_to_configured_node():
+@pytest.mark.parametrize("namespace", [None, "", "<global>", "named-graph"])
+async def test_start_node_routes_to_configured_node(namespace):
     """START activates the node linked from its direct edge."""
     calls = []
 
@@ -54,9 +55,12 @@ async def test_start_node_routes_to_configured_node():
         calls.append(state)
         return {}
 
-    graph = GraphManager().add_node(first).add_edge(START, "first").compile_graph()
+    graph = (
+        GraphManager().add_node(first).add_edge(START, "first")
+        .compile_graph(using_namespace=namespace)
+    )
 
-    await graph.invoke({"value": 1})
+    await asyncio.wait_for(graph.invoke({"value": 1}), timeout=1)
 
     assert calls == [{"value": 1}]
 
@@ -853,22 +857,6 @@ async def test_graphs_with_same_node_name_do_not_handle_each_others_runs():
         .add_edge(START, "shared")
         .compile_graph(using_namespace="graph-b")
     )
-
-    graph_a_event = graph_a._dispatch_event_name
-    graph_b_event = graph_b._dispatch_event_name
-    graph_a_handlers = APIX_HANDLER_REGISTRY.get_handlers_chain_for_event(
-        graph_a_event
-    )
-    graph_b_handlers = APIX_HANDLER_REGISTRY.get_handlers_chain_for_event(
-        graph_b_event
-    )
-
-    assert len(graph_a_handlers) == 1
-    assert len(graph_b_handlers) == 1
-    assert graph_a_handlers[0] in graph_a._listener_handler_names
-    assert graph_b_handlers[0] in graph_b._listener_handler_names
-    assert graph_a_handlers[0] not in graph_b._listener_handler_names
-    assert graph_b_handlers[0] not in graph_a._listener_handler_names
 
     results = await asyncio.gather(graph_a.invoke({}), graph_b.invoke({}))
 

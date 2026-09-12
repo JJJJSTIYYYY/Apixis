@@ -2,7 +2,6 @@
 
 import asyncio
 import math
-from dataclasses import is_dataclass
 
 import pytest
 
@@ -104,14 +103,13 @@ def test_base_node_helper_preserves_specialised_command_lists():
     ) == Command(update={"value": 3})
 
 
-def test_command_is_a_dataclass_with_independent_update_defaults():
-    """Commands have an unambiguous runtime type and no shared update state."""
+def test_command_has_independent_update_defaults():
+    """Commands do not share mutable update defaults."""
     first = Command()
     second = Command()
 
     first.update["value"] = 1
 
-    assert is_dataclass(Command)
     assert first.update == {"value": 1}
     assert second.update == {}
     assert first.goto is None

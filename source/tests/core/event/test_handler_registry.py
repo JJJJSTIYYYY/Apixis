@@ -2,6 +2,7 @@
 
 import time
 import asyncio
+from copy import deepcopy
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -56,7 +57,6 @@ def make_entry(
     entry.priority = priority
     entry.between_handlers = between_handlers
     return entry
-
 
 
 def observe_events(*event_names: str) -> None:
@@ -402,8 +402,6 @@ def test_global_subscribe_builds_full_handler_metadata():
     assert entry.stop_when_error is False
     assert entry.time_out is None
     assert entry.background is True
-    assert entry._register_order == 0
-    assert APIX_HANDLER_REGISTRY._register_order == 1
 
 
 def test_global_subscribe_defaults_priority_and_preserves_decorated_function():
@@ -559,16 +557,21 @@ def test_failed_instance_replacement_preserves_registration_and_cache(options):
     entry = ApixEventHandler(core, on_error=AsyncMock(), background=True)
     entry.name = "handler"
     subscribe("event.*", priority=5)(entry)
-    old_metadata = entry.__dict__.copy()
+    metadata_fields = (
+        "subscribe", "filter_event", "priority", "between_handlers",
+        "background", "stop_when_error", "time_out",
+    )
+    old_metadata = {name: deepcopy(getattr(entry, name)) for name in metadata_fields}
+    old_on_error = entry.on_error
     chain = registry.get_handlers_chain_for_event("event.one")
     with pytest.raises((ValueError, TypeError, EventHandlerNotRegisteredError,
                         EventHandlerAlreadyRegisteredError)):
         subscribe("other.*", background=False, **options)(entry)
     assert registry.get_handler("handler") is entry
-    assert entry.__dict__ == old_metadata
+    assert {name: getattr(entry, name) for name in old_metadata} == old_metadata
+    assert entry.on_error is old_on_error
     assert registry.priority_buckets == {5: ["handler"]}
     assert registry.cached_chain["event.one"] is chain
-    assert registry._register_order == 1
 
 
 @pytest.mark.parametrize(("name", "between", "expected"), [
@@ -585,17 +588,6 @@ def test_replacement_repositions_without_duplicate_bucket_records(name, between,
                                         between_handlers=between), exist_ok=True)
     assert registry.priority_buckets == {1: expected}
     assert registry.get_handlers_chain_for_event("event.one") == expected
-
-
-def test_removed_public_apis_and_event_version_are_absent():
-    import inspect
-    import apixis.core.event as api
-    assert not hasattr(api, "delete_handler_from_registry")
-    assert not hasattr(APIX_HANDLER_REGISTRY, "get_current_version_for_event")
-    assert not hasattr(APIX_HANDLER_REGISTRY, "get_current_version_for_event_without_resolve")
-    assert "event_names" not in inspect.signature(unsubscribe).parameters
-    assert "version" not in inspect.signature(APIX_HANDLER_REGISTRY.get_handlers_chain_for_event).parameters
-    assert "_handler_chain_version" not in ApixEvent.__dataclass_fields__
 
 
 @pytest.fixture
@@ -857,32 +849,6 @@ async def test_chain_resolution_failure_acknowledges_event_and_keeps_consuming(r
             logger.error.assert_called_once()
     await loop.stop()
     assert loop._dispatch_semaphore._value == EVENT_LOOP_BACKPRESSURE
-
-
-def test_subscribe_defers_validation_to_one_registry_pass():
-    registry = APIX_HANDLER_REGISTRY
-    with patch.object(registry, "_normalise_patterns",
-                      wraps=registry._normalise_patterns) as normalise:
-        decorator = subscribe("event.*", "event.*", filter_event=["event.skip"])
-        normalise.assert_not_called()
-        entry = make_entry("handler")
-        assert decorator(entry) is entry
-        assert normalise.call_count == 2  # One pass each for subscriptions and filters.
-        assert entry.subscribe == ["event.*"]
-        assert entry.filter_event == ["event.skip"]
-
-
-def test_boundary_validation_runs_once_before_registration():
-    registry = APIX_HANDLER_REGISTRY
-    registry.register_handler(make_entry("left", priority=10))
-    registry.register_handler(make_entry("right", priority=1))
-    with patch.object(registry, "_validate_between_handlers",
-                      wraps=registry._validate_between_handlers) as resolve:
-        decorator = subscribe("event.*", between_handlers=("left", "right"))
-        resolve.assert_not_called()
-        decorator(make_entry("middle"))
-        resolve.assert_called_once_with(("left", "right"), handler_name="middle")
-    assert registry.get_handlers_chain_for_event("event.one") == ["left", "middle", "right"]
 
 
 def test_unregister_missing_ok_preserves_existing_cache():

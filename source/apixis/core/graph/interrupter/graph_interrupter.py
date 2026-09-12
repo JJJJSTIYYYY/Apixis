@@ -123,7 +123,7 @@ def interrupted_hook(
         async def on_interrupted(block: Block):
             ...
     """
-    event_name = f"graph_{namespace or ''}_interrupted"
+    event_name = f"graph_{namespace or '<global>'}_interrupted"
 
     def decorator(func: InterruptedHandler) -> InterruptedHandler:
         @wraps(func)

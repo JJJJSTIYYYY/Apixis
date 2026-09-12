@@ -11,7 +11,12 @@ from apixis.core.event import (
 )
 from apixis.core.event.event_loop import APIX_EVENT_LOOP
 from apixis.core.event import EVENT_PIPE
-from apixis.core.graph import GRAPH_DISPATCH, START, GraphManager
+from apixis.core.graph import (
+    START, GraphManager, get_graph_dispatch_name,
+)
+
+
+GLOBAL_DISPATCH = get_graph_dispatch_name()
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
@@ -29,8 +34,9 @@ async def stop_event_loop_after_module():
     await EVENT_PIPE.clear()
 
 
-async def test_subscribe_inserts_plugin_before_node_graph_listener():
-    """Use between_handlers to place a plugin in a node's event pipeline."""
+@pytest.mark.parametrize("namespace", [None, "", "<global>", "plugin-demo"])
+async def test_subscribe_inserts_plugin_before_node_graph_listener(namespace):
+    """Use the public dispatch name for both subscription and handler ordering."""
     node_name = "plugin_demo_business_node"
 
     def business_node(state: dict) -> dict:
@@ -44,22 +50,12 @@ async def test_subscribe_inserts_plugin_before_node_graph_listener():
         GraphManager()
         .add_node(business_node, node_name)
         .add_edge(START, node_name)
-        .compile_graph()
-    )
-
-    # Compiling NodeGraph registers one shared dispatch handler. Plugins
-    # observe the dispatch event and inspect target_node_name to decide
-    # whether they should act on a specific graph node.
-    [node_graph_handler_name] = (
-        APIX_HANDLER_REGISTRY.get_handlers_chain_for_event(GRAPH_DISPATCH)
-    )
-    node_graph_handler = APIX_HANDLER_REGISTRY.get_handler(
-        node_graph_handler_name
+        .compile_graph(namespace)
     )
 
     # A higher priority makes this handler the left boundary of the plugin
     # insertion range; NodeGraph listeners use the default priority of 1.
-    @subscribe(GRAPH_DISPATCH, priority=10)
+    @subscribe(graph.dispatch_name, priority=10)
     async def plugin_demo_authentication(event: ApixEvent) -> None:
         if event.context.target_node_name != node_name:
             return
@@ -68,10 +64,10 @@ async def test_subscribe_inserts_plugin_before_node_graph_listener():
     # A plugin is just another event subscriber. Function names identify the
     # two existing handlers between which it should be inserted.
     @subscribe(
-        GRAPH_DISPATCH,
+        graph.dispatch_name,
         between_handlers=(
             plugin_demo_authentication.__name__,
-            node_graph_handler.name,
+            graph.dispatch_name,
         ),
     )
     async def plugin_demo_enrichment(event: ApixEvent) -> None:
@@ -82,12 +78,12 @@ async def test_subscribe_inserts_plugin_before_node_graph_listener():
         state["plugin_value"] = "injected through event plugin"
 
     handler_names = APIX_HANDLER_REGISTRY.get_handlers_chain_for_event(
-        GRAPH_DISPATCH
+        graph.dispatch_name
     )
     assert handler_names == [
         plugin_demo_authentication.__name__,
         plugin_demo_enrichment.__name__,
-        node_graph_handler.name,
+        graph.dispatch_name,
     ]
 
     plugin_meta = APIX_HANDLER_REGISTRY.get_handler(
@@ -95,7 +91,7 @@ async def test_subscribe_inserts_plugin_before_node_graph_listener():
     )
     assert plugin_meta.between_handlers == (
         plugin_demo_authentication.__name__,
-        node_graph_handler.name,
+        graph.dispatch_name,
     )
     assert plugin_meta.priority is None
 
@@ -138,7 +134,7 @@ async def test_upstream_plugin_termination_completes_graph(mode, action, target)
     target_name = END if target == "END" else target
     captured_events = []
 
-    @subscribe(GRAPH_DISPATCH, priority=10, time_out=0.01)
+    @subscribe(GLOBAL_DISPATCH, priority=10, time_out=0.01)
     async def termination_plugin(event):
         if event.context.target_node_name != target_name:
             return
@@ -233,13 +229,13 @@ async def test_background_plugin_failure_does_not_fail_graph():
 
     graph = GraphManager().add_node(business).add_edge(START, "business").compile_graph()
 
-    @subscribe(GRAPH_DISPATCH, priority=20, background=True)
+    @subscribe(GLOBAL_DISPATCH, priority=20, background=True)
     async def background_plugin(event):
         if event.context.target_node_name == START:
             failed.set()
             raise ValueError("optional background work failed")
 
-    @subscribe(GRAPH_DISPATCH, priority=10)
+    @subscribe(GLOBAL_DISPATCH, priority=10)
     async def wait_for_background_plugin(event):
         await failed.wait()
 
@@ -275,7 +271,7 @@ async def test_interruption_hook_termination_unblocks_node(action, timeout):
 
     graph = GraphManager().add_node(business).add_edge(START, "business").compile_graph()
 
-    @subscribe("graph__interrupted", priority=10)
+    @subscribe("graph_<global>_interrupted", priority=10)
     async def interruption_plugin(event):
         blocks.append(event.context)
         if action in ("accept", "accept_and_error"):
@@ -311,3 +307,62 @@ async def test_interruption_hook_termination_unblocks_node(action, timeout):
     finally:
         unsubscribe(interruption_plugin.__name__)
         graph.decompose()
+
+
+@pytest.mark.parametrize("namespace", [None, "", "<global>", "ordered-plugins"])
+async def test_dispatch_name_orders_plugins_on_both_sides_of_graph(namespace):
+    """Plugins need only the public graph name to run before and after dispatch."""
+    calls = []
+    observed_events = []
+
+    def business(state):
+        calls.append("node")
+        return {"done": True}
+
+    graph = GraphManager().add_node(business).add_edge(START, "business").compile_graph(namespace)
+
+    @subscribe(graph.dispatch_name, between_handlers=(None, graph.dispatch_name))
+    async def before_dispatch(event):
+        calls.append("before")
+        observed_events.append(event.event_name)
+
+    @subscribe(graph.dispatch_name, between_handlers=(graph.dispatch_name, None))
+    async def after_dispatch(event):
+        calls.append("after")
+        observed_events.append(event.event_name)
+
+    try:
+        assert await graph.invoke({}) == {"done": True}
+        await EVENT_PIPE.join()
+        node_index = calls.index("node")
+        assert calls[node_index - 1:node_index + 2] == ["before", "node", "after"]
+        assert calls.count("before") == calls.count("after")
+        assert set(observed_events) == {graph.dispatch_name}
+    finally:
+        unsubscribe(before_dispatch.__name__)
+        unsubscribe(after_dispatch.__name__)
+
+
+async def test_wildcard_plugin_observes_global_and_named_graphs_created_later():
+    """Namespace-only subscriptions can be registered before graphs exist."""
+    observed = []
+
+    @subscribe(get_graph_dispatch_name("*"), priority=10)
+    async def observe_all_graphs(event):
+        observed.append(event.event_name)
+
+    def business(state):
+        return {"done": True}
+
+    try:
+        names = []
+        for namespace in (None, "named-plugin-graph"):
+            graph = (
+                GraphManager().add_node(business).add_edge(START, "business")
+                .compile_graph(namespace)
+            )
+            names.append(graph.dispatch_name)
+            assert await graph.invoke({}) == {"done": True}
+        assert set(observed) == set(names)
+    finally:
+        unsubscribe(observe_all_graphs.__name__)

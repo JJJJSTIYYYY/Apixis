@@ -8,7 +8,7 @@ from apixis.core.graph.base import (
     NodeFunction,
     NodeResult,
     Reset,
-    get_node_name_in_namespace,
+    get_graph_dispatch_name,
     namespace_set,
 )
 from apixis.core.graph.graph_manager import GraphManager
@@ -22,7 +22,7 @@ __all__ = [
     "END",
     "GraphManager",
     "GRAPH_DISPATCH",
-    "get_node_name_in_namespace",
+    "get_graph_dispatch_name",
     "KeepRef",
     "Node",
     "NodeFunction",

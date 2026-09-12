@@ -8,8 +8,6 @@ from apixis.core.graph.base import (
     START,
     Command,
     NodeFunction,
-    release_namespace,
-    namespace_set
 )
 from apixis.core.graph.node import BaseNode, Node
 from apixis.core.graph.node_graph import NodeGraph
@@ -246,30 +244,25 @@ class GraphManager:
         Args:
             using_namespace: Namespace used by the compiled graph's event
                 listeners. ``None`` and an empty string select the global
-                namespace.
+                namespace ``<global>``. Glob characters are forbidden.
             exist_ok: If ``False``, compiling into an occupied namespace
                 raises ``ValueError``. If ``True``, the existing graph is
                 decomposed before the new graph is registered.
 
         Raises:
             ValueError: If no transition has been defined from :data:`START`,
-                or if the namespace is occupied and ``exist_ok`` is ``False``.
+                if the namespace contains glob characters, or if it is
+                occupied and ``exist_ok`` is ``False``.
             RuntimeError: If replacement is requested while the existing
                 graph has an invocation in progress.
         """
         if START not in self._default_gotos:
             raise ValueError("A graph must define an outgoing transition from `START`.")
 
-        namespace = using_namespace or ""
-        if exist_ok and namespace in namespace_set:
-            release_namespace(namespace)
-        if namespace in namespace_set:
-            raise ValueError(f"Namespace `{namespace}` is already occupied by another graph.")
-            
-        graph = NodeGraph(
+        return NodeGraph(
             self._nodes,
             self._default_gotos,
             state_schema=self._state_schema,
-            using_namespace=namespace,
+            using_namespace=using_namespace,
+            exist_ok=exist_ok,
         )
-        return graph

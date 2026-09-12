@@ -92,7 +92,7 @@ graph_document-review_interrupted
 全局 namespace（`None` 或空字符串）对应：
 
 ```text
-graph__interrupted
+graph_<global>_interrupted
 ```
 
 直接注册的 hook 不由图清理。卸载时使用：

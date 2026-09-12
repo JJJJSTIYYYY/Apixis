@@ -6,7 +6,7 @@ import pytest
 import pytest_asyncio
 
 from apixis.core.event import APIX_HANDLER_REGISTRY, APIX_EVENT_LOOP, EVENT_PIPE
-from apixis.core.graph.base import _namespace_graphs, namespace_set
+from apixis.core.graph.base import GRAPH_DISPATCH, _namespace_graphs
 
 
 def _clear_node_graph_listeners() -> None:
@@ -18,7 +18,7 @@ def _clear_node_graph_listeners() -> None:
     handler_names = {
         name
         for name in APIX_HANDLER_REGISTRY.registry
-        if name.startswith("graph_listener_")
+        if name.startswith(f"{GRAPH_DISPATCH}_")
     }
     for handler_name in handler_names:
         APIX_HANDLER_REGISTRY.unregister_handler(handler_name)

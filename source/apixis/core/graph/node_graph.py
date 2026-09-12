@@ -19,15 +19,13 @@ from apixis.core.event import (
 from apixis.core.utils.exception import GraphNodeError, InvalidContextError
 from apixis.core.graph.base import (
     END,
-    GRAPH_DISPATCH,
     START,
     Command,
     Reset,
     _copy_state,
     release_namespace,
-    _get_node_listener_name,
     acquire_namespace,
-    get_node_name_in_namespace,
+    get_graph_dispatch_name,
 )
 from apixis.core.graph.context import GraphContext
 from apixis.core.graph.context.manager import apix_graph_context
@@ -59,8 +57,9 @@ class NodeGraph:
         state_schema: type | None = None,
         using_namespace: str | None = None,
         no_snapshot: bool = False,
+        exist_ok: bool = False,
     ):
-        """Create a compiled graph and register listeners for all node names.
+        """Create a compiled graph and register its dispatch listener.
 
         Args:
             nodes: Nodes keyed by their graph names.
@@ -70,11 +69,14 @@ class NodeGraph:
                 Fields marked with ``Annotated[..., AutoMerge()]`` are
                 combined through their current value's ``__add__`` method.
             using_namespace: Namespace used by the graph's event listeners.
-                ``None`` and an empty string select the global namespace.
+                ``None`` and an empty string select ``<global>``.
+                Glob characters (``*``, ``?``, ``[``, ``]``) are forbidden.
             no_snapshot: If ``True``, disable snapshotting for the graph.
+            exist_ok: If ``True``, decompose the current namespace owner
+                before acquiring its namespace.
         """
-        if using_namespace == '<global>':
-            raise ValueError("Namespace `<global>` is a preserved namespace.")
+        # Keep finalization safe if initialization fails before acquisition.
+        self._decomposed = True
         self._nodes = dict(nodes)
         self._default_gotos = dict(default_gotos)
         self._max_steps = max_steps
@@ -85,18 +87,16 @@ class NodeGraph:
         self._context_factory = partial(GraphContext, state_schema)
         self._active_contexts: dict[str, GraphContext] = {} # run_id -> context
         self._invocation_count = 0
-        self._listener_namespace = using_namespace or "<global>"
-        self._listener_handler_names: list[str] = []
-        self._dispatch_event_name = get_node_name_in_namespace(
-            GRAPH_DISPATCH,
-            self.namespace,
-        )
+        self._namespace = using_namespace or "<global>"
+        self._registered_handler_names: list[str] = []
         self._decomposed = False
 
-    def __post_init__(self):
-        """Register the graph's single namespace-scoped dispatch handler."""
-        acquire_namespace(self)
-        self._register_node_listeners()
+        try:
+            acquire_namespace(self, replace_existed=exist_ok)
+            self._register_dispatch_handler()
+        except BaseException:
+            self.decompose()
+            raise
 
     def __del__(self):
         """Release the graph's namespace and unregister its event listeners."""
@@ -105,7 +105,12 @@ class NodeGraph:
     @property
     def namespace(self) -> str:
         """Namespace used by the graph's event listeners."""
-        return self._listener_namespace or '<global>'
+        return self._namespace
+
+    @property
+    def dispatch_name(self) -> str:
+        """Shared event and handler name for subscriptions and relative ordering."""
+        return get_graph_dispatch_name(self.namespace)
 
     def __enter__(self):
         return self
@@ -116,7 +121,7 @@ class NodeGraph:
         return False
 
 
-    def _register_node_listeners(self) -> None:
+    def _register_dispatch_handler(self) -> None:
         """Subscribe the graph's single namespace-scoped dispatch handler."""
         async def dispatch_node(event: ApixEvent) -> None:
             """Dispatch an active context to its currently targeted node."""
@@ -155,13 +160,10 @@ class NodeGraph:
             if self._is_active_context(context):
                 context.abort()
 
-        dispatch_node.__name__ = _get_node_listener_name(
-            GRAPH_DISPATCH,
-            self.namespace,
-        )
+        dispatch_node.__name__ = self.dispatch_name
         try:
             subscribe(
-                self._dispatch_event_name,
+                self.dispatch_name,
                 exist_ok=False,
             )(ApixEventHandler(
                 dispatch_node,
@@ -169,17 +171,17 @@ class NodeGraph:
                 on_has_error=on_dispatch_error,
                 on_error=on_dispatch_failure,
             ))
-            self._listener_handler_names.append(dispatch_node.__name__)
+            self._registered_handler_names.append(dispatch_node.__name__)
         except BaseException:
-            self._unregister_node_listeners()
+            self._unregister_handlers()
             raise
 
 
-    def _unregister_node_listeners(self) -> None:
+    def _unregister_handlers(self) -> None:
         """Remove every event handler successfully registered by this graph."""
-        for handler_name in self._listener_handler_names:
+        for handler_name in self._registered_handler_names:
             unsubscribe(handler_name)
-        self._listener_handler_names.clear()
+        self._registered_handler_names.clear()
 
 
     def set_max_steps(self, steps: int):
@@ -212,7 +214,7 @@ class NodeGraph:
             )
 
         self._decomposed = True
-        self._unregister_node_listeners()
+        self._unregister_handlers()
         release_namespace(self)
 
 
@@ -618,7 +620,7 @@ class NodeGraph:
         context._set_target_node(node_name)
         await EVENT_PIPE.post_event(
             event_type=EventType.WORKFLOW,
-            event_name=self._dispatch_event_name,
+            event_name=self.dispatch_name,
             context=context,
         )
 
@@ -649,5 +651,5 @@ class NodeGraph:
             self.namespace,
             exist_ok=False,
         )(afunc)
-        self._listener_handler_names.append(afunc.__name__)
+        self._registered_handler_names.append(afunc.__name__)
         return afunc
