@@ -8,7 +8,8 @@ from apixis.core.graph.base import (
     START,
     Command,
     NodeFunction,
-    _acquire_namespace,
+    release_namespace,
+    namespace_set
 )
 from apixis.core.graph.node import BaseNode, Node
 from apixis.core.graph.node_graph import NodeGraph
@@ -159,6 +160,10 @@ class GraphManager:
         """
         self._require_endpoint(l_node, source=True)
         self._require_endpoint(r_node)
+        if r_node == START:
+            raise ValueError("`START` cannot be a transition target.")
+        if l_node == END:
+            raise ValueError("`END` cannot have an outgoing transition.")
         if condition is None:
             self._set_transition(l_node, r_node)
             return self
@@ -197,6 +202,10 @@ class GraphManager:
         self._require_endpoint(l_node, source=True)
         if not r_nodes:
             raise ValueError("`r_nodes` must contain at least one target node.")
+        if START in r_nodes:
+            raise ValueError("`START` cannot be a router target.")
+        if END == l_node:
+            raise ValueError("`END` cannot have an outgoing transition.")
         for node_name in r_nodes:
             self._require_endpoint(node_name)
         if not callable(router):
@@ -252,13 +261,15 @@ class GraphManager:
             raise ValueError("A graph must define an outgoing transition from `START`.")
 
         namespace = using_namespace or ""
-        return _acquire_namespace(
-            namespace,
-            lambda: NodeGraph(
-                self._nodes,
-                self._default_gotos,
-                state_schema=self._state_schema,
-                using_namespace=namespace,
-            ),
-            replace_existed=exist_ok,
+        if exist_ok and namespace in namespace_set:
+            release_namespace(namespace)
+        if namespace in namespace_set:
+            raise ValueError(f"Namespace `{namespace}` is already occupied by another graph.")
+            
+        graph = NodeGraph(
+            self._nodes,
+            self._default_gotos,
+            state_schema=self._state_schema,
+            using_namespace=namespace,
         )
+        return graph

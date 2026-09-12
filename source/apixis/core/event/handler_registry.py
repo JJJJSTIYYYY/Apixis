@@ -302,7 +302,7 @@ class ApixHandlerRegistry:
         self._register_order += 1
 
         logger.debug(
-            f"Registered handler {handler_entry.name}, "
+            f"Registered handler `{handler_entry.name}`, "
             f"priority={handler_entry.priority}, "
             f"between_handlers={handler_entry.between_handlers}"
         )

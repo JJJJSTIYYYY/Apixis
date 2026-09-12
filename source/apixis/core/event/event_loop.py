@@ -185,7 +185,9 @@ class ApixEventLoop:
         """
         Dispatch event to registered handlers.
         """
-
+        logger.debug(
+            f"Dispatching event `{event.event_name}` to {len(handler_chain)} handlers."
+        )
         try:
             if not event.event_name:
                 return None

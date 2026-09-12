@@ -16,7 +16,7 @@ from apixis.core.event import (
     unsubscribe,
     subscribe,
 )
-from apixis.core.utils.exception import GraphNodeError
+from apixis.core.utils.exception import GraphNodeError, InvalidContextError
 from apixis.core.graph.base import (
     END,
     GRAPH_DISPATCH,
@@ -24,8 +24,9 @@ from apixis.core.graph.base import (
     Command,
     Reset,
     _copy_state,
-    _release_namespace,
+    release_namespace,
     _get_node_listener_name,
+    acquire_namespace,
     get_node_name_in_namespace,
 )
 from apixis.core.graph.context import GraphContext
@@ -57,6 +58,7 @@ class NodeGraph:
         max_steps: int = 1024,
         state_schema: type | None = None,
         using_namespace: str | None = None,
+        no_snapshot: bool = False,
     ):
         """Create a compiled graph and register listeners for all node names.
 
@@ -69,33 +71,48 @@ class NodeGraph:
                 combined through their current value's ``__add__`` method.
             using_namespace: Namespace used by the graph's event listeners.
                 ``None`` and an empty string select the global namespace.
+            no_snapshot: If ``True``, disable snapshotting for the graph.
         """
         if using_namespace == '<global>':
             raise ValueError("Namespace `<global>` is a preserved namespace.")
         self._nodes = dict(nodes)
         self._default_gotos = dict(default_gotos)
         self._max_steps = max_steps
+        self._no_snapshot = no_snapshot
         # Validate once at compilation, then create invocation-local contexts
         # carrying all schema-derived state behavior.
         GraphContext(state_schema)
         self._context_factory = partial(GraphContext, state_schema)
+        self._active_contexts: dict[str, GraphContext] = {} # run_id -> context
         self._invocation_count = 0
-        self._listener_namespace = using_namespace or ""
+        self._listener_namespace = using_namespace or "<global>"
         self._listener_handler_names: list[str] = []
         self._dispatch_event_name = get_node_name_in_namespace(
             GRAPH_DISPATCH,
-            self._listener_namespace,
+            self.namespace,
         )
         self._decomposed = False
+
+    def __post_init__(self):
+        """Register the graph's single namespace-scoped dispatch handler."""
+        acquire_namespace(self)
         self._register_node_listeners()
 
+    def __del__(self):
+        """Release the graph's namespace and unregister its event listeners."""
+        self.decompose(force=True)
+
+    @property
+    def namespace(self) -> str:
+        """Namespace used by the graph's event listeners."""
+        return self._listener_namespace or '<global>'
 
     def __enter__(self):
         return self
 
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.decompose()
+        self.decompose(force=True)
         return False
 
 
@@ -140,7 +157,7 @@ class NodeGraph:
 
         dispatch_node.__name__ = _get_node_listener_name(
             GRAPH_DISPATCH,
-            self._listener_namespace,
+            self.namespace,
         )
         try:
             subscribe(
@@ -177,7 +194,7 @@ class NodeGraph:
             raise RuntimeError("NodeGraph has been decomposed.")
 
 
-    def decompose(self) -> None:
+    def decompose(self, *, force: bool = False) -> None:
         """Invalidate this graph and unregister all of its event listeners.
 
         Decomposition is idempotent. A graph with an invocation in progress
@@ -196,7 +213,7 @@ class NodeGraph:
 
         self._decomposed = True
         self._unregister_node_listeners()
-        _release_namespace(self)
+        release_namespace(self)
 
 
     def _is_active_context(
@@ -210,7 +227,7 @@ class NodeGraph:
         """
         if (
             not isinstance(context, GraphContext)
-            or not context._belongs_to(self._listener_namespace)
+            or not context._belongs_to(self.namespace)
         ):
             return False
         if not context.is_bound:
@@ -343,7 +360,7 @@ class NodeGraph:
         try:
             await APIX_EVENT_LOOP.start()
             first_node = context._bind(
-                context_namespace=self._listener_namespace,
+                context_namespace=self.namespace,
                 run_id=run_id,
                 state=state,
                 completion=completion,
@@ -358,6 +375,8 @@ class NodeGraph:
             # invocation still needs to be aborted.
             if context.status == "running":
                 context.abort()
+            raise
+        except InvalidContextError as exc:
             raise
         except Exception as exc:
             if context.status in ("pending", "running"):
@@ -407,7 +426,8 @@ class NodeGraph:
     ) -> None:
         """Execute one node or one concurrently scheduled node batch."""
         normalized_node_names = self._normalise_targets(node_name)
-        context.take_a_snapshot()
+        if not self._no_snapshot:
+            context.take_a_snapshot()
         try:
             with apix_graph_context(context):
                 tasks = [
@@ -456,11 +476,6 @@ class NodeGraph:
             command,
             normalized_node_names,
         )
-
-        if context.steps >= self._max_steps:
-            raise RecursionError(
-                f"Graph exceeded its maximum of {self._max_steps} steps."
-            )
 
         updated_normal_keys: set[str] = set()
         routes: list[str] = []
@@ -590,6 +605,16 @@ class NodeGraph:
         for current_name in normalized_node_names:
             if current_name not in (START, END) and current_name not in self._nodes:
                 raise ValueError(f"Unknown graph node `{current_name}`.")
+        if context.steps >= self._max_steps:
+            raise RecursionError(
+                f"Graph exceeded its maximum of {self._max_steps} steps."
+            )
+        if context.steps > 0:
+            if isinstance(node_name, str) and node_name == START:
+                raise ValueError("Cannot route to START after invocation begins.")
+            if isinstance(node_name, list) and START in node_name:
+                raise ValueError("Cannot route to START after invocation begins.")
+
         context._set_target_node(node_name)
         await EVENT_PIPE.post_event(
             event_type=EventType.WORKFLOW,
@@ -621,7 +646,7 @@ class NodeGraph:
         self._ensure_not_decomposed()
 
         interrupted_hook(
-            self._listener_namespace,
+            self.namespace,
             exist_ok=False,
         )(afunc)
         self._listener_handler_names.append(afunc.__name__)

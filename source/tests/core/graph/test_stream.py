@@ -11,6 +11,7 @@ from apixis.core.graph import START, GraphManager
 from apixis.core.graph.context import GraphContext
 from apixis.core.graph.context import get_stream_writer
 from apixis.core.graph.context.stream_writer import StreamChannel
+from apixis.core.utils.exception import InvalidContextError
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
@@ -210,7 +211,7 @@ async def test_completed_context_cannot_be_reused():
     assert await graph.invoke({}, context) == {"finished": True}
 
     assert context.status == "finished"
-    with pytest.raises(RuntimeError, match="must be pending"):
+    with pytest.raises(InvalidContextError, match="must be pending"):
         await graph.invoke({}, context)
 
 

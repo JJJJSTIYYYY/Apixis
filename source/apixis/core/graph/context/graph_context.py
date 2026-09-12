@@ -15,6 +15,7 @@ from apixis.core.graph.base import (
     get_keep_ref_keys,
 )
 from apixis.core.graph.context.stream_writer import StreamWriter
+from apixis.core.utils.exception import InvalidContextError
 
 
 GraphContextStatus: TypeAlias = Literal[
@@ -286,7 +287,7 @@ class GraphContext:
     ) -> str | list[str]:
         """Bind this pending context to its single invocation attempt."""
         if self._status != "pending":
-            raise RuntimeError(
+            raise InvalidContextError(
                 "GraphContext must be pending before starting an invocation."
             )
         if (

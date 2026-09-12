@@ -46,7 +46,7 @@ def _bound_context(
     """Build a fully bound context for lifecycle unit tests."""
     context = GraphContext()
     context._bind(
-        context_namespace=graph._listener_namespace,
+        context_namespace=graph.namespace,
         run_id=run_id,
         state=state,
         completion=asyncio.get_running_loop().create_future(),
@@ -73,7 +73,7 @@ def test_empty_listener_namespace_uses_global_namespace(using_namespace):
         using_namespace=using_namespace,
     )
 
-    assert graph._listener_namespace == ""
+    assert graph._listener_namespace == "<global>"
 
 
 def test_listener_namespace_uses_supplied_value():

@@ -14,7 +14,6 @@ def _clear_node_graph_listeners() -> None:
     for graph in tuple(_namespace_graphs.values()):
         graph.decompose()
     _namespace_graphs.clear()
-    namespace_set.clear()
 
     handler_names = {
         name

@@ -12,6 +12,7 @@ from apixis.core.graph import AutoMerge, KeepRef
 from apixis.core.graph.base import START
 from apixis.core.graph.context import GraphContext, GraphContextSnapshot
 from apixis.core.graph.context import noop_stream_writer
+from apixis.core.utils.exception import InvalidContextError
 
 
 class ContextState(TypedDict):
@@ -451,7 +452,7 @@ async def test_finished_context_cannot_abort_or_start_again():
 
     with pytest.raises(RuntimeError, match="status finished"):
         context.abort()
-    with pytest.raises(RuntimeError, match="must be pending"):
+    with pytest.raises(InvalidContextError, match="must be pending"):
         _bind(context, "run-2")
 
 
@@ -461,7 +462,7 @@ async def test_running_context_cannot_start_again():
     context = GraphContext()
     _bind(context, "run-1")
 
-    with pytest.raises(RuntimeError, match="must be pending"):
+    with pytest.raises(InvalidContextError, match="must be pending"):
         _bind(context, "run-2")
 
 

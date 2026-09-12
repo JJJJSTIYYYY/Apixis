@@ -238,17 +238,15 @@ END = "__end__"
 GRAPH_DISPATCH = "__graph_dispatch__"
 """Predefined event name used to dispatch a graph context to its target node."""
 
-
-namespace_set: set[str] = set()
-"""Namespaces currently owned by compiled graphs."""
-
 _namespace_graphs: dict[str, NodeGraph] = {}
 """Compiled graph indexed by its exclusive listener namespace."""
 
+namespace_set = _namespace_graphs.keys()
+"""Namespaces currently owned by compiled graphs."""
 
-def _acquire_namespace(
-    namespace: str,
-    graph_factory: Callable[[], NodeGraph],
+
+def acquire_namespace(
+    graph: NodeGraph,
     *,
     replace_existed: bool = False,
 ) -> NodeGraph:
@@ -259,26 +257,29 @@ def _acquire_namespace(
     graph is registered only after its constructor succeeds, so a failed graph
     factory cannot leave a partially acquired namespace.
     """
+    namespace = graph.namespace
     if namespace in namespace_set:
         if not replace_existed:
-            namespace_name = namespace or "<global>"
             raise ValueError(
-                f"Graph namespace `{namespace_name}` is already in use."
+                f"Graph namespace `{namespace}` is already in use."
             )
+        if _namespace_graphs[namespace] is graph:
+            return graph
         _namespace_graphs[namespace].decompose()
 
-    graph = graph_factory()
-    namespace_set.add(namespace)
     _namespace_graphs[namespace] = graph
     return graph
 
 
-def _release_namespace(graph: NodeGraph) -> None:
+def release_namespace(graph_or_namespace: NodeGraph | str) -> None:
     """Release ``graph`` only when it still owns its namespace."""
-    namespace = graph._listener_namespace
-    if _namespace_graphs.get(namespace) is graph:
+    if isinstance(graph_or_namespace, str):
+        namespace = graph_or_namespace
+    else:
+        namespace = graph_or_namespace.namespace
+
+    if _namespace_graphs.get(namespace) is graph_or_namespace:
         _namespace_graphs.pop(namespace)
-        namespace_set.discard(namespace)
 
 
 @dataclass(slots=True)
