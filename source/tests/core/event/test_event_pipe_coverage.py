@@ -13,7 +13,7 @@ from apixis.core.event.base import ApixEvent, EventType
 from apixis.core.event.event_loop import ApixEventLoop
 from apixis.core.event.event_pipe import (
     ApixEventPipe,
-    BaseEventChannel,
+    WritableEventChannel,
     BuiltinChannel,
     EventChannelPermissionError,
     GatewayChannel,
@@ -50,35 +50,10 @@ class TestSmallUncoveredContracts:
         with pytest.raises(TypeError, match="not JSON serializable"):
             _json_default(ApixEvent)
 
-    @pytest.mark.asyncio
-    async def test_abstract_method_bodies_raise_not_implemented(self):
-        channel = object()
-        with pytest.raises(NotImplementedError):
-            BaseEventChannel.maxsize.fget(channel)
-        with pytest.raises(NotImplementedError):
-            await BaseEventChannel.put(channel, "event")
-        with pytest.raises(NotImplementedError):
-            BaseEventChannel.put_nowait(channel, "event")
-        with pytest.raises(NotImplementedError):
-            await BaseEventChannel.get(channel)
-        with pytest.raises(NotImplementedError):
-            BaseEventChannel.get_nowait(channel)
-        with pytest.raises(NotImplementedError):
-            BaseEventChannel.empty(channel)
-        with pytest.raises(NotImplementedError):
-            BaseEventChannel.full(channel)
-        with pytest.raises(NotImplementedError):
-            BaseEventChannel.qsize(channel)
-        with pytest.raises(NotImplementedError):
-            BaseEventChannel.task_done(channel)
-        with pytest.raises(NotImplementedError):
-            await BaseEventChannel.join(channel)
-        with pytest.raises(NotImplementedError):
-            await BaseEventChannel.close(channel)
 
 class TestBufferedMailboxContract:
     @pytest.mark.asyncio
-    async def test_queue_methods_and_write_permissions(self):
+    async def test_buffered_receive_and_acknowledgement(self):
         channel = KafkaChannel(
             mq_id="node-a",
             bootstrap_servers="broker:9092",
@@ -101,17 +76,10 @@ class TestBufferedMailboxContract:
         assert (await channel.get()).event_id == event.event_id
         channel.task_done()
 
-        with pytest.raises(EventChannelPermissionError, match="receive-only"):
-            await channel.put(event)
-        with pytest.raises(EventChannelPermissionError, match="receive-only"):
-            channel.put_nowait(event)
-
     @pytest.mark.asyncio
     async def test_unavailable_mailbox_remaining_methods(self):
         channel = UnavailableMailboxChannel("disabled")
         await channel.start()
-        with pytest.raises(EventChannelPermissionError, match="receive-only"):
-            channel.put_nowait(make_event())
         with pytest.raises(Exception, match="disabled"):
             channel.get_nowait()
         await channel.close()
@@ -341,7 +309,6 @@ class TestGatewayRemainingBranches:
             retry_initial_delay=0,
             timeout=3,
         )
-        assert gateway.maxsize == 0
         await gateway.start()
         await gateway.start()
         await gateway.close()
@@ -408,33 +375,20 @@ class TestGatewayRemainingBranches:
         }
         assert await gateway.fetch_nodes() == {}
 
-    @pytest.mark.asyncio
-    async def test_all_write_only_operations_raise(self):
-        gateway = make_gateway(FakeClient([]))
-        with pytest.raises(EventChannelPermissionError):
-            gateway.put_nowait(make_event())
-        with pytest.raises(EventChannelPermissionError):
-            await gateway.get()
-        with pytest.raises(EventChannelPermissionError):
-            gateway.get_nowait()
-        with pytest.raises(EventChannelPermissionError):
-            gateway.empty()
-        with pytest.raises(EventChannelPermissionError):
-            gateway.full()
-        with pytest.raises(EventChannelPermissionError):
-            gateway.qsize()
-        with pytest.raises(EventChannelPermissionError):
-            gateway.task_done()
-        with pytest.raises(EventChannelPermissionError):
-            await gateway.join()
 
-
-class BroadcastOnlyChannel(BuiltinChannel):
+class BroadcastOnlyChannel(WritableEventChannel):
     def __init__(self, result=None, error=None):
         super().__init__()
         self.result = {} if result is None else result
         self.error = error
         self.broadcasts = []
+        self.deliveries = []
+
+    async def put(self, event, **kwargs):
+        self.deliveries.append((event, kwargs["recipient"]))
+
+    async def close(self):
+        pass
 
     async def broadcast(self, event):
         self.broadcasts.append(event)

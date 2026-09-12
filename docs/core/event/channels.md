@@ -121,7 +121,7 @@ await EVENT_PIPE.send(event, recipient="worker-node-id")
 
 `recipient` 必须是非空 mq id。`GatewayChannel` 通过 HTTP POST 请求网关的 pipe endpoint，并携带 sender、recipient 和事件 payload。
 
-`mailtruck` 是异步 HTTP 写通道，不支持 `put_nowait()`、`get()` 或队列状态查询；误用时抛出 `EventChannelPermissionError`。
+`GatewayChannel` 只提供异步写入、网关操作和生命周期方法，不提供同步写入、读取、`maxsize` 或队列状态接口。通过 `ApixEventPipe` 对 `mailtruck` 执行不支持的操作时，抛出 `EventChannelPermissionError`。
 
 ### 广播
 
@@ -150,7 +150,7 @@ nodes = EVENT_PIPE.nodes
 - broker 消息被反序列化为 `ApixEvent`，进入本地缓冲区。
 - forwarder 将其转发到 `builtin`；本节点分发器从处理队列出队时解析当前 handler_chain。
 
-直接向 mailbox 调用 `put()` 或 `put_nowait()` 会抛出 `EventChannelPermissionError`。
+`KafkaChannel` 与 `RabbitMQChannel` 不提供写接口。通过 `ApixEventPipe` 向 mailbox 写入时，抛出 `EventChannelPermissionError`。
 
 ## 配置
 
@@ -196,7 +196,7 @@ Apixis 核心不管理数据库或共享缓存，远程事件模式无需配置 
 
 ## 自定义通道
 
-可以为独立 `ApixEventPipe` 注入实现了 `BaseEventChannel` 的对象：
+可以为独立 `ApixEventPipe` 按通道角色注入自定义对象：
 
 ```python
 pipe = ApixEventPipe(
@@ -212,27 +212,24 @@ pipe = ApixEventPipe(
 
 注入 `builtin` 的通道必须实现无限制的 ready 缓冲并返回 `maxsize == 0`，否则构造时抛出 `ValueError`，防止重新引入发布回压死锁。`BuiltinChannel(maxsize=...)` 本身仍支持有界队列，可用于 mailbox 或独立的普通队列。
 
-自定义通道需要实现以下 queue-like 接口：
+接口按能力拆分，均可从 `apixis.core.event` 导入：
 
-```python
-class BaseEventChannel(ABC):
-    @property
-    def maxsize(self) -> int: ...
+| 接口 | 职责 | 对应通道 |
+| --- | --- | --- |
+| `BaseEventChannel` | `start()`、`close()` 生命周期 | 所有通道 |
+| `ReadableEventChannel` | 生命周期、`get()`、`get_nowait()`、`maxsize`、`empty()`、`full()`、`qsize()`、`task_done()`、`join()` | mailbox |
+| `WritableEventChannel` | 生命周期、异步 `put(event, **kwargs)` | mailtruck |
+| `ReadWriteEventChannel` | 组合读写能力，增加 `put_nowait()` | builtin |
 
-    async def start(self) -> None: ...
-    async def put(self, event: Any, **kwargs: Any) -> None: ...
-    def put_nowait(self, event: Any) -> None: ...
-    async def get(self) -> Any: ...
-    def get_nowait(self) -> Any: ...
-    def empty(self) -> bool: ...
-    def full(self) -> bool: ...
-    def qsize(self) -> int: ...
-    def task_done(self) -> None: ...
-    async def join(self) -> None: ...
-    async def close(self) -> None: ...
-```
+`start()` 默认无需操作；自定义通道实现 `close()` 以及对应能力的抽象方法即可。只读通道无需实现写方法，异步发送通道无需实现本地队列或同步写入方法。`BuiltinChannel` 也可作为 mailbox 注入。
 
-`ApixEventPipe` 的角色约束仍然有效：mailbox 由 pipe 读取，mailtruck 由 pipe 写入。若自定义 mailtruck 支持广播和节点发现，还应提供异步 `broadcast(event)` 与 `fetch_nodes()`。
+`get_channel("builtin")`、`get_channel("mailbox")`、`get_channel("mailtruck")` 分别返回对应能力的类型，编辑器可以据此提示可用方法。直接使用通道对象时，仅调用其提供的方法；`ApixEventPipe` 继续负责校验通道角色并报告 `EventChannelPermissionError`。
+
+迁移已有自定义通道时，将原来的 `BaseEventChannel` 父类替换为对应能力接口，并移除仅为满足旧抽象而抛出权限异常的方法。`BaseEventChannel` 现在只表达生命周期。
+
+自定义 mailtruck 的 `put()` 应接收 `recipient` 关键字参数。启用远程模式时，还需提供异步 `broadcast(event)` 用于上下线广播；`fetch_nodes()` 为可选的节点发现能力。
+
+远程模式关闭时，默认 mailbox 仍使用不可用占位通道，读取会抛出 `EventChannelUnavailableError`，表示传输未启用。
 
 ## 生命周期与失败处理
 

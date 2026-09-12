@@ -360,3 +360,102 @@ class TestApixEventPipeLifecycle:
         assert await pipe.broadcast(make_event()) == {}
         await pipe.stop()
         assert client.requests == []
+
+
+class TestChannelCapabilities:
+    @pytest.mark.asyncio
+    async def test_custom_writer_only_requires_sending_and_lifecycle(self):
+        """A sender can route events without implementing queue methods."""
+        from apixis.core.event import WritableEventChannel
+
+        class Sender(WritableEventChannel):
+            def __init__(self):
+                self.deliveries = []
+                self.closed = False
+
+            async def put(self, event, **kwargs):
+                self.deliveries.append((event, kwargs["recipient"]))
+
+            async def close(self):
+                self.closed = True
+
+        sender = Sender()
+        pipe = ApixEventPipe(mailtruck=sender, remote_enabled=False)
+        event = make_event()
+        await pipe.start()
+        await pipe.send(event, "node-b")
+        assert sender.deliveries == [(event, "node-b")]
+        await pipe.stop()
+        assert sender.closed
+
+    @pytest.mark.asyncio
+    async def test_custom_reader_forwards_and_acknowledges(self):
+        """A receiver integrates without implementing either write operation."""
+        from apixis.core.event import ReadableEventChannel
+
+        class Mailbox(ReadableEventChannel):
+            def __init__(self, event):
+                self.queue = asyncio.Queue(maxsize=1)
+                self.queue.put_nowait(event)
+                self.closed = False
+
+            @property
+            def maxsize(self):
+                return self.queue.maxsize
+
+            async def get(self):
+                return await self.queue.get()
+
+            def get_nowait(self):
+                return self.queue.get_nowait()
+
+            def empty(self):
+                return self.queue.empty()
+
+            def full(self):
+                return self.queue.full()
+
+            def qsize(self):
+                return self.queue.qsize()
+
+            def task_done(self):
+                self.queue.task_done()
+
+            async def join(self):
+                await self.queue.join()
+
+            async def close(self):
+                self.closed = True
+
+        event = make_event()
+        mailbox = Mailbox(event)
+        pipe = ApixEventPipe(
+            mailbox=mailbox,
+            mailtruck=make_gateway(FakeClient([response(), response(), response()])),
+            remote_enabled=True,
+        )
+        await pipe.start()
+        try:
+            assert await asyncio.wait_for(pipe.get(), timeout=1) is event
+            pipe.task_done()
+            await asyncio.wait_for(mailbox.join(), timeout=1)
+            await asyncio.wait_for(pipe.join(), timeout=1)
+        finally:
+            await pipe.stop()
+        assert mailbox.closed
+
+    @pytest.mark.parametrize(
+        "operation", ["get_nowait", "empty", "full", "qsize", "task_done"]
+    )
+    def test_pipe_enforces_mailtruck_role(self, operation):
+        """Role validation also applies to senders with extra queue capabilities."""
+        pipe = ApixEventPipe(mailtruck=BuiltinChannel(), remote_enabled=False)
+        with pytest.raises(EventChannelPermissionError, match="write-only"):
+            getattr(pipe, operation)("mailtruck")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["get", "join", "clear"])
+    async def test_pipe_enforces_mailtruck_role_for_async_operations(self, operation):
+        pipe = ApixEventPipe(mailtruck=BuiltinChannel(), remote_enabled=False)
+        with pytest.raises(EventChannelPermissionError, match="write-only"):
+            await getattr(pipe, operation)("mailtruck")

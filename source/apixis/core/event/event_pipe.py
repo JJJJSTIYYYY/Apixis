@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict, overload
 from uuid import uuid4
 
 import httpx
@@ -120,69 +120,78 @@ def encode_event(event: ApixEvent) -> bytes:
 
 
 class BaseEventChannel(ABC):
-    """Queue-like interface shared by builtin and external event channels."""
-
-    @property
-    @abstractmethod
-    def maxsize(self) -> int:
-        """Maximum buffered event count. Zero means unbounded."""
-        raise NotImplementedError
+    """Lifecycle shared by all event channels, independent of I/O capabilities."""
 
     async def start(self) -> None:
         """Open connections and start background consumers when required."""
 
     @abstractmethod
-    async def put(self, event: Any, **kwargs: Any) -> None:
-        """Push an event, waiting for capacity when necessary."""
-        raise NotImplementedError
+    async def close(self) -> None:
+        """Release connections and background tasks."""
 
+
+class ReadableEventChannel(BaseEventChannel):
+    """Buffered event receiver with queue inspection and acknowledgement."""
+
+    @property
     @abstractmethod
-    def put_nowait(self, event: Any) -> None:
-        """Push an event without waiting."""
-        raise NotImplementedError
+    def maxsize(self) -> int:
+        """Maximum buffered event count. Zero means unbounded."""
 
     @abstractmethod
     async def get(self) -> Any:
         """Wait for and retrieve an event."""
-        raise NotImplementedError
 
     @abstractmethod
     def get_nowait(self) -> Any:
         """Retrieve an event without waiting."""
-        raise NotImplementedError
 
     @abstractmethod
     def empty(self) -> bool:
         """Return whether no buffered event is available."""
-        raise NotImplementedError
 
     @abstractmethod
     def full(self) -> bool:
         """Return whether the local buffer is full."""
-        raise NotImplementedError
 
     @abstractmethod
     def qsize(self) -> int:
         """Return the local buffered event count."""
-        raise NotImplementedError
 
     @abstractmethod
     def task_done(self) -> None:
         """Mark a retrieved event as processed."""
-        raise NotImplementedError
 
     @abstractmethod
     async def join(self) -> None:
         """Wait until all retrieved events have been processed."""
-        raise NotImplementedError
+
+
+class WritableEventChannel(BaseEventChannel):
+    """Asynchronous event sender without a local queue requirement."""
 
     @abstractmethod
-    async def close(self) -> None:
-        """Release connections and background tasks."""
-        raise NotImplementedError
+    async def put(self, event: Any, **kwargs: Any) -> None:
+        """Send an event, awaiting capacity or transport completion as needed."""
 
 
-class BuiltinChannel(BaseEventChannel):
+class ReadWriteEventChannel(ReadableEventChannel, WritableEventChannel):
+    """Local read/write queue that additionally supports immediate publication."""
+
+    @abstractmethod
+    def put_nowait(self, event: Any) -> None:
+        """Push an event without waiting, raising QueueFull if at capacity."""
+
+
+class _EventChannels(TypedDict):
+    """Channel roles retain their individual capability contracts."""
+
+    builtin: ReadWriteEventChannel
+    mailbox: ReadableEventChannel
+    mailtruck: WritableEventChannel
+
+
+class BuiltinChannel(ReadWriteEventChannel):
     """In-process event channel backed by :class:`asyncio.Queue`."""
 
     def __init__(self, maxsize: int = 0) -> None:
@@ -223,7 +232,7 @@ class BuiltinChannel(BaseEventChannel):
         return None
 
 
-class _BufferedMailboxChannel(BaseEventChannel):
+class _BufferedMailboxChannel(ReadableEventChannel):
     """Common local-buffer behaviour for receive-only broker channels."""
 
     def __init__(self, maxsize: int) -> None:
@@ -235,12 +244,6 @@ class _BufferedMailboxChannel(BaseEventChannel):
 
     async def _enqueue(self, payload: Any) -> None:
         await self._buffer.put(event_from_payload(payload))
-
-    async def put(self, event: Any, **kwargs: Any) -> None:
-        raise EventChannelPermissionError("mailbox channels are receive-only")
-
-    def put_nowait(self, event: Any) -> None:
-        raise EventChannelPermissionError("mailbox channels are receive-only")
 
     async def get(self) -> ApixEvent:
         return await self._buffer.get()
@@ -416,7 +419,7 @@ class UnavailableMailboxChannel(_BufferedMailboxChannel):
         return None
 
 
-class GatewayChannel(BaseEventChannel):
+class GatewayChannel(WritableEventChannel):
     """Write-only HTTP channel used to ask the gateway to route events."""
 
     def __init__(
@@ -442,10 +445,6 @@ class GatewayChannel(BaseEventChannel):
         self.timeout = timeout
         self._client = client
         self._owns_client = client is None
-
-    @property
-    def maxsize(self) -> int:
-        return 0
 
     @property
     def url(self) -> str:
@@ -538,32 +537,6 @@ class GatewayChannel(BaseEventChannel):
                     nodes[str(node["node_id"])] = node
         return nodes
 
-    def put_nowait(self, event: Any) -> None:
-        raise EventChannelPermissionError(
-            "mailtruck performs asynchronous HTTP writes; use await put()"
-        )
-
-    async def get(self) -> Any:
-        raise EventChannelPermissionError("mailtruck channels are write-only")
-
-    def get_nowait(self) -> Any:
-        raise EventChannelPermissionError("mailtruck channels are write-only")
-
-    def empty(self) -> bool:
-        raise EventChannelPermissionError("mailtruck channels are write-only")
-
-    def full(self) -> bool:
-        raise EventChannelPermissionError("mailtruck channels are write-only")
-
-    def qsize(self) -> int:
-        raise EventChannelPermissionError("mailtruck channels are write-only")
-
-    def task_done(self) -> None:
-        raise EventChannelPermissionError("mailtruck channels are write-only")
-
-    async def join(self) -> None:
-        raise EventChannelPermissionError("mailtruck channels are write-only")
-
     async def close(self) -> None:
         if self._client is not None and self._owns_client:
             await self._client.aclose()
@@ -581,9 +554,9 @@ class ApixEventPipe:
     def __init__(
         self,
         *,
-        builtin: BaseEventChannel | None = None,
-        mailbox: BaseEventChannel | None = None,
-        mailtruck: BaseEventChannel | None = None,
+        builtin: ReadWriteEventChannel | None = None,
+        mailbox: ReadableEventChannel | None = None,
+        mailtruck: WritableEventChannel | None = None,
         remote_enabled: bool = REMOTE_GATEWAY_ENABLE,
         mq_id: str = NODE_ID,
         node_name: str = NODE_NAME,
@@ -595,7 +568,7 @@ class ApixEventPipe:
         self.mq_id = mq_id
         self.node_name = node_name
         self.channel_type = channel_type
-        self._event_pipe: dict[ChannelType, BaseEventChannel] = {
+        self._event_pipe: _EventChannels = {
             "builtin": builtin if builtin is not None else BuiltinChannel(),
             "mailbox": mailbox or self._build_mailbox(channel_type),
             "mailtruck": mailtruck or GatewayChannel(
@@ -613,7 +586,7 @@ class ApixEventPipe:
         self._nodes: dict[str, dict[str, Any]] = {}
         self._started = False
 
-    def _build_mailbox(self, channel_type: str) -> BaseEventChannel:
+    def _build_mailbox(self, channel_type: str) -> ReadableEventChannel:
         if not self.remote_enabled:
             return UnavailableMailboxChannel(
                 "mailbox is unavailable while REMOTE_GATEWAY is disabled"
@@ -646,11 +619,38 @@ class ApixEventPipe:
     def nodes(self) -> dict[str, dict[str, Any]]:
         return {node_id: dict(node) for node_id, node in self._nodes.items()}
 
-    def get_channel(self, channel: ChannelType) -> BaseEventChannel:
+    @overload
+    def get_channel(self, channel: Literal["builtin"]) -> ReadWriteEventChannel: ...
+
+    @overload
+    def get_channel(self, channel: Literal["mailbox"]) -> ReadableEventChannel: ...
+
+    @overload
+    def get_channel(self, channel: Literal["mailtruck"]) -> WritableEventChannel: ...
+
+    @overload
+    def get_channel(
+        self, channel: Literal["builtin", "mailbox"],
+    ) -> ReadableEventChannel: ...
+
+    @overload
+    def get_channel(
+        self, channel: ChannelType,
+    ) -> ReadableEventChannel | WritableEventChannel: ...
+
+    def get_channel(
+        self, channel: ChannelType,
+    ) -> ReadableEventChannel | WritableEventChannel:
         try:
             return self._event_pipe[channel]
         except KeyError as exc:
             raise ValueError(f"Unknown event channel: {channel!r}") from exc
+
+    def _get_read_channel(self, channel: ChannelType) -> ReadableEventChannel:
+        """Validate the pipe role before accessing a buffered receiver."""
+        if channel == "mailtruck":
+            raise EventChannelPermissionError("mailtruck channels are write-only")
+        return self.get_channel(channel)
 
     def _ensure_local_consumer(self) -> None:
         """Auto-start the consumer belonging to the process-global pipe."""
@@ -669,10 +669,10 @@ class ApixEventPipe:
     ) -> None:
         if channel == "mailbox":
             raise EventChannelPermissionError("mailbox channels are receive-only")
-        target_channel = self.get_channel(channel)
         if channel == "mailtruck":
-            await target_channel.put(event, recipient=recipient)
+            await self.get_channel(channel).put(event, recipient=recipient)
         else:
+            target_channel = self.get_channel(channel)
             self._ensure_local_consumer()
             await target_channel.put(event)
         if isinstance(event, ApixEvent) and event.event_name:
@@ -716,37 +716,36 @@ class ApixEventPipe:
     ) -> None:
         if channel == "mailbox":
             raise EventChannelPermissionError("mailbox channels are receive-only")
+        if channel == "mailtruck":
+            raise EventChannelPermissionError(
+                "mailtruck performs asynchronous HTTP writes; use await put()"
+            )
         target_channel = self.get_channel(channel)
-        if channel == "builtin":
-            self._ensure_local_consumer()
+        self._ensure_local_consumer()
         target_channel.put_nowait(event)
         if isinstance(event, ApixEvent) and event.event_name:
             APIX_EVENT_REGISTRY.record_event(event)
 
     async def get(self, channel: ChannelType = "builtin") -> Any:
-        if channel == "mailtruck":
-            raise EventChannelPermissionError("mailtruck channels are write-only")
-        return await self.get_channel(channel).get()
+        return await self._get_read_channel(channel).get()
 
     def get_nowait(self, channel: ChannelType = "builtin") -> Any:
-        if channel == "mailtruck":
-            raise EventChannelPermissionError("mailtruck channels are write-only")
-        return self.get_channel(channel).get_nowait()
+        return self._get_read_channel(channel).get_nowait()
 
     def empty(self, channel: ChannelType = "builtin") -> bool:
-        return self.get_channel(channel).empty()
+        return self._get_read_channel(channel).empty()
 
     def full(self, channel: ChannelType = "builtin") -> bool:
-        return self.get_channel(channel).full()
+        return self._get_read_channel(channel).full()
 
     def qsize(self, channel: ChannelType = "builtin") -> int:
-        return self.get_channel(channel).qsize()
+        return self._get_read_channel(channel).qsize()
 
     def task_done(self, channel: ChannelType = "builtin") -> None:
-        self.get_channel(channel).task_done()
+        self._get_read_channel(channel).task_done()
 
     async def join(self, channel: ChannelType = "builtin") -> None:
-        await self.get_channel(channel).join()
+        await self._get_read_channel(channel).join()
 
     async def clear(self, channel: ChannelType = "builtin") -> int:
         """Remove and acknowledge all currently queued events."""
@@ -892,6 +891,9 @@ __all__ = [
     'EVENT_PIPE',
     'ApixEventPipe',
     'BaseEventChannel',
+    'ReadableEventChannel',
+    'WritableEventChannel',
+    'ReadWriteEventChannel',
     'BuiltinChannel',
     'GatewayChannel',
     'KafkaChannel',
