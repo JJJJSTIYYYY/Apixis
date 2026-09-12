@@ -333,7 +333,7 @@ class GraphContext:
             {
                 "timestamp": time.time(),
                 "state": copy.deepcopy(self.state),
-                "target_node_name": self.target_node_name,
+                "target_node_name": copy.deepcopy(self.target_node_name),
                 "steps": self.steps,
                 "namespace": self._context_namespace,
             }
