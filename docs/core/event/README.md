@@ -117,7 +117,19 @@ async def reject_invalid_request(event: ApixEvent) -> None:
 
 ## 事件循环
 
-`ApixEventLoop` 从全局 `EVENT_PIPE` 的 `builtin` 通道消费事件。
+`ApixEventLoop` 从全局 `EVENT_PIPE` 的 `builtin` ready 队列接纳事件，再交给内部处理队列分发。
+
+### 两阶段队列与背压
+
+1. 本地 `post_event()`、`put()`、`put_nowait()` 和 mailbox 转发均写入无限制的 ready 队列，发布不会等待分发额度。
+2. 消费者从 ready 队列取出事件，通过 `await processing_queue.put(event)` 转入处理队列；队列满时等待容量，不占用分发额度。
+3. 分发器先取得 `EVENT_LOOP_BACKPRESSURE` 额度，再从处理队列取出事件、确定候选 handler 名称及顺序，并创建分发任务。直到整个分发任务完成、异常或取消，才确认事件并释放额度。
+
+因此，**处理队列中的排队事件数受 `EVENT_PIPE_MAX_LEN` 限制，正在执行的分发任务数受 `EVENT_LOOP_BACKPRESSURE` 独立限制**。ready 中的事件和处理队列中的排队事件都不占用分发额度。消费者最多另外持有一个正在等待转入处理队列的事件；处理队列满时停止继续读取 ready。
+
+`BACKGROUND_HANDLER_BACKPRESSURE` 继续独立限制后台 handler。分发任务等待后台额度时仍占用分发额度；后台任务成功创建后，其执行由后台额度独立跟踪。
+
+`EVENT_PIPE_MAX_LEN` 同时用于处理队列容量和外部 mailbox 的本地缓冲容量。ready 队列没有容量上限；持续超出处理速度的发布会增加 ready 积压和内存使用。
 
 如需隔离测试或构建独立运行时，可以创建 `ApixEventLoop(custom_registry)`；但当前实现仍从全局 `EVENT_PIPE` 消费，因此生产应用通常使用 `APIX_EVENT_LOOP`。
 
@@ -127,7 +139,7 @@ async def reject_invalid_request(event: ApixEvent) -> None:
 await APIX_EVENT_LOOP.start()
 ```
 
-`start()` 可重复调用。全局 `EVENT_PIPE` 的本地发布（`post_event()`、`put()`、`put_nowait()`）会自动启动消费者，停止后再次发布也会重启。`put_nowait()` 需要在运行中的 asyncio loop 内调用。独立 `ApixEventPipe` 实例只负责自己的队列，不会启动全局消费者。
+`start()` 可重复调用，同时启动 ready 消费者和处理队列分发器。全局 `EVENT_PIPE` 的本地发布（`post_event()`、`put()`、`put_nowait()`）会自动启动它们，停止后再次发布也会重启。`put_nowait()` 需要在运行中的 asyncio loop 内调用。独立 `ApixEventPipe` 实例只负责自己的队列，不会启动全局消费者。
 
 ### 停止
 
@@ -135,7 +147,7 @@ await APIX_EVENT_LOOP.start()
 await APIX_EVENT_LOOP.stop()
 ```
 
-`stop()` 只停止事件消费：不清空队列，不取消已经创建的分发任务或后台任务，已开始的调用继续完成。它不负责关闭外部通道，通道关闭仍使用 `EVENT_PIPE.stop()`。
+`stop()` 停止 ready 消费者和处理队列分发器，不等待处理队列排空，也不等待正在执行的 handler。ready、处理队列及消费者正在等待转入的事件均保留；已经创建的分发任务和后台任务继续执行。重启后先继续转入被中断的事件，再读取后续 ready 事件，保持 FIFO。后续本地发布仍可自动重启。它不负责关闭外部通道，通道关闭仍使用 `EVENT_PIPE.stop()`。
 
 如需等待本地队列中的事件完成分发，应在停止消费之前执行：
 
@@ -145,7 +157,7 @@ await EVENT_PIPE.join()
 
 分发任务的完成回调统一确认队列项并释放分发额度；正常完成、异常和取消（包括任务尚未开始时取消）均只清理一次。后台任务在创建前取得并发额度，并由完成回调释放；等待额度期间取消不会创建后台任务。
 
-`join()` 只跟踪队列的 `put/get/task_done` 计数。后台处理器由分发器独立调度，因此队列完成不等于所有后台处理器都已结束。
+`EVENT_PIPE.join()` 通过 ready 队列的完成计数覆盖 ready 等待、转入处理队列的等待、处理队列等待及正在分发的事件；转移到处理队列时不会提前确认。后台处理器由分发器独立调度，因此 `join()` 返回不等于所有后台处理器都已结束，也不保证包含它们未来才发布的事件。
 
 ## 分发错误策略
 

@@ -1,6 +1,6 @@
 """Event channels and the node-side event pipe.
 
-``ApixEventPipe`` keeps local event dispatch on an :class:`asyncio.Queue` while
+``ApixEventPipe`` accepts local events into an unbounded ready queue while
 isolating all external transport details behind mailbox and mailtruck
 channels.  The event registry therefore only consumes the builtin channel and
 does not need to know whether an event originated locally, from Kafka, or from
@@ -571,7 +571,12 @@ class GatewayChannel(BaseEventChannel):
 
 
 class ApixEventPipe:
-    """Node-side event pipe with builtin, mailbox, and mailtruck channels."""
+    """Node-side event pipe with an unbounded builtin ready channel.
+
+    Local publication never waits for dispatch capacity. The event loop owns
+    processing backpressure, so handlers can safely publish follow-up events.
+    Custom builtin channels must also provide unbounded buffering.
+    """
 
     def __init__(
         self,
@@ -584,12 +589,14 @@ class ApixEventPipe:
         node_name: str = NODE_NAME,
         channel_type: str = EVENT_CHANNEL_TYPE,
     ) -> None:
+        if builtin is not None and builtin.maxsize != 0:
+            raise ValueError("The builtin ready channel must be unbounded (maxsize=0).")
         self.remote_enabled = remote_enabled
         self.mq_id = mq_id
         self.node_name = node_name
         self.channel_type = channel_type
         self._event_pipe: dict[ChannelType, BaseEventChannel] = {
-            "builtin": builtin or BuiltinChannel(maxsize=EVENT_PIPE_MAX_LEN),
+            "builtin": builtin if builtin is not None else BuiltinChannel(),
             "mailbox": mailbox or self._build_mailbox(channel_type),
             "mailtruck": mailtruck or GatewayChannel(
                 base_url=REMOTE_GATEWAY_BASE_URL,
@@ -681,6 +688,9 @@ class ApixEventPipe:
         recipient: str | None = None,
     ) -> None:
         """Create and post an event to the selected channel.
+
+        Local events enter the unbounded ready queue; this does not wait for
+        processing capacity or handler completion.
 
         Args:
             event_type: Event category used by handlers and transports.

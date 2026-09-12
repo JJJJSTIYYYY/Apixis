@@ -216,7 +216,7 @@ async def normalize_order(event: ApixEvent) -> None:
 
 ## 出队时解析当前链
 
-handler_chain 不再维护版本。发布端只入队并记录精确事件名，不读取 handler 注册表。loop 取出事件后立即同步取得或重建当前链，再交给分发任务。
+handler_chain 不维护版本。发布端只写入 ready 队列并记录精确事件名，不读取 handler 注册表。消费者仅将事件从 ready 转入处理队列。分发器取得分发额度并从处理队列取出事件后，立即同步取得或重建当前链，再创建分发任务。因此，在处理队列中等待的事件会使用正式分发前的最新注册顺序。
 
 缓存类型为 `dict[str, list[str] | None]`，每个精确事件名只有一份当前结果：
 

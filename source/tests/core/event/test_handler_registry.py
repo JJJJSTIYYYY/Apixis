@@ -796,10 +796,8 @@ def test_replacement_can_disable_existing_instance_timeout(timeout):
     assert APIX_HANDLER_REGISTRY.get_handler("handler").time_out is None
 
 
-async def test_publication_starts_consumer_before_waiting_for_queue_capacity(runtime):
+async def test_publication_starts_consumer_with_existing_ready_events(runtime):
     pipe, loop = runtime
-    from apixis.core.event import BuiltinChannel
-    pipe._event_pipe["builtin"] = BuiltinChannel(maxsize=1)
     pipe.get_channel("builtin").put_nowait(
         ApixEvent("first", EventType.INFO, "event.one", None, 0)
     )

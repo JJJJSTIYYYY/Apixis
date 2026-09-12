@@ -97,7 +97,7 @@ class TestBuiltinChannel:
 
         assert isinstance(EVENT_PIPE, ApixEventPipe)
         assert EVENT_PIPE is second_import
-        assert EVENT_PIPE.maxsize > 0
+        assert EVENT_PIPE.maxsize == 0
 
         while not EVENT_PIPE.empty():
             EVENT_PIPE.get_nowait()
@@ -108,6 +108,11 @@ class TestBuiltinChannel:
 
 
 class TestApixEventPipeEvents:
+    def test_bounded_builtin_is_rejected(self):
+        """Custom local channels must not reintroduce publication deadlocks."""
+        with pytest.raises(ValueError, match="ready channel must be unbounded"):
+            ApixEventPipe(builtin=BuiltinChannel(maxsize=1), remote_enabled=False)
+
     @pytest.mark.asyncio
     async def test_post_event_builds_event_with_current_timestamp(self):
         pipe = ApixEventPipe(remote_enabled=False)
@@ -300,7 +305,7 @@ class TestApixEventPipeLifecycle:
     @pytest.mark.asyncio
     async def test_mailbox_events_are_forwarded_to_builtin(self):
         mailbox = BuiltinChannel(maxsize=2)
-        builtin = BuiltinChannel(maxsize=2)
+        builtin = BuiltinChannel()
         pipe = ApixEventPipe(
             remote_enabled=True,
             builtin=builtin,

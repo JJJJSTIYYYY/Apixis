@@ -13,7 +13,9 @@
 | `REMOTE_GATEWAY` | `enable`、`base_url`、`config_endpoint`、`pipe_endpoint`、`max_retry`、`retry_initial_delay`、`timeout` | 远程配置和事件投递 |
 | `SERVER` | `base_dir`、`node_name` | 日志目录、节点名称 |
 | `LOG` | `debug_level`、`trace`、`show_event_dispatch`、`max_log_file_size` | 日志输出 |
-| `PIPELINE` | `event_pipe_max_len` | 本地事件队列容量 |
+| `PIPELINE` | `event_pipe_max_len` | 处理队列和外部 mailbox 的缓冲容量，默认 65536；本地 ready 队列始终无限制 |
+| `PIPELINE` | `event_loop_backpressure` | 正在执行的事件分发任务数上限，与处理队列容量独立，默认 1024 |
+| `PIPELINE` | `background_handler_backpressure` | 独立的后台 handler 并发额度，默认 4096 |
 | `EVENT_CHANNEL` | `type`、`kafka`、`rabbitmq` | 外部事件邮箱 |
 | `RUNTIME` | `cache_clean_interval` | 核心资源清理间隔 |
 

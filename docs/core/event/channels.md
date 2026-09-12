@@ -4,7 +4,7 @@
 
 | 通道 | 方向 | 默认实现 | 用途 |
 | --- | --- | --- | --- |
-| `builtin` | 读写 | `BuiltinChannel` | 当前进程内的事件分发队列 |
+| `builtin` | 读写 | `BuiltinChannel` | 当前进程内无限制的 ready 队列 |
 | `mailbox` | 只读 | `KafkaChannel` 或 `RabbitMQChannel` | 接收网关投递给当前节点的远程事件 |
 | `mailtruck` | 只写 | `GatewayChannel` | 通过 HTTP 网关发送或广播事件 |
 
@@ -48,7 +48,9 @@ await EVENT_PIPE.post_event(
 
 默认写入 `builtin`。全局管道的本地发布自动启动消费者，成功写入后记录精确事件名；发布端不查询或重建 handler_chain。
 
-如果队列已满，`put()` 会等待容量；`put_nowait()` 会抛出 `asyncio.QueueFull`。
+`builtin` 是无限制的 ready 队列，`maxsize == 0`，`full()` 始终为 `False`；本地 `put()` 不等待容量，`put_nowait()` 不会因为事件积压而抛出 `asyncio.QueueFull`。事件循环通过处理队列容量限制排队量，通过独立的分发额度限制执行量，详见[两阶段队列与背压](./README.md#两阶段队列与背压)。
+
+`qsize()` 和 `empty()` 只描述 ready 中尚未接纳的事件；`clear()` 也只移除这些事件，不取消已接纳或正在分发的事件。`join()` 则直到所有本地事件被确认后才返回，包含已经离开 ready 的分发任务。
 
 ## 直接操作队列
 
@@ -146,7 +148,7 @@ nodes = EVENT_PIPE.nodes
 - `KafkaChannel` 消费 `${topic_prefix}.${mq_id}`，group id 为 `${group_id_prefix}.${mq_id}`。
 - `RabbitMQChannel` 声明 direct exchange，并用当前 `mq_id` 作为 routing key 绑定 `${queue_prefix}.${mq_id}` 队列。
 - broker 消息被反序列化为 `ApixEvent`，进入本地缓冲区。
-- forwarder 将其转发到 `builtin`；本节点消费者出队时解析当前 handler_chain。
+- forwarder 将其转发到 `builtin`；本节点分发器从处理队列出队时解析当前 handler_chain。
 
 直接向 mailbox 调用 `put()` 或 `put_nowait()` 会抛出 `EventChannelPermissionError`。
 
@@ -169,6 +171,8 @@ SERVER:
 
 PIPELINE:
   event_pipe_max_len: 1024
+  event_loop_backpressure: 1024
+  background_handler_backpressure: 4096
 
 EVENT_CHANNEL:
   type: "kafka"  # kafka | rabbitmq
@@ -205,6 +209,8 @@ pipe = ApixEventPipe(
     channel_type="kafka",
 )
 ```
+
+注入 `builtin` 的通道必须实现无限制的 ready 缓冲并返回 `maxsize == 0`，否则构造时抛出 `ValueError`，防止重新引入发布回压死锁。`BuiltinChannel(maxsize=...)` 本身仍支持有界队列，可用于 mailbox 或独立的普通队列。
 
 自定义通道需要实现以下 queue-like 接口：
 
@@ -253,4 +259,3 @@ finally:
 
 - Kafka 抛出 `EventChannelUnavailableError`，提示安装 `aiokafka`。
 - RabbitMQ 抛出 `EventChannelUnavailableError`，提示安装 `aio-pika`。
-
