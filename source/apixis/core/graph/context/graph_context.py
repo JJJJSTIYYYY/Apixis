@@ -111,12 +111,7 @@ class GraphContext:
     @property
     def is_active(self) -> bool:
         """Return whether the current attempt is running and incomplete."""
-        return (
-            self._status == "running"
-            and self.is_bound
-            and self.completion is not None
-            and not self.completion.done()
-        )
+        return self._status == "running"
 
     def _transition_to(self, status: GraphContextStatus) -> None:
         """Apply one validated lifecycle transition."""
