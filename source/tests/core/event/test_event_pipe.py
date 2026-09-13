@@ -18,8 +18,8 @@ from apixis.core.event.event_pipe import (
     KafkaChannel,
     RabbitMQChannel,
     encode_event,
-    event_from_payload,
-    event_to_payload,
+    event_from_json,
+    event_to_json,
 )
 
 
@@ -166,19 +166,19 @@ class TestApixEventPipeEvents:
 class TestSerialization:
     def test_event_round_trip(self):
         event = make_event()
-        restored = event_from_payload(encode_event(event))
+        restored = event_from_json(encode_event(event))
 
-        assert event_to_payload(restored) == event_to_payload(event)
+        assert event_to_json(restored) == event_to_json(event)
 
     def test_gateway_envelope_is_accepted(self):
-        restored = event_from_payload({"recipient": "node-a", "event": event_to_payload(make_event())})
+        restored = event_from_json({"recipient": "node-a", "event": event_to_json(make_event())})
         assert restored.event_name == "test.event"
 
     def test_invalid_external_event_is_rejected(self):
         with pytest.raises(TypeError, match="ApixEvent"):
-            event_to_payload("not-an-event")
+            event_to_json("not-an-event")
         with pytest.raises(ValueError, match="missing fields"):
-            event_from_payload({"event_name": "missing"})
+            event_from_json({"event_name": "missing"})
 
 
 class TestExternalChannels:

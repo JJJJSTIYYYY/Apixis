@@ -48,7 +48,7 @@ from apixis.core.event.base import ApixEvent, ApixEventError, ChannelType, Event
 from apixis.core.event.event_registry import APIX_EVENT_REGISTRY
 
 
-def event_to_payload(event: ApixEvent) -> dict[str, Any]:
+def event_to_json(event: ApixEvent) -> dict[str, Any]:
     """Convert an :class:`ApixEvent` to its wire representation."""
     if not isinstance(event, ApixEvent):
         raise TypeError(
@@ -66,7 +66,7 @@ def event_to_payload(event: ApixEvent) -> dict[str, Any]:
     }
 
 
-def event_from_payload(payload: Any) -> ApixEvent:
+def event_from_json(payload: Any) -> ApixEvent:
     """Deserialize a broker or gateway payload into an :class:`ApixEvent`."""
     if isinstance(payload, ApixEvent):
         return payload
@@ -112,7 +112,7 @@ def _json_default(value: Any) -> Any:
 def encode_event(event: ApixEvent) -> bytes:
     """Encode an event for Kafka or RabbitMQ."""
     return json.dumps(
-        event_to_payload(event),
+        event_to_json(event),
         ensure_ascii=False,
         separators=(",", ":"),
         default=_json_default,
@@ -243,7 +243,7 @@ class _BufferedMailboxChannel(ReadableEventChannel):
         return self._buffer.maxsize
 
     async def _enqueue(self, payload: Any) -> None:
-        await self._buffer.put(event_from_payload(payload))
+        await self._buffer.put(event_from_json(payload))
 
     async def get(self) -> ApixEvent:
         return await self._buffer.get()
@@ -492,7 +492,7 @@ class GatewayChannel(WritableEventChannel):
                 "action": "route",
                 "sender": self._sender(),
                 "recipient": recipient,
-                "event": event_to_payload(event),
+                "event": event_to_json(event),
             },
         )
 
@@ -502,7 +502,7 @@ class GatewayChannel(WritableEventChannel):
             json={
                 "action": "broadcast",
                 "sender": self._sender(),
-                "event": event_to_payload(event),
+                "event": event_to_json(event),
             },
         )
         try:

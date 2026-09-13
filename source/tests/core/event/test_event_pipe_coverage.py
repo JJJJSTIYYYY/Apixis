@@ -21,8 +21,8 @@ from apixis.core.event.event_pipe import (
     RabbitMQChannel,
     UnavailableMailboxChannel,
     _json_default,
-    event_from_payload,
-    event_to_payload,
+    event_from_json,
+    event_to_json,
 )
 from apixis.core.event.handler_registry import ApixHandlerRegistry
 from apixis.core.config.core_config import EVENT_LOOP_BACKPRESSURE
@@ -37,9 +37,9 @@ class TestSmallUncoveredContracts:
 
     def test_payload_accepts_event_and_rejects_non_mapping(self):
         event = make_event()
-        assert event_from_payload(event) is event
+        assert event_from_json(event) is event
         with pytest.raises(TypeError, match="mapping"):
-            event_from_payload(42)
+            event_from_json(42)
 
     def test_json_default_supports_enum_and_dataclass(self):
         event = make_event()
@@ -65,7 +65,7 @@ class TestBufferedMailboxContract:
 
         assert channel.maxsize == 1
         assert channel.empty() is True
-        await channel._enqueue(event_to_payload(event))
+        await channel._enqueue(event_to_json(event))
         assert channel.full() is True
         assert channel.qsize() == 1
         assert channel.get_nowait().event_id == event.event_id
@@ -124,7 +124,7 @@ class TestKafkaChannelLifecycle:
     @pytest.mark.asyncio
     async def test_start_consume_idempotence_and_close(self, monkeypatch):
         event = make_event()
-        FakeKafkaConsumer.records = [SimpleNamespace(value=event_to_payload(event))]
+        FakeKafkaConsumer.records = [SimpleNamespace(value=event_to_json(event))]
         FakeKafkaConsumer.instances.clear()
         monkeypatch.setitem(
             sys.modules,
@@ -256,7 +256,7 @@ class TestRabbitChannelLifecycle:
     @pytest.mark.asyncio
     async def test_start_consume_idempotence_and_close(self, monkeypatch):
         event = make_event()
-        queue = FakeRabbitQueue([FakeMessage(event_to_payload(event))])
+        queue = FakeRabbitQueue([FakeMessage(event_to_json(event))])
         broker_channel = FakeRabbitBrokerChannel(queue)
         connection = FakeRabbitConnection(broker_channel)
         connect = AsyncMock(return_value=connection)

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from apixis.core.event import ApixEvent, ApixEventError, ApixEventHandler, EventType
-from apixis.core.event.event_pipe import encode_event, event_from_payload
+from apixis.core.event.event_pipe import encode_event, event_from_json
 from apixis.core.event.event_loop import ApixEventLoop
 from apixis.core.event.handler_registry import (
     APIX_HANDLER_REGISTRY,
@@ -175,7 +175,7 @@ async def test_error_stack_round_trip_and_instance_isolation():
 
     event = make_event()
     await ApixEventHandler(failing)(event)
-    restored = event_from_payload(encode_event(event))
+    restored = event_from_json(encode_event(event))
     assert restored.error_stack == event.error_stack
     assert restored.has_error
     assert restored.error_stack is not event.error_stack
@@ -375,7 +375,7 @@ async def test_failing_on_error_is_not_called_recursively(background, hook_failu
     else:
         assert [item.phase for item in event.error_stack] == ["core_func", "on_error"]
         assert event.error_stack[-1].exception_type == ("TimeoutError" if hook_failure == "timeout" else "RuntimeError")
-        restored = event_from_payload(encode_event(event))
+        restored = event_from_json(encode_event(event))
         assert restored.error_stack == event.error_stack
 
 
