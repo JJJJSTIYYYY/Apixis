@@ -11,6 +11,7 @@ class Block:
     with_data: Any
 
     _future: Future[Any] = field(repr=False)
+    graph_id: str | None = None
 
     def __post_init__(self) -> None:
         """Reject manually constructed blocks without an awaitable future."""

@@ -24,7 +24,7 @@ class AutoMerge:
     """Mark an ``Annotated`` state field as auto-increasing.
 
     This class contains no runtime data. It is metadata collected by
-    :class:`GraphContext` and used when a :class:`Command` update is applied.
+    :class:`NodeGraph` and used when a :class:`Command` update is applied.
 
     When an existing marked field is updated, the graph calls the current
     value's ``__add__`` method with the update value. A field that is not yet
@@ -44,7 +44,7 @@ class KeepRef:
     """Mark an ``Annotated`` state field to keep its reference during copying.
 
     This class contains no runtime data. It is metadata collected by
-    :class:`GraphContext` and used when a state copy operation is performed.
+    :class:`NodeGraph` and used when a state copy operation is performed.
 
     When a marked field is copied, the graph keeps the original field value's
     reference instead of creating a copied object. Other state fields continue
@@ -102,130 +102,46 @@ def _copy_state(
     if not keep_ref_keys:
         return copy.deepcopy(state)
 
-    keep_refs = {
-        key: state[key]
-        for key in keep_ref_keys
-        if key in state
-    }
+    keep_refs = {key: state[key] for key in keep_ref_keys if key in state}
 
     # Exclude kept fields before deepcopy so resource-like values do not need
     # to support copying. Rebuilding in original key order also preserves the
     # alias behavior of ordinary fields.
     copied_values = copy.deepcopy(
-        {
-            key: value
-            for key, value in state.items()
-            if key not in keep_refs
-        }
+        {key: value for key, value in state.items() if key not in keep_refs}
     )
     return {
-        key: (
-            keep_refs[key]
-            if key in keep_refs
-            else copied_values[key]
-        )
+        key: (keep_refs[key] if key in keep_refs else copied_values[key])
         for key in state
     }
 
 
-def get_auto_merge_keys(
+def parse_state_schema(
     state_schema: type | None,
-) -> frozenset[str]:
-    """Return fields marked with :class:`AutoMerge` in a state schema.
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Resolve annotations once for the compiled graph's two state policies.
 
-    ``state_schema`` is normally a ``TypedDict`` class. Regular annotated
-    classes are also accepted because only their resolved type hints are
-    inspected.
-
-    Both ``AutoMerge`` and ``AutoMerge()`` metadata forms are supported.
-
-    Args:
-        state_schema:
-            State schema whose ``Annotated`` metadata should be inspected.
-            ``None`` disables auto-increasing updates.
-
-    Raises:
-        TypeError:
-            If ``state_schema`` is not a class.
-        NameError:
-            If the schema contains an unresolved forward reference.
+    TypedDict and regular annotated classes are accepted. Both marker classes
+    and instances are supported. None disables both policies. Invalid classes
+    and unresolved forward references fail during graph compilation.
     """
     if state_schema is None:
-        return frozenset()
-
+        return frozenset(), frozenset()
     if not isinstance(state_schema, type):
         raise TypeError(
             "`state_schema` must be a class or None, "
             f"got {type(state_schema).__name__}."
         )
-
-    type_hints = get_type_hints(
-        state_schema,
-        include_extras=True,
-    )
-
-    return frozenset(
-        key
-        for key, annotation in type_hints.items()
-        if (
-            get_origin(annotation) is Annotated
-            and any(
-                marker is AutoMerge
-                or isinstance(marker, AutoMerge)
-                for marker in get_args(annotation)[1:]
-            )
-        )
-    )
-
-
-def get_keep_ref_keys(
-    state_schema: type | None,
-) -> frozenset[str]:
-    """Return fields marked with :class:`KeepRef` in a state schema.
-
-    ``state_schema`` is normally a ``TypedDict`` class. Regular annotated
-    classes are also accepted because only their resolved type hints are
-    inspected.
-
-    Both ``KeepRef`` and ``KeepRef()`` metadata forms are supported.
-
-    Args:
-        state_schema:
-            State schema whose ``Annotated`` metadata should be inspected.
-            ``None`` returns an empty set.
-
-    Raises:
-        TypeError:
-            If ``state_schema`` is not a class.
-        NameError:
-            If the schema contains an unresolved forward reference.
-    """
-    if state_schema is None:
-        return frozenset()
-
-    if not isinstance(state_schema, type):
-        raise TypeError(
-            "`state_schema` must be a class or None, "
-            f"got {type(state_schema).__name__}."
-        )
-
-    type_hints = get_type_hints(
-        state_schema,
-        include_extras=True,
-    )
-
-    return frozenset(
-        key
-        for key, annotation in type_hints.items()
-        if (
-            get_origin(annotation) is Annotated
-            and any(
-                marker is KeepRef
-                or isinstance(marker, KeepRef)
-                for marker in get_args(annotation)[1:]
-            )
-        )
-    )
+    merge: set[str] = set()
+    keep: set[str] = set()
+    for key, annotation in get_type_hints(state_schema, include_extras=True).items():
+        if get_origin(annotation) is Annotated:
+            for marker in get_args(annotation)[1:]:
+                if marker is AutoMerge or isinstance(marker, AutoMerge):
+                    merge.add(key)
+                if marker is KeepRef or isinstance(marker, KeepRef):
+                    keep.add(key)
+    return frozenset(merge), frozenset(keep)
 
 
 START = "__start__"
@@ -245,38 +161,54 @@ namespace_set = _namespace_graphs.keys()
 """Namespaces currently owned by compiled graphs."""
 
 
+def validate_namespace(namespace: str) -> None:
+    """Validate a graph registration name without changing ownership."""
+    if any(character in namespace for character in "*?[]"):
+        raise ValueError(
+            f"Graph namespace `{namespace}` must not contain glob characters (*?[])."
+        )
+
+
 def acquire_namespace(
     graph: NodeGraph,
     *,
     replace_existed: bool = False,
 ) -> NodeGraph:
-    """Validate and acquire the graph's exclusive namespace.
+    """Claim a namespace, forcefully retiring its previous graph if requested.
 
-    An occupied namespace is rejected by default. With ``replace_existed=True``, its
-    current graph is decomposed before ownership is transferred. Glob characters
-    are rejected before changing ownership. The caller must release ownership
-    if subsequent listener registration fails.
+    Replacement completes synchronously. Listener registration remains the
+    caller's responsibility; later failures do not restore the retired graph.
     """
-    namespace = graph.namespace
-    if any(character in namespace for character in "*?[]"):
-        raise ValueError(
-            f"Graph namespace `{namespace}` must not contain glob characters (*?[])."
-        )
-    if namespace in namespace_set:
+    validate_namespace(graph.namespace)
+    owner = _namespace_graphs.get(graph.namespace)
+    if owner is not None and owner is not graph:
         if not replace_existed:
-            raise ValueError(
-                f"Graph namespace `{namespace}` is already in use."
-            )
-        if _namespace_graphs[namespace] is graph:
-            return graph
-        _namespace_graphs[namespace].decompose()
-
-    _namespace_graphs[namespace] = graph
+            raise ValueError(f"Graph namespace `{graph.namespace}` is already in use.")
+        release_namespace(owner)
+    _namespace_graphs[graph.namespace] = graph
     return graph
 
 
-def release_namespace(graph: NodeGraph) -> None:
-    """Release ``graph`` only when it still owns its namespace."""
+def get_graph_namespace(graph_id: str) -> str:
+    """Resolve a live graph ID from the existing namespace registry."""
+    for namespace, graph in _namespace_graphs.items():
+        if graph.graph_id == graph_id:
+            return namespace
+    raise RuntimeError("The context's graph is no longer registered.")
+
+
+def release_namespace(
+    graph: NodeGraph,
+    *,
+    decompose_immediately: bool = True,
+) -> None:
+    """Optionally retire the graph, then release only its own registration.
+
+    Repeated cleanup and cleanup of a replaced graph are harmless. Decomposition
+    calls back with decompose_immediately=False to avoid recursive teardown.
+    """
+    if decompose_immediately:
+        graph.decompose(force=True)
     namespace = graph.namespace
     if _namespace_graphs.get(namespace) is graph:
         _namespace_graphs.pop(namespace)
@@ -314,7 +246,7 @@ NodeFunction: TypeAlias = (
 
 
 def get_graph_dispatch_name(
-    namespace: str | None = None,
+    namespace_or_graph: str | NodeGraph | None = None,
     missing_ok: bool = True,
 ) -> str:
     """Return the event and handler name for graph dispatch.
@@ -323,14 +255,17 @@ def get_graph_dispatch_name(
     in ``between_handlers``. No node name is needed.
 
     Args:
-        namespace: Graph namespace. ``None`` and an empty string select
+        namespace_or_graph: Graph namespace or graph instance. ``None`` and an empty string select
             ``<global>``. ``*`` produces a subscription pattern matching
             every graph, including the global graph. A wildcard pattern
             cannot identify a single handler for ``between_handlers``.
         missing_ok: If ``False``, require a concrete namespace to be owned by
             a compiled graph. The wildcard namespace ``*`` is always accepted.
     """
-    namespace = namespace or "<global>"
+    if namespace_or_graph and not isinstance(namespace_or_graph, str):
+        namespace = namespace_or_graph.namespace or "<global>"
+    else:
+        namespace = namespace_or_graph or "<global>"
 
     if not missing_ok and namespace != "*" and namespace not in namespace_set:
         raise KeyError(f"Namespace `{namespace}` not found in current namespace set.")

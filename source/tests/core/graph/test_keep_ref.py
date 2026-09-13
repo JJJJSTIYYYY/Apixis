@@ -18,8 +18,8 @@ from apixis.core.graph import (
     Reset,
     START,
 )
-from apixis.core.graph.base import _copy_state, get_keep_ref_keys
-from apixis.core.graph.context import GraphContext, noop_stream_writer
+from apixis.core.graph.base import _copy_state, parse_state_schema
+from apixis.core.graph.context import noop_stream_writer
 
 
 @pytest_asyncio.fixture(
@@ -76,27 +76,18 @@ class CombinedMarkerState(TypedDict):
     ]
 
 
-def _context(
-    state: dict[str, Any],
-    state_schema: type | None = None,
-) -> GraphContext:
-    context = GraphContext(state_schema)
-    context.state = state
-    return context
-
-
-def test_get_keep_ref_keys_supports_instance_and_class_markers():
+def test_parse_state_schema_supports_instance_and_class_markers():
     """Both documented marker forms are discovered, including mixed metadata."""
-    assert get_keep_ref_keys(KeepRefState) == frozenset(
+    assert parse_state_schema(KeepRefState)[1] == frozenset(
         {"resource", "class_marker", "messages"}
     )
-    assert get_keep_ref_keys(None) == frozenset()
+    assert parse_state_schema(None)[1] == frozenset()
 
 
-def test_get_keep_ref_keys_rejects_non_class_schema():
+def test_parse_state_schema_rejects_non_class_schema():
     """Schema validation mirrors AutoMerge discovery."""
     with pytest.raises(TypeError, match="state_schema.*class or None"):
-        get_keep_ref_keys({})
+        parse_state_schema({})
 
 
 def test_copy_state_skips_deepcopy_for_marked_resource():
@@ -108,7 +99,7 @@ def test_copy_state_skips_deepcopy_for_marked_resource():
             "resource": resource,
             "ordinary": ordinary,
         },
-        get_keep_ref_keys(KeepRefState),
+        parse_state_schema(KeepRefState)[1],
     )
 
     assert copied["resource"] is resource
@@ -125,7 +116,7 @@ def test_copy_state_applies_keep_ref_per_field_not_per_object():
             "class_marker": shared,
             "ordinary": shared,
         },
-        get_keep_ref_keys(KeepRefState),
+        parse_state_schema(KeepRefState)[1],
     )
 
     assert copied["class_marker"] is shared
@@ -139,7 +130,7 @@ def test_copy_state_without_present_marked_fields_remains_normal_deepcopy():
     original = {"ordinary": {"values": [1]}}
     copied = _copy_state(
         original,
-        get_keep_ref_keys(KeepRefState),
+        parse_state_schema(KeepRefState)[1],
     )
 
     assert copied == original
@@ -149,7 +140,7 @@ def test_copy_state_without_present_marked_fields_remains_normal_deepcopy():
 
 def test_copy_state_rejects_non_dictionary_input():
     with pytest.raises(TypeError, match="Graph state must be a dict"):
-        _copy_state([], get_keep_ref_keys(KeepRefState))
+        _copy_state([], parse_state_schema(KeepRefState)[1])
 
 
 def test_apply_command_commits_explicit_keep_ref_update_to_context():
@@ -158,7 +149,7 @@ def test_apply_command_commits_explicit_keep_ref_update_to_context():
     replacement_resource = UncopyableResource()
     graph = NodeGraph({}, {START: END}, state_schema=KeepRefState)
     original_state = {"resource": original_resource}
-    context = _context(original_state, KeepRefState)
+    context = graph.create_context(original_state)
 
     next_node = graph.apply_command(
         Command(
@@ -171,7 +162,7 @@ def test_apply_command_commits_explicit_keep_ref_update_to_context():
         context,
     )
 
-    assert context.state is original_state
+    assert original_state["resource"] is original_resource
     assert context.state["resource"] is replacement_resource
     assert context.state["ordinary"] == {"values": []}
     assert next_node == END
@@ -180,14 +171,13 @@ def test_apply_command_commits_explicit_keep_ref_update_to_context():
 def test_command_batch_uses_the_latest_committed_context_state():
     """Each batched command observes the state committed by its predecessor."""
     resource = UncopyableResource()
-    context = _context(
+    graph = NodeGraph({}, {START: END}, state_schema=KeepRefState)
+    context = graph.create_context(
         {
             "resource": resource,
             "messages": ["initial"],
-        },
-        KeepRefState,
+        }
     )
-    graph = NodeGraph({}, {START: END}, state_schema=KeepRefState)
 
     next_node = graph.apply_command(
         [
@@ -207,11 +197,8 @@ def test_reset_commits_exact_keep_ref_replacement_to_context():
     """Reset bypasses AutoMerge without copying a KeepRef replacement."""
     original_resource = UncopyableResource()
     replacement_resource = UncopyableResource()
-    context = _context(
-        {"resource": original_resource},
-        KeepRefState,
-    )
     graph = NodeGraph({}, {START: END}, state_schema=KeepRefState)
+    context = graph.create_context({"resource": original_resource})
 
     graph.apply_command(
         Command(update={"resource": Reset(replacement_resource)}),
@@ -226,12 +213,11 @@ def test_reset_commits_exact_keep_ref_replacement_to_context():
 async def test_snapshot_deep_copies_keep_ref_state():
     """Recovery checkpoints isolate fields that live state copies keep shared."""
     resource = MutableResource()
-    context = GraphContext(KeepRefState)
+    graph = NodeGraph({}, {START: END}, state_schema=KeepRefState)
+    context = graph.create_context({"resource": resource})
     completion = asyncio.get_running_loop().create_future()
     context._bind(
-        context_namespace="keep-ref-snapshot",
         run_id="snapshot-run",
-        state={"resource": resource},
         completion=completion,
         stream_writer=noop_stream_writer(),
     )
@@ -249,6 +235,7 @@ async def test_snapshot_deep_copies_keep_ref_state():
     context.abort()
     result = await completion
     assert result["resource"] is snapshot["state"]["resource"]
+    assert result["resource"].events == snapshot["state"]["resource"].events
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -355,16 +342,13 @@ async def test_context_abort_uses_deep_copied_keep_ref_snapshot():
         .add_edge(START, "waiting_node")
         .compile_graph()
     )
-    context = GraphContext()
-    invocation = asyncio.create_task(
-        graph.invoke(
-            {
-                "resource": resource,
-                "ordinary": {"nested": [1]},
-            },
-            context,
-        )
+    context = graph.create_context(
+        {
+            "resource": resource,
+            "ordinary": {"nested": [1]},
+        }
     )
+    invocation = asyncio.create_task(graph.invoke(graph_context=context))
 
     await asyncio.wait_for(node_started.wait(), timeout=1)
     context.abort()

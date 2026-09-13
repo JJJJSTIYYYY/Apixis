@@ -106,7 +106,6 @@ async def test_parallel_node_is_one_graph_node_for_conflict_detection():
         ],
         name="parallel",
     )
-    context = GraphContext()
     graph = (
         GraphManager()
         .add_node(lambda state: Command(goto=["parallel", "regular"]), "launch")
@@ -116,8 +115,9 @@ async def test_parallel_node_is_one_graph_node_for_conflict_detection():
         .compile_graph()
     )
 
+    context = graph.create_context({})
     with pytest.raises(ValueError, match="non-AutoMerge state field `ordinary`"):
-        await graph.invoke({}, context)
+        await graph.invoke(graph_context=context)
 
     assert context.state == {"ordinary": "branch-2"}
     assert context.get_snapshot()["state"] == {}
@@ -126,10 +126,6 @@ async def test_parallel_node_is_one_graph_node_for_conflict_detection():
 
 async def test_concurrent_invocations_bind_batches_to_their_own_contexts():
     """A shared graph keeps context identity and state isolated per invoke."""
-    contexts = {
-        "first": GraphContext(),
-        "second": GraphContext(),
-    }
     observed_contexts: dict[str, list[GraphContext]] = {
         "first": [],
         "second": [],
@@ -168,9 +164,14 @@ async def test_concurrent_invocations_bind_batches_to_their_own_contexts():
         .compile_graph()
     )
 
+    contexts = {
+        label: graph.create_context({"label": label, "history": []})
+        for label in ("first", "second")
+    }
+
     first_result, second_result = await asyncio.gather(
-        graph.invoke({"label": "first", "history": []}, contexts["first"]),
-        graph.invoke({"label": "second", "history": []}, contexts["second"]),
+        graph.invoke(graph_context=contexts["first"]),
+        graph.invoke(graph_context=contexts["second"]),
     )
 
     assert first_result["history"] == ["first-left", "first-right"]
@@ -208,10 +209,10 @@ async def test_failed_batch_recovers_from_graph_context_snapshot():
         .add_edge(START, "launch")
         .compile_graph()
     )
-    failed = GraphContext()
 
+    failed = graph.create_context({})
     with pytest.raises(ValueError, match="non-AutoMerge state field `shared`"):
-        await graph.invoke({}, failed)
+        await graph.invoke(graph_context=failed)
 
     assert failed.state == {"ready": True, "shared": "a", "a": True}
     assert failed.steps == 1
@@ -219,8 +220,8 @@ async def test_failed_batch_recovers_from_graph_context_snapshot():
     assert failed.get_snapshot()["target_node_name"] == ["a", "b"]
 
     fail_with_conflict = False
-    recovered = GraphContext.from_snapshot(failed.context_snapshot)
-    result = await graph.invoke(recovered.state, recovered)
+    recovered = graph.restore_context(failed.context_snapshot)
+    result = await graph.invoke(graph_context=recovered)
 
     assert result == {"ready": True, "shared": "a", "a": True, "b": True}
     assert recovered.steps == 2

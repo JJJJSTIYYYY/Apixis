@@ -21,7 +21,6 @@ from apixis.core.graph import (
     ParallelNode,
     Reset,
 )
-from apixis.core.graph.context import GraphContext
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
@@ -56,7 +55,9 @@ async def test_start_node_routes_to_configured_node(namespace):
         return {}
 
     graph = (
-        GraphManager().add_node(first).add_edge(START, "first")
+        GraphManager()
+        .add_node(first)
+        .add_edge(START, "first")
         .compile_graph(using_namespace=namespace)
     )
 
@@ -67,6 +68,7 @@ async def test_start_node_routes_to_configured_node(namespace):
 
 async def test_node_update_is_carried_to_end():
     """A node's Command.update is returned from the END event."""
+
     def increment(state):
         return Command(update={"number": state["number"] + 1})
 
@@ -90,6 +92,7 @@ class AccumulatingState(TypedDict):
 
 async def test_annotated_state_field_auto_increases_across_nodes():
     """GraphManager forwards its schema to the compiled runtime."""
+
     def append_message(state):
         return {
             "messages": ["second"],
@@ -222,12 +225,7 @@ async def test_parallel_node_joins_commands_in_branch_declaration_order():
 async def test_empty_command_list_is_a_noop_and_uses_default_route():
     """An empty list from a specialised node uses its default transition."""
     no_op = CommandListNode([], "no_op")
-    graph = (
-        GraphManager()
-        .add_node(no_op)
-        .add_edge(START, "no_op")
-        .compile_graph()
-    )
+    graph = GraphManager().add_node(no_op).add_edge(START, "no_op").compile_graph()
 
     assert await graph.invoke({"value": 1}) == {"value": 1}
 
@@ -251,7 +249,7 @@ async def test_command_list_routes_are_flattened_in_order(
         {},
         {"command_node": "default", START: "command_node"},
     )
-    context = GraphContext()
+    context = graph.create_context({})
 
     assert graph.apply_command(commands, "command_node", context) == expected_routes
 
@@ -276,6 +274,7 @@ async def test_later_command_overwrites_same_state_key():
 
 async def test_replace_explicitly_overwrites_auto_increase_field():
     """A node can bypass AutoMerge for one Command update."""
+
     def replace_messages(state):
         return Command(
             update={
@@ -366,6 +365,7 @@ async def test_condition_false_routes_directly_to_end():
 
 async def test_async_condition_is_awaited():
     """Conditional edges support asynchronous predicates."""
+
     async def condition(state):
         await asyncio.sleep(0)
         return state["enabled"]
@@ -398,6 +398,7 @@ async def test_condition_rejects_non_boolean_result():
 
 async def test_router_routes_to_selected_target():
     """A router's selected node name is used as Command.goto."""
+
     def source(state):
         return {"route": "right"}
 
@@ -420,6 +421,7 @@ async def test_router_routes_to_selected_target():
 
 async def test_async_router_accepts_mapping_goto():
     """An async router may select a destination through a goto mapping."""
+
     async def router(state):
         await asyncio.sleep(0)
         return {"goto": "target"}
@@ -469,6 +471,7 @@ async def test_router_can_route_to_end():
 
 async def test_router_rejects_undeclared_target():
     """A router cannot jump to a destination outside its declared targets."""
+
     def source(state):
         return {}
 
@@ -489,17 +492,24 @@ async def test_router_rejects_undeclared_target():
 
 async def test_async_node_is_awaited_by_graph():
     """The graph executes asynchronous user nodes before routing onward."""
+
     async def async_node(state):
         await asyncio.sleep(0)
         return {"done": True}
 
-    graph = GraphManager().add_node(async_node).add_edge(START, "async_node").compile_graph()
+    graph = (
+        GraphManager()
+        .add_node(async_node)
+        .add_edge(START, "async_node")
+        .compile_graph()
+    )
 
     assert await graph.invoke({}) == {"done": True}
 
 
 async def test_node_command_can_override_default_transition():
     """An explicit goto takes precedence over a manager-defined transition."""
+
     def source(state):
         return Command(update={"selected": True}, goto="target")
 
@@ -516,6 +526,7 @@ async def test_node_command_can_override_default_transition():
 
 async def test_explicit_end_goto_routes_to_end():
     """An explicit END goto terminates the invocation."""
+
     def source(state):
         return Command(update={"finished": True}, goto=END)
 
@@ -526,6 +537,7 @@ async def test_explicit_end_goto_routes_to_end():
 
 async def test_unknown_command_goto_is_propagated_to_caller():
     """Runtime jumps to unknown nodes fail the graph invocation."""
+
     def source(state):
         return Command(update={}, goto="missing")
 
@@ -537,6 +549,7 @@ async def test_unknown_command_goto_is_propagated_to_caller():
 
 async def test_router_can_select_concurrent_nodes():
     """A router list schedules all selected nodes in one batch."""
+
     class State(TypedDict):
         visits: Annotated[list[str], AutoMerge()]
 
@@ -555,6 +568,7 @@ async def test_router_can_select_concurrent_nodes():
 
 async def test_concurrent_batch_is_isolated_and_collected_in_route_order():
     """Completion order cannot affect state visibility or merge order."""
+
     class State(TypedDict):
         history: Annotated[list[str], AutoMerge()]
 
@@ -597,7 +611,6 @@ async def test_concurrent_batch_is_isolated_and_collected_in_route_order():
 
 async def test_concurrent_non_auto_merge_conflict_uses_retry_snapshot():
     """Direct writes may be partial while recovery retains the batch boundary."""
-    context = GraphContext()
     graph = (
         GraphManager()
         .add_node(
@@ -610,8 +623,9 @@ async def test_concurrent_non_auto_merge_conflict_uses_retry_snapshot():
         .compile_graph()
     )
 
+    context = graph.create_context({})
     with pytest.raises(ValueError, match="non-AutoMerge state field `shared`"):
-        await graph.invoke({}, context)
+        await graph.invoke(graph_context=context)
 
     assert context.state == {
         "ready": True,
@@ -626,7 +640,6 @@ async def test_concurrent_node_failure_cancels_siblings_without_commit():
     """One branch failure cancels unfinished siblings and rejects all updates."""
     slow_started = asyncio.Event()
     slow_cancelled = asyncio.Event()
-    context = GraphContext()
 
     async def slow(state):
         slow_started.set()
@@ -648,8 +661,9 @@ async def test_concurrent_node_failure_cancels_siblings_without_commit():
         .compile_graph()
     )
 
+    context = graph.create_context({"original": True})
     with pytest.raises(RuntimeError, match="batch failed"):
-        await graph.invoke({"original": True}, context)
+        await graph.invoke(graph_context=context)
 
     assert slow_cancelled.is_set()
     assert context.state == {"original": True}
@@ -659,7 +673,7 @@ async def test_concurrent_node_failure_cancels_siblings_without_commit():
 async def test_concurrent_routes_follow_command_order_and_deduplicate():
     """Defaults, explicit lists, END filtering, and duplicates compose stably."""
     graph = NodeGraph({}, {"A": "D", START: "A"})
-    context = GraphContext()
+    context = graph.create_context({})
 
     routes = graph.apply_command(
         [Command(), Command(goto="A"), Command(goto=END), Command(goto=["A", "B"])],
@@ -674,7 +688,6 @@ async def test_concurrent_node_timeout_cancels_siblings_without_commit():
     """A branch timeout cancels its batch peers and leaves retry state intact."""
     peer_started = asyncio.Event()
     peer_cancelled = asyncio.Event()
-    context = GraphContext()
 
     async def timeout_branch(state):
         await peer_started.wait()
@@ -697,8 +710,9 @@ async def test_concurrent_node_timeout_cancels_siblings_without_commit():
         .compile_graph()
     )
 
+    context = graph.create_context({"original": True})
     with pytest.raises(TimeoutError, match="timed out"):
-        await graph.invoke({"original": True}, context)
+        await graph.invoke(graph_context=context)
 
     assert peer_cancelled.is_set()
     assert context.state == {"original": True}
@@ -707,6 +721,7 @@ async def test_concurrent_node_timeout_cancels_siblings_without_commit():
 
 async def test_node_exception_is_propagated_to_caller():
     """Exceptions raised inside a node complete the invocation with that error."""
+
     def fail(state):
         raise RuntimeError("node failed")
 
@@ -718,6 +733,7 @@ async def test_node_exception_is_propagated_to_caller():
 
 async def test_node_without_timeout_waits_for_normal_completion():
     """Omitting timeout leaves node execution unlimited."""
+
     async def slow_but_valid(state):
         await asyncio.sleep(0.02)
         return {"finished": True}
@@ -758,19 +774,17 @@ async def test_explicit_node_timeout_fails_invocation_and_cancels_node():
         await graph.invoke({})
 
     assert cancelled.is_set()
-    assert graph._invocation_count == 0
+    assert not graph._contexts
 
 
 async def test_node_raised_timeout_error_is_not_mislabeled_as_deadline():
     """A node's own TimeoutError remains distinct from graph timeout."""
+
     async def fail(state):
         raise TimeoutError("provider timeout")
 
     graph = (
-        GraphManager()
-        .add_node(fail, timeout=1)
-        .add_edge(START, "fail")
-        .compile_graph()
+        GraphManager().add_node(fail, timeout=1).add_edge(START, "fail").compile_graph()
     )
 
     with pytest.raises(TimeoutError, match="provider timeout"):
@@ -813,7 +827,12 @@ async def test_max_steps_stops_a_cycle():
 
 async def test_graph_requires_dict_state():
     """Graph invocations reject non-dict state before posting an event."""
-    graph = GraphManager().add_node(lambda state: {}, "node").add_edge(START, "node").compile_graph()
+    graph = (
+        GraphManager()
+        .add_node(lambda state: {}, "node")
+        .add_edge(START, "node")
+        .compile_graph()
+    )
 
     with pytest.raises(TypeError, match="Graph state must be a dict"):
         await graph.invoke([])
@@ -866,6 +885,7 @@ async def test_graphs_with_same_node_name_do_not_handle_each_others_runs():
 
 async def test_concurrent_invocations_keep_context_state_isolated():
     """Concurrent calls carry independent state through their event contexts."""
+
     def increment(state):
         return {"number": state["number"] + 1}
 
@@ -887,6 +907,7 @@ async def test_concurrent_invocations_keep_context_state_isolated():
 
 async def test_concurrent_invocations_keep_context_state_deep_isolated():
     """Concurrent calls carry independent state through their event contexts."""
+
     def deep_increment(state):
         return {"number_wrapper": {"number": state["number_wrapper"]["number"] + 1}}
 
@@ -903,4 +924,7 @@ async def test_concurrent_invocations_keep_context_state_deep_isolated():
         graph.invoke({"number_wrapper": {"number": 10}}),
     )
 
-    assert results == [{"number_wrapper": {"number": 2}}, {"number_wrapper": {"number": 11}}]
+    assert results == [
+        {"number_wrapper": {"number": 2}},
+        {"number_wrapper": {"number": 11}},
+    ]

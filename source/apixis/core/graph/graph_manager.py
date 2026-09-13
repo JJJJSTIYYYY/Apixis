@@ -48,12 +48,9 @@ class GraphManager:
         self._default_gotos: dict[str, str] = {}
         self._generated_names: set[str] = set()
 
-
     def has_node(self, node_name: str) -> bool:
-        """Returns whether this graph manager has a node named `node_name`.
-        """
+        """Returns whether this graph manager has a node named `node_name`."""
         return node_name in self._nodes
-
 
     def add_node(
         self,
@@ -97,7 +94,6 @@ class GraphManager:
         self._nodes[node.name] = node
         return self
 
-
     def add_nodes(self, node_list: list[NodeFunction | BaseNode]):
         """Register several nodes using each callable's name.
 
@@ -111,7 +107,6 @@ class GraphManager:
             self.add_node(node_func)
         return self
 
-
     def _require_endpoint(self, node_name: str, *, source: bool = False) -> None:
         """Validate a transition endpoint, including the predefined nodes."""
         if source and node_name == END:
@@ -119,13 +114,11 @@ class GraphManager:
         if node_name not in (START, END) and node_name not in self._nodes:
             raise ValueError(f"Node `{node_name}` has not been added.")
 
-
     def _set_transition(self, source: str, target: str) -> None:
         """Associate one manager-defined outgoing transition with ``source``."""
         if source in self._default_gotos:
             raise ValueError(f"Node `{source}` already has an outgoing transition.")
         self._default_gotos[source] = target
-
 
     def _generated_node_name(self, kind: str, left: str, function: NodeFunction) -> str:
         """Create a unique private node name for a condition or router."""
@@ -138,13 +131,11 @@ class GraphManager:
         self._generated_names.add(name)
         return name
 
-
     @staticmethod
     async def _call(func: NodeFunction, state: dict):
         """Call ``func`` and await its result only when it is awaitable."""
         result = func(state)
         return await result if inspect.isawaitable(result) else result
-
 
     def add_edge(
         self,
@@ -182,15 +173,16 @@ class GraphManager:
                 raise TypeError("A condition function must return bool.")
             return Command(update={}, goto=r_node if result else END)
 
-        self._nodes[condition_name] = Node(condition_node, condition_name, timeout=timeout)
+        self._nodes[condition_name] = Node(
+            condition_node, condition_name, timeout=timeout
+        )
         self._set_transition(l_node, condition_name)
         return self
 
-
     def add_router(
-        self, 
-        l_node: str, 
-        r_nodes: list[str], 
+        self,
+        l_node: str,
+        r_nodes: list[str],
         router: NodeFunction,
         *,
         timeout: float | None = None,
@@ -238,7 +230,6 @@ class GraphManager:
         self._set_transition(l_node, router_name)
         return self
 
-
     def compile_graph(
         self,
         using_namespace: str | None = None,
@@ -252,14 +243,13 @@ class GraphManager:
                 namespace ``<global>``. Glob characters are forbidden.
             exist_ok: If ``False``, compiling into an occupied namespace
                 raises ``ValueError``. If ``True``, the existing graph is
-                decomposed before the new graph is registered.
+                retired before the new dispatch listener is registered.
+                A later registration failure does not restore the old graph.
 
         Raises:
             ValueError: If no transition has been defined from :data:`START`,
                 if the namespace contains glob characters, or if it is
                 occupied and ``exist_ok`` is ``False``.
-            RuntimeError: If replacement is requested while the existing
-                graph has an invocation in progress.
         """
         if START not in self._default_gotos:
             raise ValueError("A graph must define an outgoing transition from `START`.")

@@ -121,6 +121,7 @@ def test_condition_must_be_callable():
 
 def test_generated_condition_name_avoids_user_node_collision():
     """Generated helper nodes receive a suffix when their base name exists."""
+
     def predicate(state):
         return True
 
@@ -179,7 +180,12 @@ def test_compile_retains_timeout_on_node():
 
 @pytest.mark.parametrize(
     ("using_namespace", "expected"),
-    [(None, "<global>"), ("", "<global>"), ("<global>", "<global>"), ("agent-runtime", "agent-runtime")],
+    [
+        (None, "<global>"),
+        ("", "<global>"),
+        ("<global>", "<global>"),
+        ("agent-runtime", "agent-runtime"),
+    ],
 )
 def test_compile_forwards_listener_namespace(using_namespace, expected):
     """GraphManager exposes NodeGraph's listener namespace selection."""
@@ -249,7 +255,7 @@ def test_compile_exist_ok_decomposes_and_replaces_original_graph(namespace):
     }
 
     assert first_graph._decomposed is True
-    assert first_graph._registered_handler_names == []
+    assert first_graph._handlers == {}
     assert first_callbacks.isdisjoint(replacement_callbacks)
     assert len(replacement_callbacks) == 1
     assert namespace_set == {namespace or "<global>"}
@@ -348,6 +354,11 @@ def test_global_event_name_and_ownership_check_use_canonical_namespace(namespace
         get_graph_dispatch_name(namespace, missing_ok=False)
 
     graph = GraphManager().add_edge(START, END).compile_graph()
-    assert get_graph_dispatch_name(
-        namespace, missing_ok=False,
-    ) == graph.dispatch_name == event_name
+    assert (
+        get_graph_dispatch_name(
+            namespace,
+            missing_ok=False,
+        )
+        == graph.dispatch_name
+        == event_name
+    )

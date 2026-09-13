@@ -1,3 +1,4 @@
+from apixis.core.graph.base import get_graph_namespace
 from contextlib import contextmanager
 from collections.abc import Generator
 from contextvars import ContextVar
@@ -54,7 +55,7 @@ def get_current_namespace() -> str:
             "get_current_namespace() is only available while a graph is invoked."
         )
 
-    namespace = context._context_namespace
+    namespace = get_graph_namespace(context.graph_id)
     if namespace is None:
         raise RuntimeError(
             "get_current_namespace() is only available while a graph is invoked."

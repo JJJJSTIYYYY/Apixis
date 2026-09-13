@@ -12,7 +12,9 @@ from apixis.core.event import (
 from apixis.core.event.event_loop import APIX_EVENT_LOOP
 from apixis.core.event import EVENT_PIPE
 from apixis.core.graph import (
-    START, GraphManager, get_graph_dispatch_name,
+    START,
+    GraphManager,
+    get_graph_dispatch_name,
 )
 
 
@@ -86,9 +88,7 @@ async def test_subscribe_inserts_plugin_before_node_graph_listener(namespace):
         graph.dispatch_name,
     ]
 
-    plugin_meta = APIX_HANDLER_REGISTRY.get_handler(
-        plugin_demo_enrichment.__name__
-    )
+    plugin_meta = APIX_HANDLER_REGISTRY.get_handler(plugin_demo_enrichment.__name__)
     assert plugin_meta.between_handlers == (
         plugin_demo_authentication.__name__,
         graph.dispatch_name,
@@ -117,7 +117,7 @@ async def test_upstream_plugin_termination_completes_graph(mode, action, target)
     import asyncio
 
     from apixis.core.graph import END
-    from apixis.core.graph.context import GraphContext, get_stream_writer
+    from apixis.core.graph.context import get_stream_writer
     from apixis.core.utils.exception import GraphNodeError
 
     called = []
@@ -128,8 +128,11 @@ async def test_upstream_plugin_termination_completes_graph(mode, action, target)
         return {"value": "updated"}
 
     graph = (
-        GraphManager().add_node(business).add_edge(START, "business")
-        .add_edge("business", END).compile_graph()
+        GraphManager()
+        .add_node(business)
+        .add_edge(START, "business")
+        .add_edge("business", END)
+        .compile_graph()
     )
     target_name = END if target == "END" else target
     captured_events = []
@@ -146,13 +149,14 @@ async def test_upstream_plugin_termination_completes_graph(mode, action, target)
         if action == "timeout":
             await asyncio.Future()
 
-    context = GraphContext()
     chunks = []
+
+    context = graph.create_context({"value": "initial"})
 
     async def run():
         if mode == "invoke":
-            return await graph.invoke({"value": "initial"}, context)
-        async for chunk in graph.stream({"value": "initial"}, context):
+            return await graph.invoke(graph_context=context)
+        async for chunk in graph.stream(graph_context=context):
             chunks.append(chunk)
 
     try:
@@ -168,11 +172,13 @@ async def test_upstream_plugin_termination_completes_graph(mode, action, target)
                 assert context.status == "failed"
                 [error] = raised.value.errors
                 assert error.handler_name == "termination_plugin"
-                assert error.exception_type == ("TimeoutError" if action == "timeout" else "ValueError")
+                assert error.exception_type == (
+                    "TimeoutError" if action == "timeout" else "ValueError"
+                )
         assert len(captured_events) == 1
         assert context.completion.done()
         assert not context.is_active
-        assert graph._invocation_count == 0
+        assert not graph._contexts
         assert called == (["business"] if target == "END" else [])
         if mode == "stream":
             assert chunks == (["business chunk"] if target == "END" else [])
@@ -195,23 +201,28 @@ async def test_graph_dispatch_handles_its_own_snapshot_failure(mode):
         called.append("business")
         return state
 
-    graph = GraphManager().add_node(business).add_edge(START, "business").compile_graph()
-    context = GraphContext()
+    graph = (
+        GraphManager().add_node(business).add_edge(START, "business").compile_graph()
+    )
+
+    context = graph.create_context({})
 
     async def run():
         if mode == "invoke":
-            return await graph.invoke({}, context)
-        return [chunk async for chunk in graph.stream({}, context)]
+            return await graph.invoke(graph_context=context)
+        return [chunk async for chunk in graph.stream(graph_context=context)]
 
     try:
-        with patch.object(GraphContext, "take_a_snapshot", side_effect=ValueError("snapshot failed")):
+        with patch.object(
+            GraphContext, "take_a_snapshot", side_effect=ValueError("snapshot failed")
+        ):
             async with asyncio.timeout(1):
                 with pytest.raises(ValueError, match="snapshot failed"):
                     await run()
         assert context.status == "failed"
         assert context.completion.done()
         assert called == []
-        assert graph._invocation_count == 0
+        assert not graph._contexts
     finally:
         graph.decompose()
 
@@ -220,14 +231,14 @@ async def test_background_plugin_failure_does_not_fail_graph():
     """A failed background plugin cannot suppress the graph dispatch core."""
     import asyncio
 
-    from apixis.core.graph.context import GraphContext
-
     failed = asyncio.Event()
 
     def business(state):
         return {"completed": True}
 
-    graph = GraphManager().add_node(business).add_edge(START, "business").compile_graph()
+    graph = (
+        GraphManager().add_node(business).add_edge(START, "business").compile_graph()
+    )
 
     @subscribe(GLOBAL_DISPATCH, priority=20, background=True)
     async def background_plugin(event):
@@ -239,10 +250,10 @@ async def test_background_plugin_failure_does_not_fail_graph():
     async def wait_for_background_plugin(event):
         await failed.wait()
 
-    context = GraphContext()
+    context = graph.create_context({})
     try:
         async with asyncio.timeout(1):
-            assert await graph.invoke({}, context) == {"completed": True}
+            assert await graph.invoke(graph_context=context) == {"completed": True}
         assert context.status == "finished"
     finally:
         unsubscribe(background_plugin.__name__)
@@ -250,13 +261,14 @@ async def test_background_plugin_failure_does_not_fail_graph():
         graph.decompose()
 
 
-@pytest.mark.parametrize("action", ["error", "accept", "accept_and_error", "hook_error", "hook_timeout"])
+@pytest.mark.parametrize(
+    "action", ["error", "accept", "accept_and_error", "hook_error", "hook_timeout"]
+)
 @pytest.mark.parametrize("timeout", [None, 10])
 async def test_interruption_hook_termination_unblocks_node(action, timeout):
     """Interruption notifications release the Block as well as the invocation."""
     import asyncio
 
-    from apixis.core.graph.context import GraphContext
     from apixis.core.graph.interrupter.graph_interrupter import interrupt
     from apixis.core.utils.exception import GraphNodeError
 
@@ -269,7 +281,9 @@ async def test_interruption_hook_termination_unblocks_node(action, timeout):
         resumed.append(True)
         return state
 
-    graph = GraphManager().add_node(business).add_edge(START, "business").compile_graph()
+    graph = (
+        GraphManager().add_node(business).add_edge(START, "business").compile_graph()
+    )
 
     @subscribe("graph_<global>_interrupted", priority=10)
     async def interruption_plugin(event):
@@ -286,11 +300,11 @@ async def test_interruption_hook_termination_unblocks_node(action, timeout):
         raise ValueError("hook failed locally")
 
     graph.add_interrupted_hook(on_interrupted)
-    context = GraphContext()
+    context = graph.create_context({"value": "initial"})
     try:
         async with asyncio.timeout(1):
             if action == "accept":
-                assert await graph.invoke({"value": "initial"}, context) == {"value": "initial"}
+                assert await graph.invoke(graph_context=context) == {"value": "initial"}
                 assert context.status == "aborted"
             else:
                 error_type = {
@@ -298,10 +312,12 @@ async def test_interruption_hook_termination_unblocks_node(action, timeout):
                     "hook_timeout": TimeoutError,
                 }.get(action, GraphNodeError)
                 with pytest.raises(error_type):
-                    await graph.invoke({}, context)
+                    await graph.invoke(graph_context=context)
                 assert context.status == "failed"
         assert resumed == []
-        assert hook_called == ([True] if action in ("hook_error", "hook_timeout") else [])
+        assert hook_called == (
+            [True] if action in ("hook_error", "hook_timeout") else []
+        )
         assert len(blocks) == 1 and blocks[0].done
         assert blocks[0].cancelled is (action == "accept")
     finally:
@@ -319,7 +335,12 @@ async def test_dispatch_name_orders_plugins_on_both_sides_of_graph(namespace):
         calls.append("node")
         return {"done": True}
 
-    graph = GraphManager().add_node(business).add_edge(START, "business").compile_graph(namespace)
+    graph = (
+        GraphManager()
+        .add_node(business)
+        .add_edge(START, "business")
+        .compile_graph(namespace)
+    )
 
     @subscribe(graph.dispatch_name, between_handlers=(None, graph.dispatch_name))
     async def before_dispatch(event):
@@ -335,7 +356,7 @@ async def test_dispatch_name_orders_plugins_on_both_sides_of_graph(namespace):
         assert await graph.invoke({}) == {"done": True}
         await EVENT_PIPE.join()
         node_index = calls.index("node")
-        assert calls[node_index - 1:node_index + 2] == ["before", "node", "after"]
+        assert calls[node_index - 1 : node_index + 2] == ["before", "node", "after"]
         assert calls.count("before") == calls.count("after")
         assert set(observed_events) == {graph.dispatch_name}
     finally:
@@ -358,7 +379,9 @@ async def test_wildcard_plugin_observes_global_and_named_graphs_created_later():
         names = []
         for namespace in (None, "named-plugin-graph"):
             graph = (
-                GraphManager().add_node(business).add_edge(START, "business")
+                GraphManager()
+                .add_node(business)
+                .add_edge(START, "business")
                 .compile_graph(namespace)
             )
             names.append(graph.dispatch_name)

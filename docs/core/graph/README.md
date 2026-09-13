@@ -59,7 +59,7 @@ assert result == {"value": 21, "result": 42}
 manager = GraphManager(state_schema=State)
 ```
 
-`state_schema` 可选。它不对字典执行运行时字段校验，而是用于解析 `Annotated` 中的 `AutoMerge` 和 `KeepRef` 元数据。
+`state_schema` 可选。编译时统一解析一次 `Annotated` 中的 `AutoMerge` 和 `KeepRef` 元数据，保存不可变规则供所有 context 使用；它不对字典执行运行时字段校验。context 不再单独配置 schema。
 
 ### 添加节点
 
@@ -287,16 +287,16 @@ graph = manager.compile_graph(
 )
 ```
 
-命名空间用于隔离编译图拥有的事件处理器及运行上下文：
+命名空间用于定位当前编译图和隔离事件路由；运行上下文归属于具体图实例：
 
 - `None` 或空字符串统一转换为 `<global>`，也可以显式传入 `<global>`。
 - 图命名空间不能包含 glob 字符 `*`、`?`、`[`、`]`，获取命名空间时会抛出 `ValueError`。
 - 同一时刻一个命名空间只能由一个已编译图占用。
 - `exist_ok=False` 时发生冲突会抛出 `ValueError`。
-- `exist_ok=True` 会先分解旧图，再创建替代图。
-- 旧图有活跃调用时无法替换，会抛出 `RuntimeError`。
+- `exist_ok=True` 会先通过 namespace 获取接口分解旧图并接管 namespace，再注册新 dispatch handler。监听器注册失败时释放新图资源并抛出原始异常，不恢复已分解的旧图。
+- 旧图有活跃调用时，获取 namespace 的同步过程中会通过 `decompose(force=True)` 中止旧图 context 并注销旧监听器，然后才注册新监听器。
 
-图的内部调度事件会使用 `using_namespace` 限定作用域。每个 `NodeGraph` 只注册一个通用 dispatch handler，其处理器名和订阅事件名均为 `graph.dispatch_name`。路由时，运行时先把目标节点写入 `GraphContext.target_node_name`，再发布 namespace 隔离后的 `GRAPH_DISPATCH` 事件；通用 handler 根据 `target_node_name` 执行对应节点。不同 namespace 因此拥有不同的 dispatch 事件处理链，`GraphContext` 的 namespace 检查仍作为运行时防御。
+图的内部调度事件会使用 `using_namespace` 限定作用域。每个 `NodeGraph` 只注册一个通用 dispatch handler，其处理器名和订阅事件名均为 `graph.dispatch_name`。路由时，运行时先把目标节点写入 `GraphContext.target_node_name`，再发布 namespace 隔离后的 `GRAPH_DISPATCH` 事件；通用 handler 根据 `target_node_name` 执行对应节点。不同 namespace 因此拥有不同的 dispatch 事件处理链，事件消费同时检查 context.graph_id 是否为当前图 ID，以及 context 是否由当前图管理，因此 namespace 重用不会转移旧 context。
 
 模块导出的 `namespace_set` 可用于只读诊断当前被占用的 namespace。不要直接增删其中的值；正常释放必须经过 `graph.decompose()`，以同时清理图索引和事件处理器。
 
@@ -309,10 +309,11 @@ result = await graph.invoke(initial_state, graph_context=None)
 行为：
 
 - `initial_state` 必须是 `dict`。
-- 初始状态在绑定上下文时复制，普通嵌套值不会修改调用方输入。
+- 初始状态在创建 context 时复制，普通嵌套值不会修改调用方输入。
 - 返回最终已提交状态的副本。
 - 节点异常、超时、非法返回或非法路由会由 await 抛给调用方。
-- 可选 `graph_context` 用于外部 abort 和后续快照恢复。
+- 保留 context 时先调用 `graph.create_context(initial_state)`，再调用 `graph.invoke(graph_context=context)`；此时不再传 state。
+- `graph.restore_context(snapshot, version=-1)` 只恢复本图实例的快照，详见 [context 文档](./context/README.md)。
 
 同一个 `NodeGraph` 可以并发 `invoke()`；每次调用使用独立 `GraphContext`、run id 和完成 Future。一次调用的并发节点共享该调用的 context，但不会看到其他调用的 context 或普通 state。
 
@@ -402,6 +403,7 @@ async def observe_graph_dispatch(event: ApixEvent) -> None:
 ```
 
 - `get_graph_dispatch_name()`、传入 `None`、`""` 或 `"<global>"` 均选择全局图。
+- `get_graph_dispatch_name(graph)` 接受图实例，返回与 `graph.dispatch_name` 相同的名称；也支持 `namespace_or_graph=graph` 关键字形式。
 - `get_graph_dispatch_name("*")` 返回匹配所有图（包括全局图）的订阅模式；该模式不能作为 `between_handlers` 的具体处理器名（因为其要求精确 handler 名）。
 - `missing_ok=False` 要求具体 namespace 已被编译图占用；默认允许提前生成名称。
 - 图自身的 handler 使用默认优先级 `1`，更高优先级的前台插件会先执行。
@@ -436,7 +438,7 @@ graph.decompose()
 - 释放命名空间；
 - 使图拒绝新的 `invoke()`、`stream()`、`abort()` 等业务操作。
 
-`decompose()` 幂等，但存在活跃调用时会拒绝执行。
+`decompose(force=True)` 默认强制中止 pending/running context 后释放注册；`force=False` 在存在未结束 context 时拒绝且保持原状。两种模式均幂等。
 
 ## 使用上下文管理协议自动管理图的生命周期
 
@@ -446,7 +448,7 @@ with graph:
 ```
 
 上下文管理器退出后，graph会自动执行清理，适用于graph被一次性调用的场景。
-注意: 若同一个图可能会被并发使用，上下文管理器退出会导致所有的并发invoke停止(abort)。
+上下文管理器退出使用强制分解，会中止尚未结束的 context。希望等待调用自然结束时，应先 await 它们，再退出图的作用域。
 
 ## 继续阅读
 

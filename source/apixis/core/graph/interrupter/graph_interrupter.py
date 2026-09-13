@@ -1,3 +1,4 @@
+from apixis.core.graph.base import get_graph_namespace
 import asyncio
 from collections.abc import Awaitable
 from functools import wraps
@@ -25,7 +26,7 @@ async def interrupt(
     *,
     data: Any = None,
     timeout: float | None = None,
-    context: GraphContext | None = None
+    context: GraphContext | None = None,
 ) -> Any:
     """
     Send data and while in graph loop and block the agent graph at the same time.
@@ -52,12 +53,11 @@ async def interrupt(
 
     if not context.is_active:
         raise RuntimeError(
-            "interrupt() is only available while an active graph node "
-            "is executed."
+            "interrupt() is only available while an active graph node is executed."
         )
 
     run_id = context.run_id
-    namespace = context._context_namespace
+    namespace = get_graph_namespace(context.graph_id)
     assert run_id is not None
     assert namespace is not None
 
@@ -70,14 +70,22 @@ async def interrupt(
         namespace=namespace,
         with_data=data,
         _future=future,
+        graph_id=context.graph_id,
     )
-    await EVENT_PIPE.post_event(
-        event_type=EventType.WORKFLOW,
-        event_name=f"graph_{namespace}_interrupted",
-        context=block,
-    )
+    completion = context.completion
+    assert completion is not None
 
+    def close_block(_):
+        """A waiting interruption cannot outlive its invocation."""
+        block.cancel()
+
+    completion.add_done_callback(close_block)
     try:
+        await EVENT_PIPE.post_event(
+            event_type=EventType.WORKFLOW,
+            event_name=f"graph_{namespace}_interrupted",
+            context=block,
+        )
         if timeout is None:
             return await block
         timeout_scope = asyncio.timeout(timeout)
@@ -97,11 +105,14 @@ async def interrupt(
         # code nor a downstream route can run. Runtime task cancellation is
         # left to the surrounding graph timeout/cancellation machinery.
         current_task = asyncio.current_task()
-        if block.cancelled and (
-            current_task is None or current_task.cancelling() == 0
-        ):
-            context.abort()
+        if block.cancelled and (current_task is None or current_task.cancelling() == 0):
+            if context.status == "running":
+                context.abort()
         raise
+    finally:
+        completion.remove_done_callback(close_block)
+        if not block.done:
+            block.cancel()
 
 
 def interrupted_hook(
@@ -130,10 +141,9 @@ def interrupted_hook(
         async def dispatch_block(event: ApixEvent) -> None:
             block = event.context
             if not isinstance(block, Block):
-                raise TypeError(
-                    "Interrupted graph events must carry a Block context."
-                )
-            await func(block)
+                raise TypeError("Interrupted graph events must carry a Block context.")
+            if not block.done:
+                await func(block)
 
         async def on_failure(event: ApixEvent, error: Exception) -> None:
             """Deliver this handler's own failure to its waiting node."""
@@ -145,10 +155,12 @@ def interrupted_hook(
             """Deliver upstream failures to the node awaiting this block."""
             block = event.context
             if isinstance(block, Block):
-                block.fail(GraphNodeError(
-                    "Graph interruption failed in a preceding event handler",
-                    errors=list(event.error_stack),
-                ))
+                block.fail(
+                    GraphNodeError(
+                        "Graph interruption failed in a preceding event handler",
+                        errors=list(event.error_stack),
+                    )
+                )
 
         async def on_accepted(event: ApixEvent) -> None:
             """Cancel an unhandled block when its event is accepted upstream."""
@@ -159,12 +171,14 @@ def interrupted_hook(
         subscribe(
             event_name,
             exist_ok=exist_ok,
-        )(ApixEventHandler(
-            dispatch_block,
-            on_accepted=on_accepted,
-            on_has_error=on_has_error,
-            on_error=on_failure,
-        ))
+        )(
+            ApixEventHandler(
+                dispatch_block,
+                on_accepted=on_accepted,
+                on_has_error=on_has_error,
+                on_error=on_failure,
+            )
+        )
         return func
 
     return decorator

@@ -8,7 +8,6 @@ import pytest_asyncio
 from apixis.core.event.event_loop import APIX_EVENT_LOOP
 from apixis.core.event import EVENT_PIPE
 from apixis.core.graph import START, GraphManager
-from apixis.core.graph.context import GraphContext
 from apixis.core.graph.context import get_stream_writer
 from apixis.core.graph.context.stream_writer import StreamChannel
 from apixis.core.utils.exception import InvalidContextError
@@ -32,6 +31,7 @@ async def _collect(graph, state):
 
 async def test_sync_node_emits_chunks_in_write_order():
     """The callable and method writer APIs preserve chunk order."""
+
     def node(state):
         writer = get_stream_writer()
         writer({"token": "a"})
@@ -45,6 +45,7 @@ async def test_sync_node_emits_chunks_in_write_order():
 
 async def test_async_node_can_emit_arbitrary_chunks():
     """Writer context survives awaits and chunks need not be dictionaries."""
+
     async def node(state):
         writer = get_stream_writer()
         writer("first")
@@ -59,6 +60,7 @@ async def test_async_node_can_emit_arbitrary_chunks():
 
 async def test_chunks_from_multiple_nodes_share_one_ordered_stream():
     """A run carries the same stream channel across node transitions."""
+
     def first(state):
         get_stream_writer()(1)
         return {}
@@ -92,6 +94,7 @@ async def test_stream_without_custom_chunks_finishes_cleanly():
 
 async def test_invoke_graph_uses_a_noop_stream_writer():
     """Streaming-aware nodes remain compatible with regular invocation."""
+
     def node(state):
         get_stream_writer()({"ignored": True})
         return {"finished": True}
@@ -109,6 +112,7 @@ async def test_get_stream_writer_is_unavailable_outside_node_execution():
 
 async def test_stream_yields_queued_chunks_before_propagating_node_error():
     """An execution error does not discard chunks already sent by the node."""
+
     def node(state):
         get_stream_writer()({"status": "started"})
         raise RuntimeError("stream failed")
@@ -123,6 +127,7 @@ async def test_stream_yields_queued_chunks_before_propagating_node_error():
 
 async def test_stream_yields_queued_chunks_before_node_timeout():
     """A deadline preserves chunks emitted before the node was cancelled."""
+
     async def node(state):
         get_stream_writer()({"status": "started"})
         await asyncio.sleep(60)
@@ -158,6 +163,7 @@ async def test_stream_rejects_non_dict_state():
 
 async def test_concurrent_streams_keep_writer_channels_isolated():
     """Context-local writers prevent concurrent graph runs from mixing chunks."""
+
     async def node(state):
         writer = get_stream_writer()
         writer(f"{state['run']}:first")
@@ -186,13 +192,13 @@ async def test_closing_stream_early_cancels_its_graph_run():
         return {}
 
     graph = GraphManager().add_node(node).add_edge(START, "node").compile_graph()
-    context = GraphContext()
-    stream = graph.stream({}, context)
+    context = graph.create_context({})
+    stream = graph.stream(graph_context=context)
 
     assert await anext(stream) == "started"
     await stream.aclose()
 
-    assert graph._invocation_count == 0
+    assert not graph._contexts
     assert context.status == "aborted"
     release_node.set()
     await asyncio.sleep(0)
@@ -206,13 +212,13 @@ async def test_completed_context_cannot_be_reused():
         .add_edge(START, "node")
         .compile_graph()
     )
-    context = GraphContext()
 
-    assert await graph.invoke({}, context) == {"finished": True}
+    context = graph.create_context({})
+    assert await graph.invoke(graph_context=context) == {"finished": True}
 
     assert context.status == "finished"
     with pytest.raises(InvalidContextError, match="must be pending"):
-        await graph.invoke({}, context)
+        await graph.invoke(graph_context=context)
 
 
 async def test_aborted_stream_snapshot_recovers_without_waiting_for_stale_work():
@@ -238,8 +244,8 @@ async def test_aborted_stream_snapshot_recovers_without_waiting_for_stale_work()
         return {"recovered": True}
 
     graph = GraphManager().add_node(node).add_edge(START, "node").compile_graph()
-    context = GraphContext()
-    first_stream = graph.stream({"initial": True}, context)
+    context = graph.create_context({"initial": True})
+    first_stream = graph.stream(graph_context=context)
 
     assert await anext(first_stream) == "first:started"
     await first_started.wait()
@@ -247,12 +253,9 @@ async def test_aborted_stream_snapshot_recovers_without_waiting_for_stale_work()
     with pytest.raises(StopAsyncIteration):
         await anext(first_stream)
 
-    recovered = GraphContext.from_snapshot(context.context_snapshot)
+    recovered = graph.restore_context(context.context_snapshot)
 
-    chunks = [
-        chunk
-        async for chunk in graph.stream(recovered.state, recovered)
-    ]
+    chunks = [chunk async for chunk in graph.stream(graph_context=recovered)]
 
     assert chunks == ["resumed:started", "resumed:finished"]
     assert recovered.state == {"initial": True, "recovered": True}

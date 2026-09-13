@@ -14,8 +14,8 @@ from apixis.core.event import (
     unsubscribe,
     EVENT_PIPE,
 )
-from apixis.core.graph import START, GraphManager
-from apixis.core.graph.context import GraphContext, apix_graph_context
+from apixis.core.graph import START, END, GraphManager
+from apixis.core.graph.context import apix_graph_context
 from apixis.core.graph.interrupter import Block, interrupt, interrupted_hook
 
 
@@ -80,7 +80,9 @@ async def test_interrupt_requires_an_active_graph_node_context():
     with pytest.raises(RuntimeError, match="only available while a graph is invoked"):
         await interrupt()
 
-    with apix_graph_context(GraphContext()):
+    with apix_graph_context(
+        GraphManager().add_edge(START, END).compile_graph().create_context({})
+    ):
         with pytest.raises(RuntimeError, match="active graph node"):
             await interrupt()
 
@@ -138,8 +140,8 @@ async def test_graph_pauses_and_resumes_at_multiple_breakpoints(namespace):
     async def capture_review_block(block: Block) -> None:
         await blocks.put(block)
 
-    context = GraphContext()
-    invocation = asyncio.create_task(graph.invoke({}, context))
+    context = graph.create_context({})
+    invocation = asyncio.create_task(graph.invoke(graph_context=context))
 
     first = await asyncio.wait_for(blocks.get(), timeout=1)
     assert invocation.done() is False
@@ -159,13 +161,9 @@ async def test_graph_pauses_and_resumes_at_multiple_breakpoints(namespace):
         "answers": ["approved", {"edited": True}],
     }
 
-    assert capture_review_block.__name__ in (
-        APIX_HANDLER_REGISTRY.registry
-    )
+    assert capture_review_block.__name__ in (APIX_HANDLER_REGISTRY.registry)
     graph.decompose()
-    assert capture_review_block.__name__ not in (
-        APIX_HANDLER_REGISTRY.registry
-    )
+    assert capture_review_block.__name__ not in (APIX_HANDLER_REGISTRY.registry)
 
     with pytest.raises(RuntimeError, match="NodeGraph has been decomposed"):
         graph.add_interrupted_hook(capture_review_block)
@@ -174,6 +172,7 @@ async def test_graph_pauses_and_resumes_at_multiple_breakpoints(namespace):
 @pytest.mark.parametrize("namespace", [None, "", "<global>"])
 async def test_public_global_hook_resumes_default_graph(namespace):
     """A standalone hook uses the same global event name as graph dispatch."""
+
     async def review(state):
         return {"answer": await interrupt()}
 
@@ -222,10 +221,8 @@ async def test_external_block_cancel_aborts_graph_at_saved_snapshot():
     async def capture_cancelled_block(block: Block) -> None:
         await blocks.put(block)
 
-    context = GraphContext()
-    invocation = asyncio.create_task(
-        graph.invoke({"initial": True}, context)
-    )
+    context = graph.create_context({"initial": True})
+    invocation = asyncio.create_task(graph.invoke(graph_context=context))
     block = await asyncio.wait_for(blocks.get(), timeout=1)
     block.cancel()
 

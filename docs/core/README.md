@@ -38,8 +38,8 @@ apixis/core/
 Graph Runtime 并不在 `NodeGraph` 对象中保存每次调用的状态。一次调用的状态由 `GraphContext` 持有，并通过统一的图调度事件驱动执行：
 
 1. `GraphManager` 编译图时，为当前 namespace 注册一个通用 `GRAPH_DISPATCH` handler。
-2. `NodeGraph.invoke()` 或 `NodeGraph.stream()` 创建并绑定一次调用的 `GraphContext`。
-3. 运行时把 `START` 写入 `GraphContext.target_node_name`，并向 `EVENT_PIPE` 发布 namespace 隔离后的 `GRAPH_DISPATCH` 事件。
+2. `NodeGraph.invoke()` 或 `NodeGraph.stream()` 创建 context，或接受该图已准备的 context，并在检查归属与生命周期后绑定本次运行。
+3. 新 context 从 `START` 开始，同图恢复 context 使用快照目标；运行时向 `EVENT_PIPE` 发布 namespace 隔离后的 `GRAPH_DISPATCH` 事件。
 4. 全局 `APIX_EVENT_LOOP` 消费事件，通用 dispatch handler 根据 `target_node_name` 执行单个目标节点或有序并发批次。
 5. 节点返回 `dict` 或 `Command`；批次结果按目标顺序收集和提交，再把一个或多个下一目标写回 `target_node_name` 并发布同一个 dispatch 事件。
 6. 当目标变为 `END` 时，dispatch handler 将最终状态写入完成 Future，调用方得到结果。
@@ -194,7 +194,7 @@ with (
     result = await graph.invoke({})
 ```
 
-正在执行调用的图不能被分解。`decompose()` 成功后会注销图拥有的通用 dispatch handler 和中断钩子，并释放命名空间；该 `NodeGraph` 不能再次调用。
+默认分解会中止图管理的未结束 context；传入 force=False 时才拒绝带有未结束 context 的分解。`decompose()` 成功后会注销图拥有的通用 dispatch handler 和中断钩子，并释放命名空间；该 `NodeGraph` 不能再次调用。
 
 ## 并发边界
 

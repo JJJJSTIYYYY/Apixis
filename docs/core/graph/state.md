@@ -129,7 +129,7 @@ def use_resource(state: RuntimeState) -> dict:
 
 `GraphContext.take_a_snapshot()` 会对完整 recoverable state 使用 `copy.deepcopy()`，包括 `KeepRef` 字段。这样 abort 或 recovery 使用的是隔离快照，不会因为共享资源在节点中继续变动而污染历史状态。
 
-`GraphContext.from_snapshot()` 也会再次深拷贝全部快照字段。
+`graph.restore_context()` 分别深拷贝保留历史与恢复后的 live state，防止 KeepRef 修改污染历史检查点。
 
 因此，被 `KeepRef` 标记的对象如果需要快照与恢复，仍必须支持 `deepcopy`。`KeepRef` 只能绕过节点状态复制，不能绕过快照复制。
 
@@ -239,7 +239,7 @@ assert initial == {"items": []}
 
 ## Schema 解析约束
 
-运行时使用 `typing.get_type_hints(..., include_extras=True)` 解析 schema：
+图编译时使用一次 `typing.get_type_hints(..., include_extras=True)` 同时解析两个标记；context 的创建、执行与恢复不再解析 schema：
 
 - `state_schema` 必须是 class 或 `None`。
 - 未解析的 forward reference 会在 manager 创建/图编译或 context 创建时暴露。

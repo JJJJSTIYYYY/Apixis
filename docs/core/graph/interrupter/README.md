@@ -21,7 +21,6 @@
 import asyncio
 
 from apixis.core.graph import GraphManager, START
-from apixis.core.graph.context import GraphContext
 from apixis.core.graph.interrupter import Block, interrupt
 
 
@@ -52,23 +51,18 @@ async def capture_review(block: Block) -> None:
 
 
 async def run() -> dict:
-    context = GraphContext()
-    invocation = asyncio.create_task(
-        graph.invoke(
-            {
-                "document_id": "doc-1",
-                "summary": "Draft summary",
-            },
-            context,
-        )
-    )
+    context = graph.create_context({
+        "document_id": "doc-1",
+        "summary": "Draft summary",
+    })
+    invocation = asyncio.create_task(graph.invoke(graph_context=context))
 
     block = await pending_reviews.get()
     block.resolve("approved")
     return await invocation
 ```
 
-`graph.add_interrupted_hook` 自动选择图 namespace，并将 hook 纳入图生命周期。`graph.decompose()` 时会永久删除它，适合绝大多数场景。
+`graph.add_interrupted_hook` 自动选择图 namespace，并将 hook 纳入图生命周期。`graph.decompose()` 时会永久删除它，适合绝大多数场景。运行时产生的 Block.graph_id 标识所属图；图级 hook 通过图管理的 context 校验 graph_id、run_id 和 active 状态。attempt 结束后未完成的 Block 会关闭，旧中断事件不会转交给同 namespace 的替代图。
 
 ## 全局 interrupted_hook
 

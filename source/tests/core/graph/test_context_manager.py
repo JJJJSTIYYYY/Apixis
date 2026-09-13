@@ -1,10 +1,12 @@
 """Focused tests for invocation-local graph context binding."""
 
 import asyncio
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
+
+from apixis.core.graph import NodeGraph, START, END
+from apixis.core.graph.base import get_graph_namespace
+from uuid import uuid4
 
 from apixis.core.graph.context import (
     GraphContext,
@@ -20,7 +22,9 @@ from apixis.core.graph.context.stream_writer import _NOOP_STREAM_WRITER
 
 def _context_with_writer() -> tuple[GraphContext, StreamWriter]:
     """Create a context carrying a node-facing stream writer."""
-    context = GraphContext()
+    context = NodeGraph({}, {START: END}, using_namespace=uuid4().hex).create_context(
+        {}
+    )
     writer = StreamWriter(lambda chunk: None)
     context.stream_writer = writer
     return context, writer
@@ -52,7 +56,9 @@ def test_apix_graph_context_exposes_context_and_its_writer():
 
 def test_bound_context_without_writer_rejects_stream_access():
     """A graph context alone does not imply an active node stream writer."""
-    context = GraphContext()
+    context = NodeGraph({}, {START: END}, using_namespace=uuid4().hex).create_context(
+        {}
+    )
 
     with apix_graph_context(context):
         assert get_graph_context() is context
@@ -64,32 +70,31 @@ def test_bound_context_without_writer_rejects_stream_access():
 
 
 def test_run_identity_accessors_require_complete_runtime_binding():
-    """Run and namespace helpers reject both missing and partial bindings."""
+    """Run IDs require runtime binding; namespaces come from the permanent graph owner."""
     with pytest.raises(RuntimeError, match="get_current_run_id.*only available"):
         get_current_run_id()
     with pytest.raises(RuntimeError, match="get_current_namespace.*only available"):
         get_current_namespace()
 
-    context = GraphContext()
+    context = NodeGraph({}, {START: END}, using_namespace=uuid4().hex).create_context(
+        {}
+    )
     with apix_graph_context(context):
         with pytest.raises(RuntimeError, match="get_current_run_id.*only available"):
             get_current_run_id()
-        with pytest.raises(
-            RuntimeError,
-            match="get_current_namespace.*only available",
-        ):
-            get_current_namespace()
+        assert get_current_namespace() == get_graph_namespace(context.graph_id)
 
 
 def test_run_identity_accessors_return_bound_values():
     """A complete node binding exposes its run ID and graph namespace."""
-    context = GraphContext()
+    context = NodeGraph({}, {START: END}, using_namespace=uuid4().hex).create_context(
+        {}
+    )
     context.run_id = "graph-run"
-    context._context_namespace = "agent"
 
     with apix_graph_context(context):
         assert get_current_run_id() == "graph-run"
-        assert get_current_namespace() == "agent"
+        assert get_current_namespace() == get_graph_namespace(context.graph_id)
 
 
 def test_nested_apix_graph_context_restores_outer_context():
