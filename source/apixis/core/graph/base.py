@@ -154,6 +154,9 @@ END = "__end__"
 GRAPH_DISPATCH = "__graph_dispatch__"
 """Base name qualified by get_graph_dispatch_name for graph events and handlers."""
 
+GLOBALNS = "<global>"
+"""Explicit namespace for graph events and handlers in the global domain."""
+
 _namespace_graphs: dict[str, NodeGraph] = {}
 """Compiled graph indexed by its exclusive listener namespace."""
 
@@ -263,9 +266,9 @@ def get_graph_dispatch_name(
             a compiled graph. The wildcard namespace ``*`` is always accepted.
     """
     if namespace_or_graph and not isinstance(namespace_or_graph, str):
-        namespace = namespace_or_graph.namespace or "<global>"
+        namespace = namespace_or_graph.namespace or GLOBALNS
     else:
-        namespace = namespace_or_graph or "<global>"
+        namespace = namespace_or_graph or GLOBALNS
 
     if not missing_ok and namespace != "*" and namespace not in namespace_set:
         raise KeyError(f"Namespace `{namespace}` not found in current namespace set.")

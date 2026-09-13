@@ -14,7 +14,7 @@ from apixis.core.event import (
     unsubscribe,
     EVENT_PIPE,
 )
-from apixis.core.graph import START, END, GraphManager
+from apixis.core.graph import START, END, GLOBALNS, GraphManager
 from apixis.core.graph.context import apix_graph_context
 from apixis.core.graph.interrupter import Block, interrupt, interrupted_hook
 
@@ -146,7 +146,7 @@ async def test_graph_pauses_and_resumes_at_multiple_breakpoints(namespace):
     first = await asyncio.wait_for(blocks.get(), timeout=1)
     assert invocation.done() is False
     assert first.run_id == context.run_id
-    assert first.namespace == (namespace or "<global>")
+    assert first.namespace == graph.namespace
     assert first.with_data == {"step": 1}
     first.resolve("approved")
 
@@ -169,18 +169,23 @@ async def test_graph_pauses_and_resumes_at_multiple_breakpoints(namespace):
         graph.add_interrupted_hook(capture_review_block)
 
 
-@pytest.mark.parametrize("namespace", [None, "", "<global>"])
+@pytest.mark.parametrize("namespace", [None, "", GLOBALNS])
 async def test_public_global_hook_resumes_default_graph(namespace):
-    """A standalone hook uses the same global event name as graph dispatch."""
+    """A standalone global hook resumes an explicitly global graph."""
 
     async def review(state):
         return {"answer": await interrupt()}
 
-    graph = GraphManager().add_node(review).add_edge(START, "review").compile_graph()
+    graph = (
+        GraphManager()
+        .add_node(review)
+        .add_edge(START, "review")
+        .compile_graph(GLOBALNS)
+    )
 
     @interrupted_hook(namespace=namespace, exist_ok=False)
     async def resolve_global_block(block):
-        assert block.namespace == "<global>"
+        assert block.namespace == GLOBALNS
         block.resolve("approved")
 
     try:

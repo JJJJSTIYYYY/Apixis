@@ -7,6 +7,7 @@ import pytest
 from apixis.core.event import APIX_HANDLER_REGISTRY
 from apixis.core.graph import (
     END,
+    GLOBALNS,
     GRAPH_DISPATCH,
     START,
     GraphManager,
@@ -181,9 +182,7 @@ def test_compile_retains_timeout_on_node():
 @pytest.mark.parametrize(
     ("using_namespace", "expected"),
     [
-        (None, "<global>"),
-        ("", "<global>"),
-        ("<global>", "<global>"),
+        (GLOBALNS, GLOBALNS),
         ("agent-runtime", "agent-runtime"),
     ],
 )
@@ -199,6 +198,29 @@ def test_compile_forwards_listener_namespace(using_namespace, expected):
     assert graph.namespace == expected
     assert expected in namespace_set
     assert _namespace_graphs[expected] is graph
+
+
+@pytest.mark.parametrize("using_namespace", [None, ""])
+def test_compile_generates_namespace_for_empty_value(using_namespace):
+    """GraphManager forwards empty values as requests for unique namespaces."""
+    first = (
+        GraphManager()
+        .add_node(source)
+        .add_edge(START, "source")
+        .compile_graph(using_namespace=using_namespace)
+    )
+    second = (
+        GraphManager()
+        .add_node(target)
+        .add_edge(START, "target")
+        .compile_graph(using_namespace=using_namespace)
+    )
+
+    assert first.namespace != second.namespace
+    assert first.namespace.isdecimal()
+    assert second.namespace.isdecimal()
+    assert _namespace_graphs[first.namespace] is first
+    assert _namespace_graphs[second.namespace] is second
 
 
 def test_compile_rejects_occupied_namespace_by_default():
@@ -222,7 +244,7 @@ def test_compile_rejects_occupied_namespace_by_default():
     assert _namespace_graphs["occupied"] is first_graph
 
 
-@pytest.mark.parametrize("namespace", [None, "", "<global>", "replaceable"])
+@pytest.mark.parametrize("namespace", [GLOBALNS, "replaceable"])
 def test_compile_exist_ok_decomposes_and_replaces_original_graph(namespace):
     """Replacement unregisters the old listeners before installing new ones."""
     first_graph = (
@@ -258,12 +280,12 @@ def test_compile_exist_ok_decomposes_and_replaces_original_graph(namespace):
     assert first_graph._handlers == {}
     assert first_callbacks.isdisjoint(replacement_callbacks)
     assert len(replacement_callbacks) == 1
-    assert namespace_set == {namespace or "<global>"}
-    assert _namespace_graphs[namespace or "<global>"] is replacement
+    assert namespace_set == {namespace}
+    assert _namespace_graphs[namespace] is replacement
 
     release_namespace(first_graph)
-    assert namespace_set == {namespace or "<global>"}
-    assert _namespace_graphs[namespace or "<global>"] is replacement
+    assert namespace_set == {namespace}
+    assert _namespace_graphs[namespace] is replacement
 
 
 def test_decompose_releases_namespace_by_contextmanager():
@@ -311,22 +333,24 @@ def test_decompose_releases_namespace_for_later_compile():
     assert _namespace_graphs["reusable"] is replacement
 
 
-def test_none_and_empty_string_share_global_namespace():
-    """Both global namespace spellings participate in one uniqueness check."""
-    (
+def test_none_and_empty_string_create_independent_namespaces():
+    """Empty namespace requests do not force unrelated graphs to coordinate."""
+    first = (
         GraphManager()
         .add_node(source)
         .add_edge(START, "source")
         .compile_graph(using_namespace=None)
     )
 
-    with pytest.raises(ValueError, match="<global>"):
-        (
-            GraphManager()
-            .add_node(target)
-            .add_edge(START, "target")
-            .compile_graph(using_namespace="")
-        )
+    second = (
+        GraphManager()
+        .add_node(target)
+        .add_edge(START, "target")
+        .compile_graph(using_namespace="")
+    )
+
+    assert first.namespace != second.namespace
+    assert namespace_set == {first.namespace, second.namespace}
 
 
 @pytest.mark.parametrize("namespace", ["*", "agent?", "agent[ab]", "agent[", "agent]"])
@@ -340,20 +364,20 @@ def test_compile_rejects_glob_namespace_without_changing_registry(namespace, exi
     with pytest.raises(ValueError, match="glob characters"):
         manager.compile_graph(using_namespace=namespace, exist_ok=exist_ok)
 
-    assert _namespace_graphs == {"<global>": original}
+    assert _namespace_graphs == {original.namespace: original}
     assert APIX_HANDLER_REGISTRY.registry == handlers
     assert original._decomposed is False
 
 
-@pytest.mark.parametrize("namespace", [None, "", "<global>"])
+@pytest.mark.parametrize("namespace", [None, "", GLOBALNS])
 def test_global_event_name_and_ownership_check_use_canonical_namespace(namespace):
     """Global aliases share event naming and the strict ownership check."""
-    event_name = f"{GRAPH_DISPATCH}_<global>"
+    event_name = f"{GRAPH_DISPATCH}_{GLOBALNS}"
     assert get_graph_dispatch_name(namespace) == event_name
     with pytest.raises(KeyError, match="<global>"):
         get_graph_dispatch_name(namespace, missing_ok=False)
 
-    graph = GraphManager().add_edge(START, END).compile_graph()
+    graph = GraphManager().add_edge(START, END).compile_graph(GLOBALNS)
     assert (
         get_graph_dispatch_name(
             namespace,

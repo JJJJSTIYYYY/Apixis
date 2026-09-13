@@ -1,4 +1,3 @@
-from apixis.core.graph.base import get_graph_namespace
 import asyncio
 from collections.abc import Awaitable
 from functools import wraps
@@ -8,6 +7,7 @@ from typing import Any, Callable
 
 from apixis.core.graph.context.manager import get_graph_context
 from apixis.core.graph.context.graph_context import GraphContext
+from apixis.core.graph.base import GLOBALNS, get_graph_namespace
 from apixis.core.event import (
     ApixEvent,
     ApixEventHandler,
@@ -134,7 +134,7 @@ def interrupted_hook(
         async def on_interrupted(block: Block):
             ...
     """
-    event_name = f"graph_{namespace or '<global>'}_interrupted"
+    event_name = f"graph_{namespace or GLOBALNS}_interrupted"
 
     def decorator(func: InterruptedHandler) -> InterruptedHandler:
         @wraps(func)

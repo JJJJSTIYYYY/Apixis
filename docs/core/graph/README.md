@@ -289,7 +289,8 @@ graph = manager.compile_graph(
 
 命名空间用于定位当前编译图和隔离事件路由；运行上下文归属于具体图实例：
 
-- `None` 或空字符串统一转换为 `<global>`，也可以显式传入 `<global>`。
+- `None` 或空字符串会通过雪花生成器获得全局唯一的命名空间，调用方无需为不关心命名空间的图手动命名。
+- 需要使用全局命名域时，显式传入模块导出的 `GLOBALNS` 常量。
 - 图命名空间不能包含 glob 字符 `*`、`?`、`[`、`]`，获取命名空间时会抛出 `ValueError`。
 - 同一时刻一个命名空间只能由一个已编译图占用。
 - `exist_ok=False` 时发生冲突会抛出 `ValueError`。
@@ -403,6 +404,8 @@ async def observe_graph_dispatch(event: ApixEvent) -> None:
 ```
 
 - `get_graph_dispatch_name()`、传入 `None`、`""` 或 `"<global>"` 均选择全局图。
+- `GLOBALNS` 是全局命名域的公开常量；编译全局图时应传入 `compile_graph(using_namespace=GLOBALNS)`。
+- `compile_graph()` 中的空命名空间与这里的语义不同：前者生成唯一 namespace，后者仍用空值表示全局命名域。
 - `get_graph_dispatch_name(graph)` 接受图实例，返回与 `graph.dispatch_name` 相同的名称；也支持 `namespace_or_graph=graph` 关键字形式。
 - `get_graph_dispatch_name("*")` 返回匹配所有图（包括全局图）的订阅模式；该模式不能作为 `between_handlers` 的具体处理器名（因为其要求精确 handler 名）。
 - `missing_ok=False` 要求具体 namespace 已被编译图占用；默认允许提前生成名称。

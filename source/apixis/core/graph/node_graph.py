@@ -19,6 +19,7 @@ from apixis.core.event import (
     get_handler,
 )
 from apixis.core.utils.exception import GraphNodeError, InvalidContextError
+from apixis.core.utils.id_generator import idgen
 from apixis.core.graph.base import (
     END,
     START,
@@ -70,7 +71,9 @@ class NodeGraph:
                 Fields marked with ``Annotated[..., AutoMerge()]`` are
                 combined through their current value's ``__add__`` method.
             using_namespace: Namespace used by the graph's event listeners.
-                ``None`` and an empty string select ``<global>``.
+                ``None`` and an empty string generate a globally unique
+                namespace. Pass ``GLOBALNS`` to explicitly select the global
+                namespace.
                 Glob characters (``*``, ``?``, ``[``, ``]``) are forbidden.
             no_snapshot: If ``True``, disable snapshotting for the graph.
             exist_ok: If ``True``, force decomposition of the previous owner
@@ -88,7 +91,7 @@ class NodeGraph:
         self._auto_merge_keys, self._keep_ref_keys = parse_state_schema(state_schema)
         self._graph_id = uuid4().hex
         self._contexts: set[GraphContext] = set()
-        self._namespace = using_namespace or "<global>"
+        self._namespace = using_namespace or str(idgen.next_id())
         self._handlers: dict[str, ApixEventHandler] = {}
 
         # Acquisition validates ownership and synchronously retires the old graph.

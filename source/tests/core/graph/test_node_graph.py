@@ -17,6 +17,7 @@ from apixis.core.graph import (
     AutoMerge,
     Command,
     END,
+    GLOBALNS,
     START,
     Node,
     NodeGraph,
@@ -25,6 +26,7 @@ from apixis.core.graph import (
 from apixis.core.graph.context import GraphContext
 from apixis.core.graph.context import noop_stream_writer
 from apixis.core.graph.base import namespace_set, get_graph_dispatch_name
+from apixis.core.utils.id_generator import idgen
 
 
 def _bound_context(
@@ -53,16 +55,27 @@ def test_apply_command_rejects_non_dict_update():
         graph.apply_command(Command(update=[]), START, graph.create_context({}))
 
 
-@pytest.mark.parametrize("using_namespace", [None, "", "<global>"])
-def test_empty_listener_namespace_uses_global_namespace(using_namespace):
-    """None and an empty string both select the global listener namespace."""
+@pytest.mark.parametrize("using_namespace", [None, ""])
+def test_empty_listener_namespace_uses_generated_namespace(
+    using_namespace,
+    monkeypatch,
+):
+    """None and an empty string both request a generated listener namespace."""
+    monkeypatch.setattr(idgen, "next_id", lambda: 123456789)
     graph = NodeGraph(
         {},
         {START: END},
         using_namespace=using_namespace,
     )
 
-    assert graph.namespace == "<global>"
+    assert graph.namespace == "123456789"
+
+
+def test_global_listener_namespace_must_be_explicit():
+    """GLOBALNS selects the shared global listener domain explicitly."""
+    graph = NodeGraph({}, {START: END}, using_namespace=GLOBALNS)
+
+    assert graph.namespace == GLOBALNS
 
 
 def test_listener_namespace_uses_supplied_value():

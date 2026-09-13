@@ -12,6 +12,7 @@ from apixis.core.event import (
 from apixis.core.event.event_loop import APIX_EVENT_LOOP
 from apixis.core.event import EVENT_PIPE
 from apixis.core.graph import (
+    GLOBALNS,
     START,
     GraphManager,
     get_graph_dispatch_name,
@@ -132,7 +133,7 @@ async def test_upstream_plugin_termination_completes_graph(mode, action, target)
         .add_node(business)
         .add_edge(START, "business")
         .add_edge("business", END)
-        .compile_graph()
+        .compile_graph(GLOBALNS)
     )
     target_name = END if target == "END" else target
     captured_events = []
@@ -202,7 +203,10 @@ async def test_graph_dispatch_handles_its_own_snapshot_failure(mode):
         return state
 
     graph = (
-        GraphManager().add_node(business).add_edge(START, "business").compile_graph()
+        GraphManager()
+        .add_node(business)
+        .add_edge(START, "business")
+        .compile_graph()
     )
 
     context = graph.create_context({})
@@ -237,7 +241,10 @@ async def test_background_plugin_failure_does_not_fail_graph():
         return {"completed": True}
 
     graph = (
-        GraphManager().add_node(business).add_edge(START, "business").compile_graph()
+        GraphManager()
+        .add_node(business)
+        .add_edge(START, "business")
+        .compile_graph(GLOBALNS)
     )
 
     @subscribe(GLOBAL_DISPATCH, priority=20, background=True)
@@ -282,10 +289,13 @@ async def test_interruption_hook_termination_unblocks_node(action, timeout):
         return state
 
     graph = (
-        GraphManager().add_node(business).add_edge(START, "business").compile_graph()
+        GraphManager()
+        .add_node(business)
+        .add_edge(START, "business")
+        .compile_graph(GLOBALNS)
     )
 
-    @subscribe("graph_<global>_interrupted", priority=10)
+    @subscribe(f"graph_{GLOBALNS}_interrupted", priority=10)
     async def interruption_plugin(event):
         blocks.append(event.context)
         if action in ("accept", "accept_and_error"):
@@ -377,7 +387,7 @@ async def test_wildcard_plugin_observes_global_and_named_graphs_created_later():
 
     try:
         names = []
-        for namespace in (None, "named-plugin-graph"):
+        for namespace in (GLOBALNS, "named-plugin-graph"):
             graph = (
                 GraphManager()
                 .add_node(business)

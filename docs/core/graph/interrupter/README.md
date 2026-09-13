@@ -83,11 +83,13 @@ async def on_document_review(block: Block) -> None:
 graph_document-review_interrupted
 ```
 
-全局 namespace（`None` 或空字符串）对应：
+独立 hook 的全局 namespace（`None`、空字符串或 `GLOBALNS`）对应：
 
 ```text
 graph_<global>_interrupted
 ```
+
+图本身只有显式使用 `compile_graph(using_namespace=GLOBALNS)` 时才属于该全局命名域；省略 `using_namespace` 会为图自动生成唯一 namespace。
 
 直接注册的 hook 不由图清理。卸载时使用：
 
@@ -224,4 +226,3 @@ stream 与 interrupt 的消费者不同：
 - 图分解或应用关闭前，处理仍未完成的 Block，避免调用永久悬挂。
 - 不要把 Block 通过远程事件通道发送；它包含进程内 Future，只适合本地事件系统。
 - 使用 `graph.add_interrupted_hook` 管理图专属 hook，减少替换图后旧 hook 残留。
-

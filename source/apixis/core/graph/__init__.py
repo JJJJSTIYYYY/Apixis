@@ -1,6 +1,7 @@
 from apixis.core.graph.base import (
     END,
     GRAPH_DISPATCH,
+    GLOBALNS,
     START,
     AutoMerge,
     Command,
@@ -22,6 +23,7 @@ __all__ = [
     "END",
     "GraphManager",
     "GRAPH_DISPATCH",
+    "GLOBALNS",
     "get_graph_dispatch_name",
     "KeepRef",
     "Node",
