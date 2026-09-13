@@ -25,18 +25,19 @@ from apixis.core.graph.base import (
     START,
     Command,
     Reset,
-    _copy_state,
+)
+from apixis.core.graph.utils.namespace import (
     release_namespace,
     acquire_namespace,
     get_graph_dispatch_name,
-    parse_state_schema,
 )
-from apixis.core.graph.context import GraphContext, GraphContextSnapshot
+from apixis.core.graph.utils.state import copy_state, parse_state_schema
+from apixis.core.graph.context.graph_context import GraphContext, GraphContextSnapshot
 from apixis.core.graph.context.manager import apix_graph_context
 from apixis.core.graph.interrupter.base import Block
 from apixis.core.graph.interrupter.graph_interrupter import interrupted_hook
 from apixis.core.graph.node import BaseNode
-from apixis.core.graph.context import (
+from apixis.core.graph.context.stream_writer import (
     StreamChannel,
     StreamWriter,
     noop_stream_writer,
@@ -236,7 +237,7 @@ class NodeGraph:
     def create_context(self, state: dict) -> GraphContext:
         """Copy initial state using the compiled policy and manage a new attempt."""
         self._ensure_not_decomposed()
-        prepared = _copy_state(state, self._keep_ref_keys)
+        prepared = copy_state(state, self._keep_ref_keys)
         context = GraphContext(self.graph_id)
         context.state = prepared
         self._contexts.add(context)
@@ -447,7 +448,7 @@ class NodeGraph:
             # KeepRef fields. Normal completion follows the graph's copy policy.
             if context.status == "aborted" and context.context_snapshot:
                 return copy.deepcopy(result)
-            return _copy_state(result, self._keep_ref_keys)
+            return copy_state(result, self._keep_ref_keys)
         except asyncio.CancelledError:
             if context.status == "running":
                 context.abort()
@@ -473,7 +474,7 @@ class NodeGraph:
     ) -> Command | list[Command]:
         """Execute one batch member with an isolated state copy."""
         node = self._nodes[node_name]
-        execution = node.execute(_copy_state(context.state, self._keep_ref_keys))
+        execution = node.execute(copy_state(context.state, self._keep_ref_keys))
         timeout = node.timeout
         if timeout is None:
             return await execution
@@ -562,7 +563,7 @@ class NodeGraph:
             for current_command in commands:
                 if not isinstance(current_command.update, dict):
                     raise TypeError("Command.update must be a dict.")
-                update = _copy_state(
+                update = copy_state(
                     current_command.update,
                     self._keep_ref_keys,
                 )

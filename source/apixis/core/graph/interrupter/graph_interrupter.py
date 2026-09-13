@@ -6,8 +6,9 @@ from uuid import uuid4
 from typing import Any, Callable
 
 from apixis.core.graph.context.manager import get_graph_context
+from apixis.core.graph.base import GLOBALNS
 from apixis.core.graph.context.graph_context import GraphContext
-from apixis.core.graph.base import GLOBALNS, get_graph_namespace
+from apixis.core.graph.utils.namespace import get_graph_namespace
 from apixis.core.event import (
     ApixEvent,
     ApixEventHandler,

@@ -1,10 +1,10 @@
-from apixis.core.graph.base import get_graph_namespace
 from contextlib import contextmanager
 from collections.abc import Generator
 from contextvars import ContextVar
 
 from apixis.core.graph.context.graph_context import GraphContext
 from apixis.core.graph.context.stream_writer import _NOOP_STREAM_WRITER, StreamWriter
+from apixis.core.graph.utils.namespace import get_graph_namespace
 
 
 _current_graph_context: ContextVar["GraphContext | None"] = ContextVar(

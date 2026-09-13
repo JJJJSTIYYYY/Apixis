@@ -18,7 +18,7 @@ from apixis.core.graph import (
     Reset,
     START,
 )
-from apixis.core.graph.base import _copy_state, parse_state_schema
+from apixis.core.graph import copy_state, parse_state_schema
 from apixis.core.graph.context import noop_stream_writer
 
 
@@ -94,7 +94,7 @@ def test_copy_state_skips_deepcopy_for_marked_resource():
     """KeepRef works for resources whose copy protocol is deliberately disabled."""
     resource = UncopyableResource()
     ordinary = {"nested": [1]}
-    copied = _copy_state(
+    copied = copy_state(
         {
             "resource": resource,
             "ordinary": ordinary,
@@ -111,7 +111,7 @@ def test_copy_state_skips_deepcopy_for_marked_resource():
 def test_copy_state_applies_keep_ref_per_field_not_per_object():
     """An unmarked alias is still copied even when a marked field shares it."""
     shared: list[str] = ["value"]
-    copied = _copy_state(
+    copied = copy_state(
         {
             "class_marker": shared,
             "ordinary": shared,
@@ -128,7 +128,7 @@ def test_copy_state_applies_keep_ref_per_field_not_per_object():
 def test_copy_state_without_present_marked_fields_remains_normal_deepcopy():
     """A schema marker does not alter unrelated or absent state fields."""
     original = {"ordinary": {"values": [1]}}
-    copied = _copy_state(
+    copied = copy_state(
         original,
         parse_state_schema(KeepRefState)[1],
     )
@@ -140,7 +140,7 @@ def test_copy_state_without_present_marked_fields_remains_normal_deepcopy():
 
 def test_copy_state_rejects_non_dictionary_input():
     with pytest.raises(TypeError, match="Graph state must be a dict"):
-        _copy_state([], parse_state_schema(KeepRefState)[1])
+        copy_state([], parse_state_schema(KeepRefState)[1])
 
 
 def test_apply_command_commits_explicit_keep_ref_update_to_context():

@@ -25,7 +25,8 @@ from apixis.core.graph import (
 )
 from apixis.core.graph.context import GraphContext
 from apixis.core.graph.context import noop_stream_writer
-from apixis.core.graph.base import namespace_set, get_graph_dispatch_name
+from apixis.core.graph.base import namespace_set
+from apixis.core.graph import get_graph_dispatch_name
 from apixis.core.utils.id_generator import idgen
 
 

@@ -1,38 +1,87 @@
+"""Public API for Apixis's event-driven graph execution module."""
+
 from apixis.core.graph.base import (
+    START,
     END,
     GRAPH_DISPATCH,
     GLOBALNS,
-    START,
     AutoMerge,
     Command,
     KeepRef,
+    Reset,
     NodeFunction,
     NodeResult,
-    Reset,
-    get_graph_dispatch_name,
     namespace_set,
 )
-from apixis.core.graph.graph_manager import GraphManager
-from apixis.core.graph.node import Node, BaseNode, ParallelNode
-from apixis.core.graph.node_graph import NodeGraph
+from apixis.core.graph.context import (
+    GraphContext,
+    GraphContextSnapshot,
+    GraphContextStatus,
+    StreamWriter,
+    get_graph_context,
+    get_stream_writer,
+    get_current_namespace,
+    get_current_run_id,
+)
+from apixis.core.graph.graph_manager import (
+    GraphManager,
+)
+from apixis.core.graph.interrupter import (
+    Block,
+    interrupt,
+    interrupted_hook,
+)
+from apixis.core.graph.node import (
+    BaseNode,
+    Node,
+    ParallelNode,
+)
+from apixis.core.graph.node_graph import (
+    NodeGraph,
+)
+from apixis.core.graph.utils import (
+    acquire_namespace,
+    release_namespace,
+    validate_namespace,
+    get_graph_namespace,
+    get_graph_dispatch_name,
+    copy_state,
+    parse_state_schema,
+)
 
 __all__ = [
-    "AutoMerge",
-    "BaseNode",
-    "Command",
+    "START",
     "END",
-    "GraphManager",
     "GRAPH_DISPATCH",
     "GLOBALNS",
-    "get_graph_dispatch_name",
+    "AutoMerge",
+    "Command",
     "KeepRef",
-    "Node",
+    "Reset",
     "NodeFunction",
     "NodeResult",
-    "NodeGraph",
-    "ParallelNode",
-    "Reset",
-    "START",
     "namespace_set",
+    "GraphContext",
+    "GraphContextSnapshot",
+    "GraphContextStatus",
+    "StreamWriter",
+    "get_graph_context",
+    "get_stream_writer",
+    "get_current_namespace",
+    "get_current_run_id",
+    "GraphManager",
+    "Block",
+    "interrupt",
+    "interrupted_hook",
+    "BaseNode",
+    "Node",
+    "ParallelNode",
+    "NodeGraph",
+    "acquire_namespace",
+    "release_namespace",
+    "validate_namespace",
+    "get_graph_namespace",
+    "get_graph_dispatch_name",
+    "copy_state",
+    "parse_state_schema",
 ]
-"""Public API for APIX's event-driven graph execution module."""

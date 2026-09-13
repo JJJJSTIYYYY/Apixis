@@ -10,6 +10,7 @@ import pytest
 from apixis.core.event import get_handler
 from apixis.core.graph import AutoMerge, KeepRef, GraphManager, NodeGraph, START
 from apixis.core.graph import base as graph_base
+from apixis.core.graph.utils import state as state_utils
 from apixis.core.graph.context import GraphContext
 from apixis.core.graph.interrupter import interrupt
 from apixis.core.utils.exception import InvalidContextError
@@ -40,7 +41,7 @@ async def test_schema_is_resolved_once_and_frozen_for_created_and_restored_conte
 
     resource = {"items": []}
     with patch.object(
-        graph_base, "get_type_hints", wraps=graph_base.get_type_hints
+        state_utils, "get_type_hints", wraps=state_utils.get_type_hints
     ) as resolve:
         graph = build(MutableState)
         assert resolve.call_count == 1

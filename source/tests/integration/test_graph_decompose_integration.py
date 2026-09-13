@@ -10,7 +10,8 @@ import pytest
 
 from apixis.core.event import APIX_HANDLER_REGISTRY
 from apixis.core.graph import NodeGraph, Node, START, END, KeepRef, AutoMerge
-from apixis.core.graph.base import acquire_namespace, release_namespace, namespace_set
+from apixis.core.graph.base import namespace_set
+from apixis.core.graph.utils import acquire_namespace, release_namespace
 from apixis.core.graph.context import get_stream_writer
 
 

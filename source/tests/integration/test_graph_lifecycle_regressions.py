@@ -6,7 +6,8 @@ import pytest
 
 from apixis.core.event import get_handler
 from apixis.core.graph import END, START, NodeGraph, Node, get_graph_dispatch_name
-from apixis.core.graph.base import acquire_namespace, release_namespace, namespace_set
+from apixis.core.graph.base import namespace_set
+from apixis.core.graph.utils import acquire_namespace, release_namespace
 from apixis.core.graph.context import noop_stream_writer
 
 

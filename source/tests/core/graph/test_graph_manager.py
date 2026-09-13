@@ -13,10 +13,10 @@ from apixis.core.graph import (
     GraphManager,
     get_graph_dispatch_name,
     namespace_set,
+    release_namespace,
 )
 from apixis.core.graph.base import (
     _namespace_graphs,
-    release_namespace,
 )
 
 
