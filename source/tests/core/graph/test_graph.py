@@ -246,7 +246,10 @@ async def test_command_list_routes_are_flattened_in_order(
 ):
     """Specialised multi-command nodes contribute every selected route."""
     graph = NodeGraph(
-        {},
+        {
+            name: Node(lambda state: {}, name)
+            for name in ("command_node", "default", "first", "second")
+        },
         {"command_node": "default", START: "command_node"},
     )
     context = graph.create_context({})
@@ -672,7 +675,10 @@ async def test_concurrent_node_failure_cancels_siblings_without_commit():
 
 async def test_concurrent_routes_follow_command_order_and_deduplicate():
     """Defaults, explicit lists, END filtering, and duplicates compose stably."""
-    graph = NodeGraph({}, {"A": "D", START: "A"})
+    graph = NodeGraph(
+        {name: Node(lambda state: {}, name) for name in ("A", "B", "C", "D")},
+        {"A": "D", START: "A"},
+    )
     context = graph.create_context({})
 
     routes = graph.apply_command(
@@ -804,12 +810,10 @@ async def test_invalid_node_result_is_propagated_to_caller():
         await graph.invoke({})
 
 
-async def test_invalid_start_target_is_propagated_to_caller():
-    """A malformed direct NodeGraph fails while executing START."""
-    graph = NodeGraph({}, {START: "missing"})
-
-    with pytest.raises(ValueError, match="Unknown graph node `missing`"):
-        await graph.invoke({})
+async def test_invalid_start_target_is_rejected_during_construction():
+    """A malformed direct NodeGraph fails before registering its dispatch."""
+    with pytest.raises(ValueError, match="Unknown transition target 'missing'"):
+        NodeGraph({}, {START: "missing"})
 
 
 async def test_max_steps_stops_a_cycle():

@@ -69,6 +69,8 @@ class NodeGraph:
             nodes: Nodes keyed by their graph names.
             default_gotos: Manager-defined transitions.
             max_steps: Maximum number of node-dispatch batches in one run.
+                Routing to END or an empty target list consumes no additional
+                step and remains allowed when the last batch uses the budget.
             state_schema: Annotated schema compiled once for this graph.
                 Fields marked with ``Annotated[..., AutoMerge()]`` are
                 combined through their current value's ``__add__`` method.
@@ -681,6 +683,10 @@ class NodeGraph:
         for current_name in normalized_node_names:
             if current_name not in (START, END) and current_name not in self._nodes:
                 raise ValueError(f"Unknown graph node `{current_name}`.")
+        # Terminal dispatch completes the invocation without executing a batch.
+        # Validate its input above, but do not require another execution step.
+        if node_name == END or not normalized_node_names:
+            return
         if steps >= self._max_steps:
             raise RecursionError(
                 f"Graph exceeded its maximum of {self._max_steps} steps."
