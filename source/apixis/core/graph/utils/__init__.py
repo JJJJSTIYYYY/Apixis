@@ -11,6 +11,9 @@ from apixis.core.graph.utils.state import (
     copy_state,
     parse_state_schema,
 )
+from apixis.core.graph.utils.validate import (
+    validate_graph_definition
+)
 
 __all__ = [
     "acquire_namespace",
@@ -20,4 +23,5 @@ __all__ = [
     "get_graph_dispatch_name",
     "copy_state",
     "parse_state_schema",
+    "validate_graph_definition",
 ]

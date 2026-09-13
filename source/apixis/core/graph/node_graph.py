@@ -32,6 +32,7 @@ from apixis.core.graph.utils.namespace import (
     get_graph_dispatch_name,
 )
 from apixis.core.graph.utils.state import copy_state, parse_state_schema
+from apixis.core.graph.utils.validate import validate_graph_definition
 from apixis.core.graph.context.graph_context import GraphContext, GraphContextSnapshot
 from apixis.core.graph.context.manager import apix_graph_context
 from apixis.core.graph.interrupter.base import Block
@@ -86,6 +87,7 @@ class NodeGraph:
         self._decomposed = True
         self._nodes = dict(nodes)
         self._default_gotos = dict(default_gotos)
+        validate_graph_definition(self._nodes, self._default_gotos)
         self._max_steps = max_steps
         self._no_snapshot = no_snapshot
         # Compile both state policies once; contexts never parse a schema.

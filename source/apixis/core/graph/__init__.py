@@ -47,6 +47,7 @@ from apixis.core.graph.utils import (
     get_graph_dispatch_name,
     copy_state,
     parse_state_schema,
+    validate_graph_definition
 )
 
 __all__ = [
@@ -84,4 +85,5 @@ __all__ = [
     "get_graph_dispatch_name",
     "copy_state",
     "parse_state_schema",
+    "validate_graph_definition",
 ]

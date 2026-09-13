@@ -2,6 +2,30 @@
 
 `apixis.core.graph` 用事件系统驱动有向状态图。用户通过 `GraphManager` 声明节点和转移，编译得到 `NodeGraph`，再使用 `invoke()` 或 `stream()` 执行。
 
+## 模块导入
+
+常用图类型、上下文访问函数和中断接口可以统一从 `apixis.core.graph` 导入；这些公开接口也由 `apixis.core` 和 `apixis` 导出。
+
+```python
+from apixis.core.graph import (
+    GraphManager,
+    GraphContextSnapshot,
+    get_graph_dispatch_name,
+    get_stream_writer,
+    interrupt,
+    interrupted_hook,
+)
+```
+
+`base.py` 保留基础类型、常量与注册表。拆出的工具函数可从 `apixis.core.graph.utils` 或 `apixis.core.graph` 导入：
+
+| 定义模块 | 函数 |
+| --- | --- |
+| `utils.namespace` | `acquire_namespace`、`release_namespace`、`validate_namespace`、`get_graph_namespace`、`get_graph_dispatch_name` |
+| `utils.state` | `copy_state`、`parse_state_schema` |
+
+模块内部直接从定义模块导入依赖；仅用于类型注解的 `NodeGraph` 导入放在 `TYPE_CHECKING` 分支中，避免工具模块反向加载图运行时。
+
 ## 核心类型
 
 | 类型 | 用途 |
