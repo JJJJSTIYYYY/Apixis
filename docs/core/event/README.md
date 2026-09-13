@@ -173,6 +173,8 @@ await EVENT_PIPE.join()
 
 需要局部恢复且不向事件记录错误时，仍在原函数内使用 `try/except/finally`。
 
+`on_cancelled(event)` 负责取消收尾：正在执行的前台事件传播 `CancelledError` 后，事件循环跳过剩余业务函数，依次通知本次候选链中仍注册且匹配的前台 handler，再重新抛出取消。独立后台任务取消仅通知它自身。取消回调沿用 handler 的超时设置；清理异常只写日志，不阻断其他取消通知，也不改变原始取消结果。具体注册方式与触发范围见 [handlers.md](handlers.md#事件取消通知-on_cancelled)。
+
 每条 `ApixEventError` 包含 `handler_name`、`phase`、`exception_type`、`message`、`traceback`。`phase` 为 `core_func`、`on_has_error`、`on_accepted` 或 `on_error`；traceback 保存文本，不保留异常对象或活动栈帧。序列化会保留这些字段。
 
 如果业务需要确认处理结果，应通过事件上下文中的 Future、队列或其他显式回传机制实现，而不是依赖 `post_event()` 返回值。

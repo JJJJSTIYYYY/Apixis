@@ -321,7 +321,9 @@ graph = manager.compile_graph(
 - `exist_ok=True` 会先通过 namespace 获取接口分解旧图并接管 namespace，再注册新 dispatch handler。监听器注册失败时释放新图资源并抛出原始异常，不恢复已分解的旧图。
 - 旧图有活跃调用时，获取 namespace 的同步过程中会通过 `decompose(force=True)` 中止旧图 context 并注销旧监听器，然后才注册新监听器。
 
-图的内部调度事件会使用 `using_namespace` 限定作用域。每个 `NodeGraph` 只注册一个通用 dispatch handler，其处理器名和订阅事件名均为 `graph.dispatch_name`。路由时，运行时先把目标节点写入 `GraphContext.target_node_name`，再发布 namespace 隔离后的 `GRAPH_DISPATCH` 事件；通用 handler 根据 `target_node_name` 执行对应节点。不同 namespace 因此拥有不同的 dispatch 事件处理链，事件消费同时检查 context.graph_id 是否为当前图 ID，以及 context 是否由当前图管理，因此 namespace 重用不会转移旧 context。
+图的内部调度事件会使用 `using_namespace` 限定作用域。每个 `NodeGraph` 注册一个通用 dispatch handler，其处理器名和订阅事件名均为 `graph.dispatch_name`。路由时，运行时先把目标节点写入 `GraphContext.target_node_name`，再发布 namespace 隔离后的 `GRAPH_DISPATCH` 事件；通用 handler 根据 `target_node_name` 执行对应节点。不同 namespace 因此拥有不同的 dispatch 事件处理链，事件消费同时检查 context.graph_id 是否为当前图 ID，以及 context 是否由当前图管理，因此 namespace 重用不会转移旧 context。
+
+图还默认注册 `graph_{namespace}_interrupted` 中断处理器：没有匹配的 Block 处理钩子时，以 `BlockHookNotRegisteredError` 结束等待，并始终提供错误、accepted 和取消收尾。用户通过 `graph.add_interrupted_hook()` 或 `@interrupted_hook(...)` 注册处理钩子；详见 [图中断与恢复](interrupter/README.md)。
 
 模块导出的 `namespace_set` 可用于只读诊断当前被占用的 namespace。不要直接增删其中的值；正常释放必须经过 `graph.decompose()`，以同时清理图索引和事件处理器。
 
@@ -436,13 +438,15 @@ async def observe_graph_dispatch(event: ApixEvent) -> None:
 - 图自身的 handler 使用默认优先级 `1`，更高优先级的前台插件会先执行。
 - `GRAPH_DISPATCH` 是统一名称的基础常量；插件通常只需使用图属性或上述函数。
 
-图内置 dispatch handler 同时注册了错误与 accepted 通知：
+图内置 dispatch handler 注册了错误、accepted 与取消通知：
 
 - 前置前台插件抛出未捕获异常或超时：本次调用进入 `failed`，`invoke()` / `stream()` 抛出 `GraphNodeError`，其 `errors` 为前置 handler 的错误记录。
 - 前置插件调用 `event.accept()`：本次调用进入 `aborted`，按现有中止规则使用最新已保存快照结束；stream 会先产出已排队的 chunk。
 - 两种状态同时存在时，错误优先，已失败的 context 不会再次中止。
 - 后台插件的未捕获异常只写日志，不影响图的核心分发。
 - 图分发函数或 accepted 通知自身异常由 `on_error` 以原始异常结束调用，不依赖 `on_has_error`。
+- 前台插件、节点或图分发传播 `CancelledError` 时，通过 `on_cancelled` 结束仍活跃的调用。context 状态进入 `aborted`，completion 被取消，`invoke()` / `stream()` 向调用方抛出 `CancelledError`；stream 先产出已排队的 chunk。已完成、失败或中止的结果不会被后续取消通知覆盖。
+- 后台插件取消仅执行该插件自身的取消清理，不会取消图调用。`abort()` 和 `Block.cancel()` 仍按既有语义正常返回快照，不等同于运行时取消。
 
 这里需要注意：
 
@@ -461,6 +465,7 @@ graph.decompose()
 分解会：
 
 - 注销图的通用 dispatch listener；
+- 注销图默认注册的中断处理器；
 - 注销通过 `graph.add_interrupted_hook` 注册的钩子；
 - 释放命名空间；
 - 使图拒绝新的 `invoke()`、`stream()`、`abort()` 等业务操作。

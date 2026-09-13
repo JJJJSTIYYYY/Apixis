@@ -248,6 +248,8 @@ class ApixHandlerRegistry:
             raise TypeError("Handler on_has_error must be callable.")
         if handler_entry.on_error is not None and not callable(handler_entry.on_error):
             raise TypeError("Handler on_error must be callable.")
+        if handler_entry.on_cancelled is not None and not callable(handler_entry.on_cancelled):
+            raise TypeError("Handler on_cancelled must be callable.")
         if handler_entry.priority is not None and handler_entry.between_handlers is not None:
             raise ValueError(
                 "between_handlers and priority cannot be set together."

@@ -200,7 +200,11 @@ class ApixEventLoop:
         # now and recheck its current subscription and exclusions.
         handler = self._registry.get_handler(handler_name)
         if handler is not None and self._registry._matches_handler(handler, event.event_name):
-            await handler.execute(event)
+            try:
+                await handler.execute(event)
+            except asyncio.CancelledError:
+                await handler.notify_cancelled(event)
+                raise
 
     def _on_background_handler_done(self, task: asyncio.Task) -> None:
         # Also runs when the task is cancelled before its coroutine starts.
@@ -213,7 +217,7 @@ class ApixEventLoop:
         handler_chain: list[str],
     ) -> ApixEvent | None:
         """
-        Dispatch event to registered handlers.
+        Dispatch event to registered handlers and notify foreground cancellation.
         """
         logger.debug(
             f"Dispatching event `{event.event_name}` to {len(handler_chain)} handlers."
@@ -238,6 +242,18 @@ class ApixEventLoop:
 
             return event
 
+        except asyncio.CancelledError:
+            # Notify the entire candidate chain, including handlers whose core
+            # already ran or has not started. Never resume normal execution.
+            for handler_name in handler_chain:
+                handler = self._registry.get_handler(handler_name)
+                if (
+                    handler is not None
+                    and not handler.background
+                    and self._registry._matches_handler(handler, event.event_name)
+                ):
+                    await handler.notify_cancelled(event)
+            raise
         except Exception as e:
             logger.error(
                 f"Dispatch failed: "

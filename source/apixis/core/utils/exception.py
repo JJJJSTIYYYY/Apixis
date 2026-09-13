@@ -42,6 +42,10 @@ class EventChannelPermissionError(PermissionError, EventChannelError):
 
 class EventChannelUnavailableError(EventChannelError):
     """Raised when a configured channel is not available."""
+
+
+class BlockHookNotRegisteredError(RuntimeError):
+    """Raised when a graph emits a Block without a registered interruption hook."""
     
 
 class GraphNodeError(Exception):

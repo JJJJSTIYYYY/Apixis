@@ -15,6 +15,29 @@
 
 如果外部调用 `block.cancel()`，当前图 attempt 会回到当前节点或并发批次执行前的最新快照并进入 `aborted`。
 
+每个图在构造时都会默认注册中断处理器，负责未处理 Block 的检查，以及错误、accepted 和取消通知的收尾。
+默认处理器的名称和订阅事件名均为 `graph_{namespace}_interrupted`，随图分解而注销。
+
+如果默认处理器收到尚未完成的 Block，而当前没有通过 `graph.add_interrupted_hook()` 或
+`@interrupted_hook(...)` 注册匹配的处理钩子，它会立即使 `await interrupt()` 抛出
+`BlockHookNotRegisteredError`，不会无限等待。异常定义于
+`apixis.core.utils.exception`，也可从 `apixis.core.utils` 导入。节点没有捕获该异常时，
+图进入 `failed`，`invoke()` 和 `stream()` 向调用方传播同一个异常。
+
+```python
+from apixis.core.utils import BlockHookNotRegisteredError
+
+try:
+    decision = await interrupt(data="review")
+except BlockHookNotRegisteredError:
+    decision = "skip review"
+```
+
+默认处理器的优先级为 `0`，用户 hook 默认优先级为 `1`。已有 hook 时，默认处理器允许
+Block 继续等待外部回复；hook 将 Block 保存到队列后返回也不会触发缺失异常。
+是否存在 hook 以当前匹配的注册为准，支持在图编译前注册独立 hook；注销最后一个匹配 hook 后，
+后续中断恢复默认报错。普通事件观察插件不会被视为 Block 处理钩子；已经被处理完成的 Block 不会再次报错。
+
 ## 推荐用法：图拥有的 hook
 
 ```python
@@ -115,7 +138,7 @@ await interrupt(
 | 参数 | 说明 |
 | --- | --- |
 | `data` | 发送给 hook 的任意本地对象，保存于 `Block.with_data` |
-| `timeout` | 最大等待秒数；`None` 无限等待；超时返回 `None` |
+| `timeout` | 最大等待秒数；已有 hook 时 `None` 无限等待；超时返回 `None` |
 | `context` | 可选 active `GraphContext`；节点内省略时自动读取当前 context |
 
 节点外省略 `context` 会抛出 `RuntimeError`。即使显式传入 context，它也必须仍处于 active 调用中。
@@ -126,7 +149,11 @@ await interrupt(
 
 `interrupted_hook()` 注册的事件处理器会响应前置状态：前置前台 handler 报错时，通过 `block.fail(GraphNodeError(...))` 将错误交给等待中的节点；前置 handler 接受事件时，通过 `block.cancel()` 进入现有图中止流程。两种状态同时存在时先处理错误，不覆盖已完成的 Block。
 
+图默认注册的中断处理器也具备这些通知能力，所以没有用户 hook 时，前置插件的失败、接受或取消仍可结束等待；这些终止结果不会被缺失 hook 异常覆盖。
+
 用户 hook 自己抛出的异常由事件系统记录后交给 `on_error(event, error)`，再通过 `block.fail(error)` 传给等待中的节点；不会回调自己的 `on_has_error`。节点仍可以用 `try/except` 自行处理 `await interrupt()` 收到的异常；未捕获时按现有节点失败流程结束图。只有 `interrupt(timeout=...)` 自身的等待期限到达才返回 `None`，hook 传回的 `TimeoutError` 不会被当作等待超时吞掉。
+
+前置前台插件或中断 hook 传播 `CancelledError` 时，内置 `on_cancelled` 通知向等待的 Block 传递取消异常，节点继续传播后，图调用也抛出 `CancelledError`。这条路径不会转换成 `interrupt()` 的超时返回，也不会被当作人工 `Block.cancel()` 而正常返回快照；等待中的 Block 和图调用均能结束。
 
 这些通知需要存在通过 `interrupted_hook()` 或 `graph.add_interrupted_hook()` 注册的消费者。后台 handler 的未捕获异常仅记录日志，不产生错误通知。
 

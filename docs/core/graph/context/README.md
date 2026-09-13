@@ -159,6 +159,8 @@ force=False：存在未结束 context 时抛出 RuntimeError，不修改任何 c
 
 普通执行结束、失败或取消后，graph 会释放该次 context 的管理记录。调用方仍可保留 context 查看状态和快照。尚未执行的 context 由图保留；不再使用时可以调用 await graph.abort(context) 或分解图。
 
+运行时取消与主动 `abort()` 都使用终态 `aborted`，但调用结果不同：前者取消 completion，使 `invoke()` / `stream()` 抛出 `CancelledError`；后者正常返回最新快照。事件取消通知不会覆盖已有终态。
+
 ## abort()
 
 可以直接调用：

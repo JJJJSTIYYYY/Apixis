@@ -17,7 +17,7 @@ subscribe(
 )
 ```
 
-装饰器接受异步函数或 `ApixEventHandler` 实例，并原样返回被装饰对象。订阅、过滤、优先级和边界校验统一由 `register_handler()` 在装饰器实际应用时完成；单独调用 `subscribe(...)` 只创建装饰器。`core_func`、`on_has_error` 和 `on_accepted` 接收 `ApixEvent`；`on_error` 接收 `(event, exception)`。所有回调均为异步函数，返回 `None`。
+装饰器接受异步函数或 `ApixEventHandler` 实例，并原样返回被装饰对象。订阅、过滤、优先级和边界校验统一由 `register_handler()` 在装饰器实际应用时完成；单独调用 `subscribe(...)` 只创建装饰器。`core_func`、`on_has_error`、`on_accepted` 和 `on_cancelled` 接收 `ApixEvent`；`on_error` 接收 `(event, exception)`。所有回调均为异步函数，返回 `None`。
 
 ```python
 from apixis.core.event import ApixEvent, subscribe
@@ -104,6 +104,7 @@ ApixEventHandler(
     on_accepted=None,
     on_has_error=None,
     on_error=None,
+    on_cancelled=None,
     stop_when_error=True,
     time_out=None,
     background=False,
@@ -118,6 +119,37 @@ ApixEventHandler(
 - `time_out` 也独立应用于 `on_error`。任务取消继续传播，不调用 `on_error`，也不追加业务错误记录。
 - 后台 handler 同样调用 `on_error`，但原始错误和 `on_error` 自身错误都仅写日志，不写入事件错误栈。显式修改事件或业务上下文仍是回调自身的行为。
 - `subscribe()` 保留实例上的 `on_error`。若业务希望自行捕获并恢复异常而不留下事件失败记录，应继续在原函数内使用 `try/except/finally`。
+
+### 事件取消通知 on_cancelled
+
+```python
+from apixis.core.event import ApixEvent, ApixEventHandler, subscribe
+
+
+async def process_event(event: ApixEvent) -> None:
+    await process_request(event.context)
+
+
+async def release_event(event: ApixEvent) -> None:
+    await release_resources(event.context)
+
+
+handler = subscribe("request.*")(
+    ApixEventHandler(process_event, on_cancelled=release_event, time_out=5)
+)
+```
+
+`on_cancelled` 是可选的关键字参数，类型为 `EventHandlerFunc`。也可以通过
+`handler.add_on_cancelled_callback(callback, exist_ok=True)` 设置；`exist_ok=False`
+在已有回调时抛出 `ValueError`。构造、设置和注册时均检查回调是否可调用。
+
+- 正在执行的前台事件传播 `CancelledError` 时，立即停止正常 handler 链。事件循环按本次候选名称顺序，向仍注册、仍匹配该事件的所有前台 handler 发送取消通知，包括已执行、当前执行和尚未执行的 handler。
+- 每个符合条件的 handler 通知一次；`accepted`、`has_error` 和 `stop_when_error` 不阻止取消通知。通知期间不会执行剩余 handler 的 `core_func`，也不会重新调用 `on_has_error` 或 `on_accepted`。
+- 通知独立于正常执行，由事件循环调用。直接执行 `await handler(event)` 或 `await handler.execute(event)` 只传播取消，不负责整条事件链的取消通知。
+- 独立后台任务取消时，仅通知该后台 handler 自己，不通知主事件的其他 handler，也不取消图调用。前台事件取消不会取消已经启动的后台任务。
+- `time_out` 独立应用于每次取消回调。回调应只执行必要清理；`None` 仍表示无限等待。
+- 取消回调的普通异常、超时以及再次传播的 `CancelledError` 均只记录日志，不写入 `error_stack`，不触发 `on_error`，不阻止后续取消通知。完成通知后，事件循环重新抛出最初的 `CancelledError`。
+- 普通错误、正常转换为 `TimeoutError` 的超时、`event.accept()` 和正常完成不会触发取消通知。`APIX_EVENT_LOOP.stop()` 不取消正在运行的事件，因此也不会触发它们的取消通知。
 
 ## 匹配语义
 
@@ -322,7 +354,7 @@ patterns = get_unmatched_subscriptions("observe_agent_event")
 from apixis.core.event import ApixEventHandler
 ```
 
-该类封装核心函数和两个前置状态通知函数：
+该类封装核心函数、前置状态通知、自身错误通知和取消通知：
 
 | 字段 | 说明 |
 | --- | --- |
@@ -332,6 +364,7 @@ from apixis.core.event import ApixEventHandler
 | `on_has_error` | 当前 handler 对前置错误的响应，可为 `None` |
 | `on_accepted` | 当前 handler 对已 accepted 事件的响应，可为 `None` |
 | `on_error` | 接收事件和当前 handler 自身的原始异常，可为 `None` |
+| `on_cancelled` | 事件循环发出的取消清理通知，仅接收事件，可为 `None` |
 | `id` | 自动生成的 `handler-...` 标识 |
 | `subscribe` | 包含模式列表 |
 | `filter_event` | 排除模式列表 |
@@ -341,7 +374,7 @@ from apixis.core.event import ApixEventHandler
 | `time_out` | 每个实际调用的回调的超时时间 |
 | `background` | 是否后台执行 |
 
-构造函数只接收四个回调、`stop_when_error`、`time_out` 和 `background`；其余注册参数由全局 `subscribe()` 注入。底层 `register_handler(entry)` 要求 entry 已具备完整注册信息，负责验证模式、core_func、priority 和边界，并使受影响的精确事件链缓存失效。
+构造函数接收五个回调、`stop_when_error`、`time_out` 和 `background`；新增的 `on_cancelled` 为关键字参数。其余注册参数由全局 `subscribe()` 注入。底层 `register_handler(entry)` 要求 entry 已具备完整注册信息，负责验证模式、回调、priority 和边界，并使受影响的精确事件链缓存失效。
 
 ### ApixHandlerRegistry
 

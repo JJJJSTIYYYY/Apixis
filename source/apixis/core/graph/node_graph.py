@@ -14,11 +14,16 @@ from apixis.core.event import (
     ApixEventHandler,
     EventType,
     APIX_EVENT_LOOP,
+    APIX_HANDLER_REGISTRY,
     unsubscribe,
     subscribe,
     get_handler,
 )
-from apixis.core.utils.exception import GraphNodeError, InvalidContextError
+from apixis.core.utils.exception import (
+    BlockHookNotRegisteredError,
+    GraphNodeError,
+    InvalidContextError,
+)
 from apixis.core.utils.id_generator import idgen
 from apixis.core.graph.base import (
     END,
@@ -36,7 +41,10 @@ from apixis.core.graph.utils.validate import validate_graph_definition
 from apixis.core.graph.context.graph_context import GraphContext, GraphContextSnapshot
 from apixis.core.graph.context.manager import apix_graph_context
 from apixis.core.graph.interrupter.base import Block
-from apixis.core.graph.interrupter.graph_interrupter import interrupted_hook
+from apixis.core.graph.interrupter.graph_interrupter import (
+    BlockEventHandler,
+    interrupted_hook,
+)
 from apixis.core.graph.node import BaseNode
 from apixis.core.graph.context.stream_writer import (
     StreamChannel,
@@ -63,7 +71,7 @@ class NodeGraph:
         no_snapshot: bool = False,
         exist_ok: bool = False,
     ):
-        """Create a compiled graph and register its dispatch listener.
+        """Create a compiled graph and register dispatch and interruption listeners.
 
         Args:
             nodes: Nodes keyed by their graph names.
@@ -104,6 +112,7 @@ class NodeGraph:
         acquire_namespace(self, replace_existed=exist_ok)
         try:
             self._register_dispatch_handler()
+            self._register_interrupted_handler()
             self._decomposed = False
         except BaseException:
             self._unregister_handlers()
@@ -179,14 +188,54 @@ class NodeGraph:
             if self._is_active_context(context):
                 context.abort()
 
+        async def on_dispatch_cancelled(event: ApixEvent) -> None:
+            """Propagate dispatch cancellation to the waiting graph invocation."""
+            context: GraphContext = event.context
+            if self._is_active_context(context):
+                context._cancel()
+
         dispatch_node.__name__ = self.dispatch_name
         handler = ApixEventHandler(
             dispatch_node,
             on_accepted=on_dispatch_accepted,
             on_has_error=on_dispatch_error,
             on_error=on_dispatch_failure,
+            on_cancelled=on_dispatch_cancelled,
         )
         subscribe(self.dispatch_name, exist_ok=False)(handler)
+        self._handlers[handler.name] = handler
+
+    def _is_active_block(self, block: Block) -> bool:
+        """Return whether the block belongs to an active attempt of this graph."""
+        return block.graph_id == self.graph_id and any(
+            c.run_id == block.run_id and self._is_active_context(c)
+            for c in self._contexts
+        )
+
+    def _register_interrupted_handler(self) -> None:
+        """Always provide interruption cleanup and reject missing user hooks."""
+        event_name = f"graph_{self.namespace}_interrupted"
+
+        async def require_interrupted_hook(block: Block) -> None:
+            if not self._is_active_block(block):
+                return
+            # Consult current registrations so both standalone and graph-owned
+            # hooks work, including hooks installed before graph compilation.
+            for name in APIX_HANDLER_REGISTRY.get_handlers_chain_for_event(event_name):
+                candidate = get_handler(name)
+                if isinstance(candidate, BlockEventHandler) and candidate is not handler:
+                    return
+            raise BlockHookNotRegisteredError(
+                f"Graph namespace `{self.namespace}` emitted a Block without a "
+                "registered interruption hook. Register graph.add_interrupted_hook() "
+                "or interrupted_hook(namespace=...) before calling interrupt()."
+            )
+
+        require_interrupted_hook.__name__ = event_name
+        handler = BlockEventHandler(require_interrupted_hook)
+        # User hooks have priority 1. The default observes their outcomes and
+        # retains lifecycle notifications even when no user hook is installed.
+        subscribe(event_name, priority=0, exist_ok=False)(handler)
         self._handlers[handler.name] = handler
 
     def _unregister_handlers(self) -> None:
@@ -455,7 +504,7 @@ class NodeGraph:
             return copy_state(result, self._keep_ref_keys)
         except asyncio.CancelledError:
             if context.status == "running":
-                context.abort()
+                context._cancel()
             raise
         except Exception as exc:
             self._fail(context, exc)
@@ -734,10 +783,7 @@ class NodeGraph:
         @wraps(afunc)
         async def dispatch_owned_block(block: Block) -> None:
             """Namespace reuse cannot transfer another graph's interruption."""
-            if block.graph_id == self.graph_id and any(
-                c.run_id == block.run_id and self._is_active_context(c)
-                for c in self._contexts
-            ):
+            if self._is_active_block(block):
                 await afunc(block)
 
         interrupted_hook(self.namespace, exist_ok=False)(dispatch_owned_block)

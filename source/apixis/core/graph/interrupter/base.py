@@ -1,4 +1,4 @@
-from asyncio import Future
+from asyncio import CancelledError, Future
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -38,8 +38,8 @@ class Block:
 
         self._future.set_result(result)
 
-    def fail(self, error: Exception) -> None:
-        """Unblock the waiting node by raising an interruption failure."""
+    def fail(self, error: Exception | CancelledError) -> None:
+        """Raise an interruption failure or runtime cancellation in the waiting node."""
         if not self._future.done():
             self._future.set_exception(error)
 

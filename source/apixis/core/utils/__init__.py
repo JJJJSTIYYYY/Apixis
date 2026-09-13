@@ -1,6 +1,7 @@
 """Public exceptions, logging, and lifecycle utilities."""
 
 from apixis.core.utils.exception import (
+    BlockHookNotRegisteredError,
     EventChannelError,
     EventChannelPermissionError,
     EventChannelUnavailableError,
@@ -20,6 +21,7 @@ from apixis.core.utils.lifespan import (
 )
 
 __all__ = [
+    "BlockHookNotRegisteredError",
     "EventChannelError",
     "EventChannelPermissionError",
     "EventChannelUnavailableError",

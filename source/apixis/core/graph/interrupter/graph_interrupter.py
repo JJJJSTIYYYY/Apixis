@@ -42,6 +42,11 @@ async def interrupt(
     This method will post a :class:`Block` by event pipe, not by stream writer.
     To receive a :class:`Block` posted by this method, it is required to register a handler
     for event `graph_{namespace}_interrupted` and get block item from event context.
+
+    Raises:
+        BlockHookNotRegisteredError: If the graph's default interruption handler
+            receives a pending Block without a matching registered Block hook.
+            Register one through graph.add_interrupted_hook() or interrupted_hook().
     """
 
     if context is None:
@@ -116,28 +121,17 @@ async def interrupt(
             block.cancel()
 
 
-def interrupted_hook(
-    namespace: str | None = None,
-    *,
-    exist_ok: bool = True,
-) -> Callable[
-    [InterruptedHandler],
-    InterruptedHandler,
-]:
-    """Register a callback receiving the :class:`Block` for a namespace.
+class BlockEventHandler(ApixEventHandler):
+    """Adapt a Block callback and its event lifecycle notifications together.
 
-    The event runtime dispatches :class:`ApixEvent` objects internally. This
-    decorator hides that transport detail and gives application callbacks the
-    ``Block`` promised by the public API.
-
-    Usage:
-        @interrupted_hook(namespace="agent")
-        async def on_interrupted(block: Block):
-            ...
+    Both graph defaults and user hooks use this adapter. The default handler
+    recognizes registered Block callbacks through this common adapter type.
     """
-    event_name = f"graph_{namespace or GLOBALNS}_interrupted"
 
-    def decorator(func: InterruptedHandler) -> InterruptedHandler:
+    def __init__(self, func: InterruptedHandler) -> None:
+        if not callable(func):
+            raise TypeError("Interrupted hook must be callable.")
+
         @wraps(func)
         async def dispatch_block(event: ApixEvent) -> None:
             block = event.context
@@ -169,17 +163,44 @@ def interrupted_hook(
             if isinstance(block, Block) and not block.done:
                 block.cancel()
 
-        subscribe(
-            event_name,
-            exist_ok=exist_ok,
-        )(
-            ApixEventHandler(
-                dispatch_block,
-                on_accepted=on_accepted,
-                on_has_error=on_has_error,
-                on_error=on_failure,
-            )
+        async def on_cancelled(event: ApixEvent) -> None:
+            """Propagate runtime cancellation without treating it as a user abort."""
+            block = event.context
+            if isinstance(block, Block):
+                block.fail(asyncio.CancelledError())
+
+        super().__init__(
+            dispatch_block,
+            on_accepted=on_accepted,
+            on_has_error=on_has_error,
+            on_error=on_failure,
+            on_cancelled=on_cancelled,
         )
+
+
+def interrupted_hook(
+    namespace: str | None = None,
+    *,
+    exist_ok: bool = True,
+) -> Callable[
+    [InterruptedHandler],
+    InterruptedHandler,
+]:
+    """Register a callback receiving the :class:`Block` for a namespace.
+
+    The event runtime dispatches :class:`ApixEvent` objects internally. This
+    decorator hides that transport detail and gives application callbacks the
+    ``Block`` promised by the public API.
+
+    Usage:
+        @interrupted_hook(namespace="agent")
+        async def on_interrupted(block: Block):
+            ...
+    """
+    event_name = f"graph_{namespace or GLOBALNS}_interrupted"
+
+    def decorator(func: InterruptedHandler) -> InterruptedHandler:
+        subscribe(event_name, exist_ok=exist_ok)(BlockEventHandler(func))
         return func
 
     return decorator

@@ -71,6 +71,9 @@ class ApixEventHandler:
     this handler's own uncaught exception after it has been logged and, for
     foreground handlers, recorded. Local try/except/finally blocks may still
     handle recovery and cleanup without reporting an event failure.
+    ``on_cancelled`` receives event cancellation notifications from the event
+    loop, independently of the normal handler chain. Background cancellation
+    only notifies the cancelled background handler.
     Registration metadata is assigned by :func:`subscribe`.
     """
 
@@ -82,6 +85,7 @@ class ApixEventHandler:
     on_accepted: EventHandlerFunc
     on_has_error: EventHandlerFunc
     on_error: EventHandlerErrorFunc
+    on_cancelled: EventHandlerFunc
     stop_when_error: bool
     time_out: float | None
     background: bool
@@ -95,12 +99,13 @@ class ApixEventHandler:
         on_accepted: EventHandlerFunc | None = None,
         on_has_error: EventHandlerFunc | None = None,
         on_error: EventHandlerErrorFunc | None = None,
+        on_cancelled: EventHandlerFunc | None = None,
         *,
         stop_when_error: bool = True,
         time_out: float | None = None,
         background: bool = False,
     ) -> None:
-        for callback in (core_func, on_accepted, on_has_error, on_error):
+        for callback in (core_func, on_accepted, on_has_error, on_error, on_cancelled):
             if callback is not None and not callable(callback):
                 raise TypeError("Handler functions must be callable.")
         if core_func is None:
@@ -109,6 +114,7 @@ class ApixEventHandler:
         self.on_accepted: EventHandlerFunc | None = on_accepted
         self.on_has_error: EventHandlerFunc | None = on_has_error
         self.on_error: EventHandlerErrorFunc | None = on_error
+        self.on_cancelled: EventHandlerFunc | None = on_cancelled
         self.stop_when_error = stop_when_error
         self.time_out = time_out if time_out is not None and time_out > 0 else None
         self.background = background
@@ -220,6 +226,34 @@ class ApixEventHandler:
         if self.on_error is not None and not exist_ok:
             raise ValueError("on_error already set.")
         self.on_error = callback
+
+    async def notify_cancelled(self, event: ApixEvent) -> None:
+        """Run cancellation cleanup without interrupting other notifications.
+
+        The event loop calls this outside normal execution, then re-raises the
+        original cancellation. Each hook uses this handler's timeout. Cleanup
+        failures, including cancellation, are logged only: they do not invoke
+        on_error, append business errors, or replace the original cancellation.
+        """
+        if self.on_cancelled is None:
+            return
+        try:
+            async with asyncio.timeout(self.time_out):
+                await self.on_cancelled(event)
+        except (Exception, asyncio.CancelledError) as exc:
+            logger.error(
+                f"Cancellation cleanup failed: event={event.event_name}, "
+                f"handler={self.name}, phase=on_cancelled, "
+                f"error={type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+            )
+
+    def add_on_cancelled_callback(self, callback: EventHandlerFunc, *, exist_ok: bool = True) -> None:
+        """Set the event cancellation cleanup callback, optionally rejecting replacement."""
+        if not callable(callback):
+            raise TypeError("Callback must be callable.")
+        if self.on_cancelled is not None and not exist_ok:
+            raise ValueError("on_cancelled already set.")
+        self.on_cancelled = callback
 
 
 ChannelType = Literal["builtin", "mailbox", "mailtruck"]

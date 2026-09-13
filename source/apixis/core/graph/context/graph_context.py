@@ -212,3 +212,9 @@ class GraphContext:
         # Pending contexts own no Future, but must still be released by abort.
         if completion is not None and not completion.done():
             completion.set_result(self._latest_snapshot_state())
+
+    def _cancel(self) -> None:
+        """Abort an attempt by cancelling its completion instead of returning state."""
+        self._transition_to("aborted")
+        if self.completion is not None and not self.completion.done():
+            self.completion.cancel()
