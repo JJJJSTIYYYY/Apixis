@@ -143,7 +143,7 @@ handler = subscribe("request.*")(
 `handler.add_on_cancelled_callback(callback, exist_ok=True)` 设置；`exist_ok=False`
 在已有回调时抛出 `ValueError`。构造、设置和注册时均检查回调是否可调用。
 
-- 正在执行的前台事件传播 `CancelledError` 时，立即停止正常 handler 链。事件循环按本次候选名称顺序，向仍注册、仍匹配该事件的所有前台 handler 发送取消通知，包括已执行、当前执行和尚未执行的 handler。
+- 正在执行的前台事件传播 `CancelledError` 时，立即停止正常 handler 链。事件循环向仍注册、仍匹配该事件的所有前台 handler 发送取消通知，包括已执行、当前执行和尚未执行的 handler。
 - 每个符合条件的 handler 通知一次；`accepted`、`has_error` 和 `stop_when_error` 不阻止取消通知。通知期间不会执行剩余 handler 的 `core_func`，也不会重新调用 `on_has_error` 或 `on_accepted`。
 - 通知独立于正常执行，由事件循环调用。直接执行 `await handler(event)` 或 `await handler.execute(event)` 只传播取消，不负责整条事件链的取消通知。
 - 独立后台任务取消时，仅通知该后台 handler 自己，不通知主事件的其他 handler，也不取消图调用。前台事件取消不会取消已经启动的后台任务。

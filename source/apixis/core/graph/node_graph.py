@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import math
 from uuid import uuid4
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
@@ -41,7 +42,7 @@ from apixis.core.graph.utils.state import copy_state, parse_state_schema
 from apixis.core.graph.utils.validate import validate_graph_definition
 from apixis.core.graph.context.graph_context import GraphContext, GraphContextSnapshot
 from apixis.core.graph.context.manager import apix_graph_context
-from apixis.core.graph.interrupter.base import Block
+from apixis.core.graph.interrupter.block import Block
 from apixis.core.graph.interrupter.graph_interrupter import (
     BlockEventHandler,
     interrupted_hook,
@@ -217,25 +218,23 @@ class NodeGraph:
         """Always provide interruption cleanup and reject missing user hooks."""
         event_name = get_graph_interrupted_name(self.namespace, missing_ok=True)
 
-        async def require_interrupted_hook(block: Block) -> None:
+        async def temp_hook(block: Block) -> None:
+            return
+
+        async def require_interrupted_hook(event: ApixEvent) -> None:
+            block = event.context
             if not self._is_active_block(block):
                 return
-            # Consult current registrations so both standalone and graph-owned
-            # hooks work, including hooks installed before graph compilation.
-            for name in APIX_HANDLER_REGISTRY.get_handlers_chain_for_event(event_name):
-                candidate = get_handler(name)
-                if isinstance(candidate, BlockEventHandler) and candidate is not handler:
-                    return
-            raise BlockHookNotRegisteredError(
-                f"Graph namespace `{self.namespace}` emitted a Block without a "
-                "registered interruption hook. Register graph.add_interrupted_hook() "
-                "or interrupted_hook(namespace=...) before calling interrupt()."
-            )
+            if not event.seen or event.seen == [event_name]:
+                raise BlockHookNotRegisteredError(
+                    f"Graph namespace `{self.namespace}` emitted a Block without a "
+                    "registered interruption hook. Register graph.add_interrupted_hook() "
+                    "or interrupted_hook(namespace=...) before calling interrupt()."
+                )
 
-        require_interrupted_hook.__name__ = event_name
+        temp_hook.__name__ = event_name
         handler = BlockEventHandler(require_interrupted_hook)
-        # User hooks have priority 1. The default observes their outcomes and
-        # retains lifecycle notifications even when no user hook is installed.
+        handler.set_core_func(require_interrupted_hook)
         subscribe(event_name, priority=0, exist_ok=False)(handler)
         self._handlers[handler.name] = handler
 

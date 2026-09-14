@@ -84,7 +84,7 @@ async def test_cancelled_phase_notifies_entire_foreground_chain(phase, stop_when
     tail_core.assert_not_awaited()
     background_cleanup.assert_not_awaited()
     assert [error.exception_type for error in event.error_stack] == (
-        ["ValueError"] if phase in ("on_error", "on_has_error") else []
+        ["ValueError", "CancelledError"] if phase in ("on_error", "on_has_error") else ["CancelledError"]
     )
 
 
@@ -118,7 +118,7 @@ async def test_cleanup_failure_cannot_hide_cancellation_or_skip_other_subscriber
         logger.error.assert_called_once()
     tail_cleanup.assert_awaited_once_with(event)
     on_error.assert_not_awaited()
-    assert event.error_stack == []
+    assert len(event.error_stack) == 1 and event.error_stack[0].exception_type == 'CancelledError'
 
 
 async def test_cancel_notifications_run_concurrently_and_wait_for_every_hook():
@@ -209,7 +209,7 @@ async def test_repeated_dispatch_cancellation_interrupts_all_running_notificatio
             assert logger.error.call_count == 2
             tail_core.assert_not_awaited()
             on_error.assert_not_awaited()
-            assert event.error_stack == []
+            assert len(event.error_stack) == 1 and event.error_stack[0].exception_type == 'CancelledError'
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -299,7 +299,7 @@ async def test_background_cancellation_only_notifies_its_own_handler(cause):
         await asyncio.wait_for(task, 1)
     background_cleanup.assert_awaited_once_with(event)
     foreground_cleanup.assert_not_awaited()
-    assert event.error_stack == []
+    assert len(event.error_stack) == 0
 
 
 @pytest.mark.parametrize("action", ["success", "accept", "error", "timeout"])

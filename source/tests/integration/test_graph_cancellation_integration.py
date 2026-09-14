@@ -73,7 +73,7 @@ async def test_upstream_plugin_cancellation_ends_call_and_runtime_remains_usable
             assert not context.is_active
             assert context.completion.cancelled()
             assert len(notifications) == 1
-            assert notifications[0].error_stack == []
+            assert len(notifications[0].error_stack) == 1 and notifications[0].error_stack[0].exception_type == 'CancelledError'
             assert called == (["business"] if target == END else [])
             if mode == "stream":
                 assert chunks == (["business chunk"] if target == END else [])

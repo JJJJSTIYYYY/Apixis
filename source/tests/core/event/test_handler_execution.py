@@ -157,7 +157,7 @@ async def test_timeout_is_per_phase_and_background_errors_are_log_only(phase, ba
 
 
 @pytest.mark.parametrize("phase", ["core_func", "on_has_error", "on_accepted"])
-async def test_cancellation_propagates_without_recording_an_error(phase):
+async def test_cancellation_propagates_recording_an_error(phase):
     async def cancelled(event):
         raise asyncio.CancelledError()
 
@@ -166,7 +166,9 @@ async def test_cancellation_propagates_without_recording_an_error(phase):
     handler = ApixEventHandler(**{"core_func": AsyncMock(), phase: cancelled})
     with pytest.raises(asyncio.CancelledError):
         await handler(event)
-    assert event.error_stack == before
+    assert event.error_stack[:-1] == before
+    assert event.error_stack[-1].phase == phase
+    assert event.error_stack[-1].exception_type == "CancelledError"
 
 
 async def test_error_stack_round_trip_and_instance_isolation():
@@ -399,7 +401,7 @@ async def test_on_error_receives_timeout_after_core_cleanup():
     assert isinstance(observed[0], TimeoutError)
 
 
-async def test_on_error_cancellation_propagates_without_error_record():
+async def test_on_error_cancellation_propagates_with_error_record():
     async def on_error(event, exc):
         raise asyncio.CancelledError()
 
@@ -407,10 +409,11 @@ async def test_on_error_cancellation_propagates_without_error_record():
     handler = ApixEventHandler(AsyncMock(side_effect=ValueError("core failure")), on_error=on_error)
     with pytest.raises(asyncio.CancelledError):
         await handler(event)
-    assert [error.phase for error in event.error_stack] == ["core_func"]
+    assert [error.phase for error in event.error_stack] == ["core_func", "on_error"]
+    assert event.error_stack[-1].exception_type == "CancelledError"
 
 
-async def test_external_cancellation_does_not_call_on_error():
+async def test_external_cancellation_does_call_on_error():
     started = asyncio.Event()
 
     async def core(event):
@@ -425,7 +428,7 @@ async def test_external_cancellation_does_not_call_on_error():
     with pytest.raises(asyncio.CancelledError):
         await task
     on_error.assert_not_awaited()
-    assert not event.has_error
+    assert event.has_error and event.error_stack[-1].exception_type == "CancelledError"
 
 
 async def test_subscribe_preserves_on_error_and_later_handler_observes_failure(registry):

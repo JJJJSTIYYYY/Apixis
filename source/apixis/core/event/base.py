@@ -37,6 +37,7 @@ class ApixEvent:
     context: Any
     timestamp: float
     accepted: bool = False
+    seen: list[str] = field(default_factory=list) # List of handler names that have processed this event.
     error_stack: list[ApixEventError] = field(default_factory=list)
 
     def accept(self) -> None:
@@ -105,6 +106,7 @@ class ApixEventHandler:
         stop_when_error: bool = True,
         time_out: float | None = None,
         background: bool = False,
+        name: str | None = None,
     ) -> None:
         for callback in (core_func, on_accepted, on_has_error, on_error, on_cancelled):
             if callback is not None and not callable(callback):
@@ -119,7 +121,7 @@ class ApixEventHandler:
         self.stop_when_error = stop_when_error
         self.time_out = time_out if time_out is not None and time_out > 0 else None
         self.background = background
-        self.name = getattr(core_func, "__name__", type(core_func).__name__)
+        self.name = name or getattr(core_func, "__name__", type(core_func).__name__)
         self.id = "handler-" + uuid4().hex
         self._register_order = -1
         self.subscribe: list[str] = []
@@ -160,6 +162,7 @@ class ApixEventHandler:
             return
         if event.has_error and self.stop_when_error:
             return
+        event.seen.append(self.name)
         await self._execute_func(self.core_func, "core_func", event)
 
     async def _execute_func(
@@ -176,6 +179,17 @@ class ApixEventHandler:
             else:
                 async with asyncio.timeout(self.time_out):
                     await func(event, *args)
+        except asyncio.CancelledError as exc:
+            error = ApixEventError(
+                handler_name=self.name,
+                phase=phase,
+                exception_type=type(exc).__name__,
+                message=str(exc),
+                traceback=traceback.format_exc(),
+            )
+            if not self.background:
+                event.error_stack.append(error)
+            raise
         except Exception as exc:
             error = ApixEventError(
                 handler_name=self.name,
@@ -194,6 +208,12 @@ class ApixEventHandler:
             )
             if phase != "on_error" and self.on_error is not None:
                 await self._execute_func(self.on_error, "on_error", event, exc)
+
+    def set_core_func(self, callback: EventHandlerFunc) -> None:
+        """Reset the core function, optionally rejecting replacement."""
+        if not callable(callback):
+            raise TypeError("Core function must be callable.")
+        self.core_func = callback
 
     def add_has_error_callback(self, callback: EventHandlerFunc, *, exist_ok: bool = True) -> None:
         """Add a callback to be invoked when an upstream handler has failed.

@@ -16,7 +16,7 @@ from apixis.core.event import (
     EventType,
     subscribe,
 )
-from apixis.core.graph.interrupter.base import Block
+from apixis.core.graph.interrupter.block import Block
 from apixis.core.utils.exception import GraphNodeError
 
 
