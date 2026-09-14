@@ -6,6 +6,7 @@ from apixis.core.graph.utils.namespace import (
     validate_namespace,
     get_graph_namespace,
     get_graph_dispatch_name,
+    get_graph_interrupted_name,
 )
 from apixis.core.graph.utils.state import (
     copy_state,
@@ -21,6 +22,7 @@ __all__ = [
     "validate_namespace",
     "get_graph_namespace",
     "get_graph_dispatch_name",
+    "get_graph_interrupted_name",
     "copy_state",
     "parse_state_schema",
     "validate_graph_definition",

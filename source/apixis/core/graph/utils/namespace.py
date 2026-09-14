@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from apixis.core.graph.base import GRAPH_DISPATCH, GLOBALNS, _namespace_graphs, namespace_set
+from apixis.core.graph.base import GRAPH_DISPATCH, GLOBALNS, GRAPH_INTERRUPTED, _namespace_graphs, namespace_set
 
 if TYPE_CHECKING:
     from apixis.core.graph.node_graph import NodeGraph
@@ -89,3 +89,31 @@ def get_graph_dispatch_name(
         raise KeyError(f"Namespace `{namespace}` not found in current namespace set.")
 
     return f"{GRAPH_DISPATCH}_{namespace}"
+
+
+def get_graph_interrupted_name(
+    namespace_or_graph: str | NodeGraph | None = None,
+    missing_ok: bool = True,
+) -> str:
+    """Return the event and handler name for graph interrupted.
+
+    Use the returned name with ``subscribe`` and as the graph handler boundary
+    in ``between_handlers``. No node name is needed.
+
+    Args:
+        namespace_or_graph: Graph namespace or graph instance. ``None`` and an empty string select
+            ``<global>``. ``*`` produces a subscription pattern matching
+            every graph, including the global graph. A wildcard pattern
+            cannot identify a single handler for ``between_handlers``.
+        missing_ok: If ``False``, require a concrete namespace to be owned by
+            a compiled graph. The wildcard namespace ``*`` is always accepted.
+    """
+    if namespace_or_graph and not isinstance(namespace_or_graph, str):
+        namespace = namespace_or_graph.namespace or GLOBALNS
+    else:
+        namespace = namespace_or_graph or GLOBALNS
+
+    if not missing_ok and namespace != "*" and namespace not in namespace_set:
+        raise KeyError(f"Namespace `{namespace}` not found in current namespace set.")
+
+    return f"{GRAPH_INTERRUPTED}_{namespace}"

@@ -10,6 +10,7 @@ from apixis.core.utils.logger import logger
 
 
 class EventType(str, Enum):
+    INTERNAL = 'internal' # Internal event type for event bus itself.
     WORKFLOW = 'workflow'
     LIFECYCLE = 'lifecycle'
     INFO = 'info'
@@ -254,6 +255,14 @@ class ApixEventHandler:
         if self.on_cancelled is not None and not exist_ok:
             raise ValueError("on_cancelled already set.")
         self.on_cancelled = callback
+
+    def register(self, ) -> None:
+        """Register this handler for a specific event name."""
+        pass
+
+    def unregister(self, ) -> None:
+        """Unregister this handler from its event name."""
+        pass
 
 
 ChannelType = Literal["builtin", "mailbox", "mailtruck"]

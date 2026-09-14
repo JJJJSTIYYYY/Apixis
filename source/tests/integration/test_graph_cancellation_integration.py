@@ -8,6 +8,7 @@ from apixis.core.event import ApixEventHandler, EVENT_PIPE, subscribe, unsubscri
 from apixis.core.graph import END, START, GraphManager
 from apixis.core.graph.context import get_stream_writer
 from apixis.core.graph.interrupter.graph_interrupter import interrupt
+from apixis.core.graph.utils.namespace import get_graph_interrupted_name
 
 
 async def run_graph(graph, context, mode, chunks):
@@ -135,7 +136,7 @@ async def test_interruption_dispatch_cancellation_releases_block_and_call(mode, 
     graph = (GraphManager().add_node(business).add_edge(START, "business")
              .compile_graph())
 
-    @subscribe(f"graph_{graph.namespace}_interrupted", priority=10)
+    @subscribe(get_graph_interrupted_name(graph.namespace, missing_ok=True), priority=10)
     async def plugin(event):
         blocks.append(event.context)
         if origin == "plugin":

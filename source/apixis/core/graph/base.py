@@ -88,6 +88,9 @@ END = "__end__"
 GRAPH_DISPATCH = "__graph_dispatch__"
 """Base name qualified by get_graph_dispatch_name for graph events and handlers."""
 
+GRAPH_INTERRUPTED = "__graph_interrupted__"
+"""Base name qualified by get_graph_interrupted_name for graph events and handlers."""
+
 GLOBALNS = "<global>"
 """Explicit namespace for graph events and handlers in the global domain."""
 

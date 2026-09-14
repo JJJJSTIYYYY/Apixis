@@ -196,9 +196,12 @@ class ApixHandlerRegistry:
 
     def _invalidate_matching_chains(self, handler: ApixEventHandler) -> None:
         """Expire existing caches accepted by this handler without rebuilding."""
+        need_delete = []
         for event_name in self.cached_chain:
             if self._matches_handler(handler, event_name):
-                self.cached_chain[event_name] = None
+                need_delete.append(event_name)
+        for event_name in need_delete:
+            self.cached_chain.pop(event_name, None)
 
     def get_handlers_chain_for_event(self, event_name: str) -> list[str]:
         """Return the current chain, rebuilding only absent or expired entries."""

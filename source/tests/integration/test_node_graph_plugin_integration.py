@@ -17,6 +17,7 @@ from apixis.core.graph import (
     GraphManager,
     get_graph_dispatch_name,
 )
+from apixis.core.graph.utils.namespace import get_graph_interrupted_name
 
 
 GLOBAL_DISPATCH = get_graph_dispatch_name()
@@ -295,7 +296,7 @@ async def test_interruption_hook_termination_unblocks_node(action, timeout):
         .compile_graph(GLOBALNS)
     )
 
-    @subscribe(f"graph_{GLOBALNS}_interrupted", priority=10)
+    @subscribe(get_graph_interrupted_name(GLOBALNS, missing_ok=True), priority=10)
     async def interruption_plugin(event):
         blocks.append(event.context)
         if action in ("accept", "accept_and_error"):

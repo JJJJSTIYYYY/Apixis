@@ -53,6 +53,8 @@ MAX_LOG_FILE_SIZE = _get_config("LOG.max_log_file_size", 10 * 1024 * 1024)
 EVENT_PIPE_MAX_LEN = _get_config("PIPELINE.event_pipe_max_len", 65536)
 # Bound running event dispatch tasks independently of processing queue capacity.
 EVENT_LOOP_BACKPRESSURE = _get_config("PIPELINE.event_loop_backpressure", 1024)
+if EVENT_LOOP_BACKPRESSURE < 128:
+    EVENT_LOOP_BACKPRESSURE = 128
 BACKGROUND_HANDLER_BACKPRESSURE = _get_config("PIPELINE.background_handler_backpressure", 4096)
 
 

@@ -8,7 +8,7 @@ from typing import Any, Callable
 from apixis.core.graph.context.manager import get_graph_context
 from apixis.core.graph.base import GLOBALNS
 from apixis.core.graph.context.graph_context import GraphContext
-from apixis.core.graph.utils.namespace import get_graph_namespace
+from apixis.core.graph.utils.namespace import get_graph_interrupted_name, get_graph_namespace
 from apixis.core.event import (
     ApixEvent,
     ApixEventHandler,
@@ -89,7 +89,7 @@ async def interrupt(
     try:
         await EVENT_PIPE.post_event(
             event_type=EventType.WORKFLOW,
-            event_name=f"graph_{namespace}_interrupted",
+            event_name=get_graph_interrupted_name(namespace, missing_ok=True),
             context=block,
         )
         if timeout is None:
@@ -197,7 +197,7 @@ def interrupted_hook(
         async def on_interrupted(block: Block):
             ...
     """
-    event_name = f"graph_{namespace or GLOBALNS}_interrupted"
+    event_name = get_graph_interrupted_name(namespace, missing_ok=True)
 
     def decorator(func: InterruptedHandler) -> InterruptedHandler:
         subscribe(event_name, exist_ok=exist_ok)(BlockEventHandler(func))

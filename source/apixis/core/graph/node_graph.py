@@ -32,6 +32,7 @@ from apixis.core.graph.base import (
     Reset,
 )
 from apixis.core.graph.utils.namespace import (
+    get_graph_interrupted_name,
     release_namespace,
     acquire_namespace,
     get_graph_dispatch_name,
@@ -214,7 +215,7 @@ class NodeGraph:
 
     def _register_interrupted_handler(self) -> None:
         """Always provide interruption cleanup and reject missing user hooks."""
-        event_name = f"graph_{self.namespace}_interrupted"
+        event_name = get_graph_interrupted_name(self.namespace, missing_ok=True)
 
         async def require_interrupted_hook(block: Block) -> None:
             if not self._is_active_block(block):

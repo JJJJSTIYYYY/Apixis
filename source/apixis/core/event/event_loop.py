@@ -31,15 +31,16 @@ class ApixEventLoop:
 
         self._event_consumer_task: asyncio.Task | None = None
         self._event_dispatcher_task: asyncio.Task | None = None
+        min_backpressure = EVENT_LOOP_BACKPRESSURE if EVENT_LOOP_BACKPRESSURE > 128 else 128
         self._processing_queue: asyncio.Queue[ApixEvent] = (
-            asyncio.Queue(maxsize=EVENT_PIPE_MAX_LEN)
+            asyncio.Queue(maxsize=min_backpressure)
         )
         # Retain a dequeued event while put() waits, including across restarts.
         self._pending_event: ApixEvent | None = None
 
         self._dispatch_tasks: set[asyncio.Task] = set()
         # One permit covers a running dispatch, independently of queue capacity.
-        self._dispatch_semaphore = asyncio.Semaphore(EVENT_LOOP_BACKPRESSURE)
+        self._dispatch_semaphore = asyncio.Semaphore(min_backpressure)
 
         self._background_handler_tasks: set[asyncio.Task] = set()
         self._background_handler_semaphore = asyncio.Semaphore(BACKGROUND_HANDLER_BACKPRESSURE)
@@ -245,6 +246,7 @@ class ApixEventLoop:
         except asyncio.CancelledError:
             # Notify the entire candidate chain, including handlers whose core
             # already ran or has not started. Never resume normal execution.
+            tasks = []
             for handler_name in handler_chain:
                 handler = self._registry.get_handler(handler_name)
                 if (
@@ -252,7 +254,9 @@ class ApixEventLoop:
                     and not handler.background
                     and self._registry._matches_handler(handler, event.event_name)
                 ):
-                    await handler.notify_cancelled(event)
+                    tasks.append(handler.notify_cancelled(event))
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
             raise
         except Exception as e:
             logger.error(

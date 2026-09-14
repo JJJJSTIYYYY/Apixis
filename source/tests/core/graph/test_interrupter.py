@@ -17,6 +17,7 @@ from apixis.core.event import (
 from apixis.core.graph import START, END, GLOBALNS, GraphManager
 from apixis.core.graph.context import apix_graph_context
 from apixis.core.graph.interrupter import Block, interrupt, interrupted_hook
+from apixis.core.graph.utils.namespace import get_graph_interrupted_name
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
@@ -99,13 +100,13 @@ async def test_interrupted_hook_rejects_non_block_event_context():
 
     try:
         [handler_name] = APIX_HANDLER_REGISTRY.get_handlers_chain_for_event(
-            "graph_<global>_interrupted"
+            get_graph_interrupted_name(GLOBALNS, missing_ok=True)
         )
         handler = APIX_HANDLER_REGISTRY.get_handler(handler_name)
         event = ApixEvent(
             event_id="event-id",
             event_type=EventType.WORKFLOW,
-            event_name="graph_<global>_interrupted",
+            event_name=get_graph_interrupted_name(GLOBALNS, missing_ok=True),
             context={},
             timestamp=time.time(),
         )

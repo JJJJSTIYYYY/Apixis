@@ -13,6 +13,7 @@ from apixis.core.graph import base as graph_base
 from apixis.core.graph.utils import state as state_utils
 from apixis.core.graph.context import GraphContext
 from apixis.core.graph.interrupter import interrupt
+from apixis.core.graph.utils.namespace import get_graph_interrupted_name
 from apixis.core.utils.exception import InvalidContextError
 
 
@@ -307,7 +308,7 @@ async def test_abort_closes_owned_interrupt_before_namespace_replacement():
 
     await EVENT_PIPE.post_event(
         event_type=EventType.WORKFLOW,
-        event_name=f"graph_{new.namespace}_interrupted",
+        event_name=get_graph_interrupted_name(new.namespace, missing_ok=True),
         context=block,
     )
     await new.invoke({"history": []})

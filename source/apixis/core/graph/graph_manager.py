@@ -86,10 +86,7 @@ class GraphManager:
             raise ValueError(f"Node `{node.name}` is already registered.")
 
         if timeout is not None:
-            if not isinstance(timeout, (int, float)):
-                raise TypeError("`timeout` must be a number or None.")
-            if timeout > 0 and timeout != float("inf"):
-                node.timeout = timeout
+            node.timeout = timeout
 
         self._nodes[node.name] = node
         return self

@@ -12,6 +12,7 @@ from apixis.core.event import (
 )
 from apixis.core.graph import END, GLOBALNS, START, GraphManager
 from apixis.core.graph.interrupter import interrupt, interrupted_hook
+from apixis.core.graph.utils.namespace import get_graph_interrupted_name
 from apixis.core.utils import BlockHookNotRegisteredError
 from apixis.core.utils.exception import GraphNodeError
 
@@ -102,7 +103,7 @@ async def test_plain_observer_does_not_count_as_registered_block_hook():
 
     graph = GraphManager().add_node(review).add_edge(START, "review").compile_graph()
 
-    @subscribe(f"graph_{graph.namespace}_interrupted", priority=10)
+    @subscribe(get_graph_interrupted_name(graph.namespace, missing_ok=True), priority=10)
     async def observe(event):
         blocks.append(event.context)
 
@@ -130,7 +131,7 @@ async def test_default_handles_upstream_termination_without_user_hook(mode, acti
 
     graph = GraphManager().add_node(review).add_edge(START, "review").compile_graph()
 
-    @subscribe(f"graph_{graph.namespace}_interrupted", priority=10)
+    @subscribe(get_graph_interrupted_name(graph.namespace, missing_ok=True), priority=10)
     async def plugin(event):
         blocks.append(event.context)
         if action == "error":

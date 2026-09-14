@@ -70,7 +70,6 @@ class AutoInit:
         if self._started:
             return
 
-        self._started = True
 
         if not self._services:
             logger.debug("No services")
@@ -92,6 +91,7 @@ class AutoInit:
                     f"{service.__class__.__name__}: {e}"
                 )
 
+        self._started = True
         logger.success("All services started")
 
     async def stop(self):
