@@ -3,7 +3,7 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable, Literal, Self
 from uuid import uuid4
 
 from apixis.core.utils.logger import logger
@@ -75,7 +75,7 @@ class ApixEventHandler:
     ``on_cancelled`` receives event cancellation notifications from the event
     loop, independently of the normal handler chain. Background cancellation
     only notifies the cancelled background handler.
-    Registration metadata is assigned by :func:`subscribe`.
+    Registration metadata is assigned by :func:`subscribe` or :meth:`register`.
     """
 
     id: str
@@ -256,13 +256,64 @@ class ApixEventHandler:
             raise ValueError("on_cancelled already set.")
         self.on_cancelled = callback
 
-    def register(self, ) -> None:
-        """Register this handler for a specific event name."""
-        pass
+    def register(
+        self,
+        *event_names: str,
+        exist_ok: bool = True,
+        priority: float | None = None,
+        between_handlers: tuple[str | None, str | None] | None = None,
+        filter_event: list[str] | None = None,
+        stop_when_error: bool | None = None,
+        time_out: float | None = None,
+        background: bool | None = None,
+    ) -> Self:
+        """Register this instance globally with the same options as subscribe().
 
-    def unregister(self, ) -> None:
-        """Unregister this handler from its event name."""
-        pass
+        Equivalent to ``subscribe(*event_names, **options)(self)``. At least
+        one non-empty event-name pattern is required. Subscriptions and filters
+        use case-sensitive fnmatchcase matching. Subscription, filtering and
+        ordering options replace previous registration metadata; priority
+        defaults to 1 unless between_handlers is supplied.
+
+        Execution options set to None preserve this instance's settings.
+        Explicit values override them; non-positive time_out disables the
+        timeout. Core and notification callbacks are preserved.
+
+        Handler names are unique across the global registry. With exist_ok=True,
+        this instance replaces the same-name registration. With exist_ok=False,
+        a duplicate raises EventHandlerAlreadyRegisteredError. Validation
+        failures leave the instance and any existing registration unchanged.
+
+        Returns:
+            This instance after successful registration or replacement.
+        """
+        # Import at call time because handler_registry imports this class.
+        from apixis.core.event.handler_registry import subscribe
+
+        return subscribe(
+            *event_names,
+            exist_ok=exist_ok,
+            priority=priority,
+            between_handlers=between_handlers,
+            filter_event=filter_event,
+            stop_when_error=stop_when_error,
+            time_out=time_out,
+            background=background,
+        )(self)
+
+    def unregister(self, *, missing_ok: bool = True) -> None:
+        """Immediately remove the global registration under this handler's name.
+
+        Equivalent to ``unsubscribe(self.name, missing_ok=missing_ok)``. Remove
+        the whole registration, including all subscriptions. Missing names are
+        ignored by default; missing_ok=False raises EventHandlerNotRegisteredError.
+        Removal is name-based, including when another instance has replaced
+        this handler under the same name. Already running calls continue.
+        """
+        # Import at call time because handler_registry imports this class.
+        from apixis.core.event.handler_registry import unsubscribe
+
+        unsubscribe(self.name, missing_ok=missing_ok)
 
 
 ChannelType = Literal["builtin", "mailbox", "mailtruck"]

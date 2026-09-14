@@ -77,6 +77,94 @@ def test_registry_is_singleton():
     assert ApixHandlerRegistry() is APIX_HANDLER_REGISTRY
 
 
+async def test_instance_registration_routes_patterns_and_unregisters_all_subscriptions(runtime):
+    """Instance methods participate in the same public event dispatch lifecycle."""
+    pipe, loop = runtime
+    core = AsyncMock()
+    handler = make_entry("instance", callback=core)
+    assert handler.register("Build.*", "ready", "Build.*", filter_event=["Build.private.*"]) is handler
+    assert APIX_HANDLER_REGISTRY.get_handler(handler.name) is handler
+    assert handler.subscribe == ["Build.*", "ready"]
+
+    for name in ("Build.done", "ready", "Build.private.done", "build.done"):
+        await pipe.post_event(event_type=EventType.INFO, event_name=name)
+    await asyncio.wait_for(pipe.join(), 1)
+    assert sorted(call.args[0].event_name for call in core.await_args_list) == ["Build.done", "ready"]
+
+    assert handler.unregister() is None
+    assert APIX_HANDLER_REGISTRY.get_handler(handler.name) is None
+    for name in ("Build.done", "ready"):
+        await pipe.post_event(event_type=EventType.INFO, event_name=name)
+    await asyncio.wait_for(pipe.join(), 1)
+    assert core.await_count == 2
+    handler.unregister()
+    with pytest.raises(EventHandlerNotRegisteredError):
+        handler.unregister(missing_ok=False)
+
+
+@pytest.mark.parametrize("options, expected", [
+    ({}, (False, 5, True)),
+    ({"stop_when_error": True, "time_out": 2, "background": False}, (True, 2, False)),
+    ({"time_out": 0}, (False, None, True)),
+])
+def test_instance_registration_preserves_callbacks_and_applies_execution_options(options, expected):
+    callbacks = [AsyncMock() for _ in range(5)]
+    handler = ApixEventHandler(*callbacks, stop_when_error=False, time_out=5, background=True)
+    handler.register("event.*", **options)
+    assert (handler.stop_when_error, handler.time_out, handler.background) == expected
+    assert [handler.core_func, handler.on_accepted, handler.on_has_error,
+            handler.on_error, handler.on_cancelled] == callbacks
+
+
+def test_instance_reregistration_replaces_patterns_filters_and_ordering():
+    first = make_entry("first").register("event.*", priority=10)
+    last = make_entry("last").register("event.*", priority=1)
+    middle = make_entry("middle").register(
+        "event.*", between_handlers=(first.name, last.name), filter_event=["event.skip"],
+    )
+    assert APIX_HANDLER_REGISTRY.get_handlers_chain_for_event("event.one") == ["first", "middle", "last"]
+    assert APIX_HANDLER_REGISTRY.get_handlers_chain_for_event("event.skip") == ["first", "last"]
+    middle.register("other.*")
+    assert middle.priority == 1
+    assert middle.between_handlers is None
+    assert middle.filter_event == []
+    assert APIX_HANDLER_REGISTRY.get_handlers_chain_for_event("event.one") == ["first", "last"]
+    assert APIX_HANDLER_REGISTRY.get_handlers_chain_for_event("other.one") == ["middle"]
+
+
+@pytest.mark.parametrize("patterns, options, error", [
+    ((), {}, ValueError),
+    (("new.*",), {"priority": float("nan")}, ValueError),
+    (("new.*",), {"between_handlers": ("missing", None)}, EventHandlerNotRegisteredError),
+    (("new.*",), {"exist_ok": False}, EventHandlerAlreadyRegisteredError),
+])
+def test_failed_instance_registration_preserves_existing_settings(patterns, options, error):
+    handler = make_entry("instance").register("old.*", priority=10, time_out=5)
+    with pytest.raises(error):
+        handler.register(*patterns, background=True, **options)
+    assert APIX_HANDLER_REGISTRY.get_handler(handler.name) is handler
+    assert handler.subscribe == ["old.*"]
+    assert (handler.priority, handler.time_out, handler.background) == (10, 5, False)
+    assert APIX_HANDLER_REGISTRY.get_handlers_chain_for_event("old.one") == ["instance"]
+    assert APIX_HANDLER_REGISTRY.get_handlers_chain_for_event("new.one") == []
+
+
+def test_instance_replacement_and_unregistration_use_handler_name():
+    original = make_entry("shared").register("old.*")
+    replacement = make_entry("shared")
+    with pytest.raises(EventHandlerAlreadyRegisteredError):
+        replacement.register("new.*", exist_ok=False)
+    assert APIX_HANDLER_REGISTRY.get_handler("shared") is original
+    replacement.register("new.*")
+    assert APIX_HANDLER_REGISTRY.get_handler("shared") is replacement
+    assert APIX_HANDLER_REGISTRY.get_handlers_chain_for_event("old.one") == []
+    assert APIX_HANDLER_REGISTRY.get_handlers_chain_for_event("new.one") == ["shared"]
+    # Like unsubscribe(), removal targets the name even after replacement.
+    original.unregister(missing_ok=False)
+    assert APIX_HANDLER_REGISTRY.get_handler("shared") is None
+    assert APIX_HANDLER_REGISTRY.get_handlers_chain_for_event("new.one") == []
+
+
 def test_pattern_normalisation_accepts_one_string():
     assert ApixHandlerRegistry._normalise_patterns(
         "event.one",
@@ -285,7 +373,6 @@ def test_register_invalidates_only_matching_exact_event_caches():
         )
     )
 
-    assert APIX_HANDLER_REGISTRY.cached_chain["event.one"] is None
     assert APIX_HANDLER_REGISTRY.cached_chain["other.one"] == []
     assert APIX_HANDLER_REGISTRY.get_handlers_chain_for_event("event.one") == [
         "handler"
@@ -371,7 +458,6 @@ def test_unregister_removes_entry_and_preserves_already_resolved_list():
     APIX_HANDLER_REGISTRY.unregister_handler("handler")
     assert APIX_HANDLER_REGISTRY.get_handler("handler") is None
     assert APIX_HANDLER_REGISTRY.priority_buckets == {}
-    assert APIX_HANDLER_REGISTRY.cached_chain["event.one"] is None
     assert chain == ["handler"]
     assert APIX_HANDLER_REGISTRY.get_handlers_chain_for_event("event.one") == []
 
@@ -533,13 +619,12 @@ def test_replacement_invalidates_union_of_old_and_new_matches_with_filters():
     registry.register_handler(new, exist_ok=True)
     assert registry.get_handler("handler") is new
     assert registry.priority_buckets == {10: ["handler"]}
-    for name in names[:4]:
-        assert registry.cached_chain[name] is None
     for name in names[4:]:
         assert registry.cached_chain[name] is saved[name]
     assert saved["old.one"] == ["handler"]
-    assert registry.get_handlers_chain_for_event("old.one") == []
-    assert registry.get_handlers_chain_for_event("new.one") == ["handler"]
+    # Check rebuilt routing instead of the internal representation of expiry.
+    for name, expected in zip(names[:4], [[], ["handler"], [], ["handler"]]):
+        assert registry.get_handlers_chain_for_event(name) == expected
 
 
 @pytest.mark.parametrize("options", [
@@ -621,7 +706,6 @@ async def test_publish_does_not_resolve_but_dequeue_uses_latest_registration(run
         registry.get_handlers_chain_for_event("event.one")
         # Expire an existing populated cache before publishing.
         subscribe("event.*", priority=1)(first)
-        assert registry.cached_chain["event.one"] is None
     loop._dispatch_semaphore = asyncio.Semaphore(0)
     with patch.object(registry, "get_handlers_chain_for_event",
                       wraps=registry.get_handlers_chain_for_event) as resolve:
@@ -664,7 +748,6 @@ async def test_dequeue_resolves_chain_before_dispatch_task_starts(runtime, monke
     @subscribe("event.*", priority=10)
     async def late(event):
         called.append("late")
-    assert registry.cached_chain["event.one"] is None
     release.set()
     await asyncio.wait_for(pipe.join(), 1)
     assert called == ["first"]

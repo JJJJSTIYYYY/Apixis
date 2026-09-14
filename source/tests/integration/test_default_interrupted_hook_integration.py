@@ -177,7 +177,7 @@ async def test_node_can_recover_from_missing_hook_error():
 
 
 async def test_default_registration_collision_releases_partial_graph_and_namespace():
-    event_name = "graph_collision_interrupted"
+    event_name = get_graph_interrupted_name("collision", missing_ok=True)
 
     async def unrelated(event):
         pass

@@ -11,13 +11,15 @@ from apixis.core.graph import START, END, GraphManager
 from apixis.core.graph import node_graph
 
 
+MIN_BACKPRESSURE = 128
+
+
 @pytest.fixture
-async def runtime(monkeypatch):
-    """Exercise real publication with two dispatch permits and a one-item buffer."""
+async def runtime(monkeypatch, request):
+    """Exercise real publication with the production minimum backpressure."""
     for name in tuple(APIX_HANDLER_REGISTRY.registry):
         unsubscribe(name)
-    monkeypatch.setattr(event_loop, "EVENT_LOOP_BACKPRESSURE", 2)
-    monkeypatch.setattr(event_loop, "EVENT_PIPE_MAX_LEN", 1)
+    monkeypatch.setattr(event_loop, "EVENT_LOOP_BACKPRESSURE", getattr(request, "param", 2))
     monkeypatch.setattr(event_loop, "BACKGROUND_HANDLER_BACKPRESSURE", 1)
     monkeypatch.setattr(event_loop, "SHOW_EVENT_DISPATCH", False)
     monkeypatch.setattr(event_pipe, "EVENT_PIPE_MAX_LEN", 1)
@@ -27,6 +29,7 @@ async def runtime(monkeypatch):
     monkeypatch.setattr(event_pipe, "EVENT_PIPE", pipe)
     monkeypatch.setattr(event_loop, "APIX_EVENT_LOOP", loop)
     monkeypatch.setattr(node_graph, "EVENT_PIPE", pipe)
+    monkeypatch.setattr(node_graph, "APIX_EVENT_LOOP", loop)
     try:
         yield pipe, loop
     finally:
@@ -50,7 +53,7 @@ async def test_saturated_handlers_can_publish_follow_up_events(runtime, publicat
     @subscribe("parent.*", time_out=None)
     async def parent(event):
         started.append(event.event_name)
-        if len(started) == 2:
+        if len(started) == MIN_BACKPRESSURE:
             entered.set()
         await release.wait()
         name = event.event_name.replace("parent", "child")
@@ -68,21 +71,29 @@ async def test_saturated_handlers_can_publish_follow_up_events(runtime, publicat
     async def child(event):
         completed.append(event.event_name)
 
-    for index in range(2):
+    for index in range(MIN_BACKPRESSURE):
         await pipe.post_event(event_type=EventType.WORKFLOW, event_name=f"parent.{index}")
     await asyncio.wait_for(entered.wait(), 1)
-    await pipe.post_event(event_type=EventType.INFO, event_name="waiting")
+    # Fill the processing buffer while every dispatch permit is occupied.
+    for _ in range(MIN_BACKPRESSURE):
+        await pipe.post_event(event_type=EventType.INFO, event_name="waiting")
+    await asyncio.sleep(0)
+    assert loop._processing_queue.full()
     release.set()
     await asyncio.wait_for(pipe.join(), 1)
-    assert sorted(completed) == ["child.0", "child.1", "parent.0", "parent.1", "waiting"]
+    assert sorted(completed) == sorted(
+        [f"{kind}.{index}" for kind in ("parent", "child") for index in range(MIN_BACKPRESSURE)]
+        + ["waiting"] * MIN_BACKPRESSURE
+    )
 
 
-@pytest.mark.parametrize("queue_capacity", [1, 3])
-async def test_queue_capacity_and_running_dispatch_limit_are_independent(runtime, monkeypatch, queue_capacity):
+@pytest.mark.parametrize("runtime, capacity", [
+    (-1, 128), (0, 128), (2, 128), (127, 128), (128, 128), (129, 129), (256, 256),
+], indirect=["runtime"])
+async def test_queue_capacity_and_running_dispatch_limit_are_independent(runtime, monkeypatch, capacity):
     """A full execution budget still allows the independently bounded buffer to fill."""
     pipe, loop = runtime
-    # Vary buffering independently of the two configured dispatch permits.
-    monkeypatch.setattr(loop, "_processing_queue", asyncio.Queue(maxsize=queue_capacity))
+    event_count = 2 * capacity + 3
     transferred, handlers_entered = asyncio.Event(), asyncio.Event()
     handlers_allowed = asyncio.Event()
     gets = active = peak = 0
@@ -93,8 +104,8 @@ async def test_queue_capacity_and_running_dispatch_limit_are_independent(runtime
         nonlocal gets
         event = await original_get(*args, **kwargs)
         gets += 1
-        # Two executing, a full processing buffer, and one pending transfer.
-        if gets == 2 + queue_capacity + 1:
+        # A full execution budget, a full buffer, and one pending transfer.
+        if gets == 2 * capacity + 1:
             transferred.set()
         return event
 
@@ -105,25 +116,26 @@ async def test_queue_capacity_and_running_dispatch_limit_are_independent(runtime
         nonlocal active, peak
         active += 1
         peak = max(peak, active)
-        if active == 2:
+        if active == capacity:
             handlers_entered.set()
         await handlers_allowed.wait()
         completed.append(event.event_name)
         active -= 1
 
     try:
-        for index in range(8):
+        for index in range(event_count):
             await pipe.post_event(event_type=EventType.INFO, event_name=f"work.{index}")
         await asyncio.wait_for(handlers_entered.wait(), 1)
         await asyncio.wait_for(transferred.wait(), 1)
-        assert active == 2
-        assert gets == 2 + queue_capacity + 1
-        assert pipe.qsize() == 8 - gets
-        assert loop._processing_queue.qsize() == queue_capacity
+        assert active == capacity
+        assert gets == 2 * capacity + 1
+        assert pipe.qsize() == event_count - gets
+        assert loop._processing_queue.qsize() == capacity
+        assert loop._processing_queue.full()
         handlers_allowed.set()
         await asyncio.wait_for(pipe.join(), 1)
-        assert completed == [f"work.{index}" for index in range(8)]
-        assert peak == 2
+        assert completed == [f"work.{index}" for index in range(event_count)]
+        assert peak == capacity
     finally:
         handlers_allowed.set()
 
@@ -214,9 +226,10 @@ async def test_stop_during_blocked_transfer_preserves_fifo_and_join(runtime, mon
     entered, release, blocked = asyncio.Event(), asyncio.Event(), asyncio.Event()
     started, completed = [], []
     original_put = loop._processing_queue.put
+    event_count = 2 * MIN_BACKPRESSURE + 3
 
     async def observe_put(event):
-        if event.event_name == "work.3":
+        if loop._processing_queue.full() and len(started) == MIN_BACKPRESSURE:
             blocked.set()
         await original_put(event)
 
@@ -225,14 +238,18 @@ async def test_stop_during_blocked_transfer_preserves_fifo_and_join(runtime, mon
     @subscribe("work.*", time_out=None)
     async def work(event):
         started.append(event.event_name)
-        if len(started) == 2:
+        if len(started) == MIN_BACKPRESSURE:
             entered.set()
         await release.wait()
         completed.append(event.event_name)
 
-    for index in range(6):
+    # Start all handlers before filling the buffer so the observed put blocks
+    # on processing capacity rather than initial worker scheduling.
+    for index in range(MIN_BACKPRESSURE):
         await pipe.post_event(event_type=EventType.INFO, event_name=f"work.{index}")
     await asyncio.wait_for(entered.wait(), 1)
+    for index in range(MIN_BACKPRESSURE, event_count):
+        await pipe.post_event(event_type=EventType.INFO, event_name=f"work.{index}")
     await asyncio.wait_for(blocked.wait(), 1)
     for index in range(restart_count):
         await asyncio.wait_for(loop.stop(), 1)
@@ -241,17 +258,17 @@ async def test_stop_during_blocked_transfer_preserves_fifo_and_join(runtime, mon
             blocked.clear()
             await loop.start()
             await asyncio.wait_for(blocked.wait(), 1)
-    assert started == ["work.0", "work.1"]
+    assert started == [f"work.{index}" for index in range(MIN_BACKPRESSURE)]
     release.set()
     await asyncio.gather(*loop._dispatch_tasks)
-    assert completed == ["work.0", "work.1"]
+    assert completed == [f"work.{index}" for index in range(MIN_BACKPRESSURE)]
     waiter = asyncio.create_task(pipe.join())
     try:
         await asyncio.sleep(0)
         assert not waiter.done()
-        await pipe.post_event(event_type=EventType.INFO, event_name="work.6")
+        await pipe.post_event(event_type=EventType.INFO, event_name=f"work.{event_count}")
         await asyncio.wait_for(waiter, 1)
-        assert completed == [f"work.{index}" for index in range(7)]
+        assert completed == [f"work.{index}" for index in range(event_count + 1)]
     finally:
         waiter.cancel()
         await asyncio.gather(waiter, return_exceptions=True)
@@ -266,7 +283,7 @@ async def test_concurrent_graphs_route_next_nodes_under_saturation(runtime):
     async def first(state):
         nonlocal first_nodes
         first_nodes += 1
-        if first_nodes == 2:
+        if first_nodes == MIN_BACKPRESSURE:
             entered.set()
         await release.wait()
         return {"value": state["value"] + 1}
@@ -279,13 +296,16 @@ async def test_concurrent_graphs_route_next_nodes_under_saturation(runtime):
         .add_edge(START, "first").add_edge("first", "second")
         .add_edge("second", END).compile_graph()
     )
-    runs = [asyncio.create_task(graph.invoke({"value": value})) for value in (1, 5)]
+    runs = [asyncio.create_task(graph.invoke({"value": value})) for value in range(MIN_BACKPRESSURE)]
     try:
         await asyncio.wait_for(entered.wait(), 1)
-        await pipe.post_event(event_type=EventType.INFO, event_name="waiting")
+        for _ in range(MIN_BACKPRESSURE):
+            await pipe.post_event(event_type=EventType.INFO, event_name="waiting")
+        await asyncio.sleep(0)
+        assert loop._processing_queue.full()
         release.set()
         assert await asyncio.wait_for(asyncio.gather(*runs), 1) == [
-            {"value": 4}, {"value": 12},
+            {"value": (value + 1) * 2} for value in range(MIN_BACKPRESSURE)
         ]
         await asyncio.wait_for(pipe.join(), 1)
     finally:

@@ -374,7 +374,23 @@ from apixis.core.event import ApixEventHandler
 | `time_out` | 每个实际调用的回调的超时时间 |
 | `background` | 是否后台执行 |
 
-构造函数接收五个回调、`stop_when_error`、`time_out` 和 `background`；新增的 `on_cancelled` 为关键字参数。其余注册参数由全局 `subscribe()` 注入。底层 `register_handler(entry)` 要求 entry 已具备完整注册信息，负责验证模式、回调、priority 和边界，并使受影响的精确事件链缓存失效。
+构造函数接收五个回调、`stop_when_error`、`time_out` 和 `background`。其余注册参数由全局 `subscribe()` 或实例方法 `register()` 注入。底层 `register_handler(entry)` 要求 entry 已具备完整注册信息，负责验证模式、回调、priority 和边界，并使受影响的精确事件链缓存失效。
+
+实例可以直接注册和退订：
+
+```python
+async def process_event(event):
+    print(event.event_name)
+
+
+handler = ApixEventHandler(process_event, time_out=5)
+handler.register("request.*", "job.completed", filter_event=["request.internal.*"])
+handler.unregister(missing_ok=False)
+```
+
+`handler.register(*event_names, **options)` 等价于 `subscribe(*event_names, **options)(handler)`，支持相同的参数、默认值和异常语义，成功后返回实例自身。执行选项为 `None` 时保留实例配置；订阅、过滤和排序配置重新设置。默认替换同名注册，校验失败时保留原配置和注册。
+
+`handler.unregister(*, missing_ok=True)` 等价于 `unsubscribe(handler.name, missing_ok=missing_ok)`，按处理器名删除整个注册，而非移除某个事件订阅。名称不存在时默认忽略，`missing_ok=False` 时抛出 `EventHandlerNotRegisteredError`。如果原实例已被另一个同名实例替换，调用原实例的 `unregister()` 也会删除当前同名注册；已开始执行的调用仍继续完成。
 
 ### ApixHandlerRegistry
 

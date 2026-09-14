@@ -80,7 +80,7 @@ async def test_cancelled_phase_notifies_entire_foreground_chain(phase, stop_when
         await asyncio.wait_for(task, 1)
 
     assert task.cancelled()
-    assert notified == ["before", "current", "after"]
+    assert sorted(notified) == ["after", "before", "current"]
     tail_core.assert_not_awaited()
     background_cleanup.assert_not_awaited()
     assert [error.exception_type for error in event.error_stack] == (
@@ -88,20 +88,18 @@ async def test_cancelled_phase_notifies_entire_foreground_chain(phase, stop_when
     )
 
 
-@pytest.mark.parametrize("failure", ["error", "timeout", "cancel", "repeat_cancel"])
+@pytest.mark.parametrize("failure", ["error", "timeout", "cancel"])
 async def test_cleanup_failure_cannot_hide_cancellation_or_skip_other_subscribers(failure):
-    """Cleanup is isolated even when the dispatch receives another cancel()."""
+    """A failing cleanup preserves the original cancellation and other hooks."""
     registry = ApixHandlerRegistry()
     runtime = ApixEventLoop(registry)
     event = make_event()
-    cleanup_started = asyncio.Event()
     original = asyncio.CancelledError("original cancellation")
 
     async def cancel(event):
         raise original
 
     async def broken_cleanup(event):
-        cleanup_started.set()
         if failure == "error":
             raise ValueError("cleanup failure")
         if failure == "cancel":
@@ -115,15 +113,106 @@ async def test_cleanup_failure_cannot_hide_cancellation_or_skip_other_subscriber
     register(registry, "tail", AsyncMock(), on_cancelled=tail_cleanup)
     with patch("apixis.core.event.base.logger") as logger:
         task = asyncio.create_task(runtime._dispatch_event(event, ["broken", "tail"]))
-        if failure == "repeat_cancel":
-            await asyncio.wait_for(cleanup_started.wait(), 1)
-            task.cancel("second cancellation")
         with pytest.raises(asyncio.CancelledError, match="original cancellation"):
             await asyncio.wait_for(task, 1)
         logger.error.assert_called_once()
     tail_cleanup.assert_awaited_once_with(event)
     on_error.assert_not_awaited()
     assert event.error_stack == []
+
+
+async def test_cancel_notifications_run_concurrently_and_wait_for_every_hook():
+    """Every cleanup starts while the others wait, and dispatch waits for all."""
+    registry = ApixHandlerRegistry()
+    runtime = ApixEventLoop(registry)
+    event = make_event()
+    entered = [asyncio.Event() for _ in range(3)]
+    release = [asyncio.Event() for _ in range(3)]
+    finished = [asyncio.Event() for _ in range(3)]
+    completed = []
+    tail_core = AsyncMock()
+
+    async def cancel(event):
+        raise asyncio.CancelledError("original cancellation")
+
+    def cleanup(index):
+        async def on_cancelled(event):
+            entered[index].set()
+            await release[index].wait()
+            completed.append(index)
+            finished[index].set()
+        return on_cancelled
+
+    for index, core in enumerate((AsyncMock(), cancel, tail_core)):
+        register(registry, f"handler.{index}", core,
+                 on_cancelled=cleanup(index), time_out=None)
+
+    task = asyncio.create_task(runtime._dispatch_event(
+        event, registry.get_handlers_chain_for_event(event.event_name),
+    ))
+    try:
+        # A serial implementation cannot reach all three barriers.
+        await asyncio.wait_for(asyncio.gather(*(signal.wait() for signal in entered)), 1)
+        assert not task.done()
+        for index in (2, 0):
+            release[index].set()
+            await asyncio.wait_for(finished[index].wait(), 1)
+            assert not task.done()
+        release[1].set()
+        with pytest.raises(asyncio.CancelledError, match="original cancellation"):
+            await asyncio.wait_for(task, 1)
+        assert completed == [2, 0, 1]
+        tail_core.assert_not_awaited()
+    finally:
+        for signal in release:
+            signal.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_repeated_dispatch_cancellation_interrupts_all_running_notifications():
+    """Cancelling gather interrupts its hooks and propagates the new cancellation."""
+    registry = ApixHandlerRegistry()
+    runtime = ApixEventLoop(registry)
+    event = make_event()
+    entered = [asyncio.Event(), asyncio.Event()]
+    interrupted = []
+    tail_core = AsyncMock()
+    on_error = AsyncMock()
+
+    async def cancel(event):
+        raise asyncio.CancelledError("original cancellation")
+
+    def cleanup(index):
+        async def on_cancelled(event):
+            entered[index].set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                interrupted.append(index)
+                raise
+        return on_cancelled
+
+    register(registry, "first", cancel, on_cancelled=cleanup(0),
+             on_error=on_error, time_out=None)
+    register(registry, "tail", tail_core, on_cancelled=cleanup(1),
+             on_error=on_error, time_out=None)
+    with patch("apixis.core.event.base.logger") as logger:
+        task = asyncio.create_task(runtime._dispatch_event(event, ["first", "tail"]))
+        try:
+            await asyncio.wait_for(asyncio.gather(*(signal.wait() for signal in entered)), 1)
+            task.cancel("second cancellation")
+            # gather propagates cancellation without preserving its message.
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+            assert task.cancelled()
+            assert sorted(interrupted) == [0, 1]
+            assert logger.error.call_count == 2
+            tail_core.assert_not_awaited()
+            on_error.assert_not_awaited()
+            assert event.error_stack == []
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 async def test_external_dispatch_cancellation_notifies_after_core_cleanup():
