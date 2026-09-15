@@ -108,6 +108,8 @@ class GraphManager:
         """Validate a transition endpoint, including the predefined nodes."""
         if source and node_name == END:
             raise ValueError("`END` cannot have an outgoing transition.")
+        if source and node_name in self._default_gotos:
+            raise ValueError(f"Node `{source}` already has an outgoing transition.")
         if node_name not in (START, END) and node_name not in self._nodes:
             raise ValueError(f"Node `{node_name}` has not been added.")
 
