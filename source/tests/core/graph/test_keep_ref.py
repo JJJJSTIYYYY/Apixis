@@ -6,8 +6,8 @@ from typing import Annotated, Any, TypedDict
 import pytest
 import pytest_asyncio
 
-from apixis.core.event.event_loop import APIX_EVENT_LOOP
-from apixis.core.event import EVENT_PIPE
+from apixis.core.event.factory import get_event_loop
+from apixis.core.event.factory import get_event_pipe
 from apixis.core.graph import (
     AutoMerge,
     Command,
@@ -29,8 +29,8 @@ from apixis.core.graph.context import noop_stream_writer
 )
 async def stop_event_runtime_after_module():
     yield
-    await APIX_EVENT_LOOP.stop()
-    await EVENT_PIPE.clear()
+    await get_event_loop().stop()
+    await get_event_pipe().clear()
 
 
 class MutableResource:

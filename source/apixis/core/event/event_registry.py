@@ -14,33 +14,23 @@ class ApixEventRegistry:
     unhashable. Exact names can be used for diagnostics and subscription
     analysis.
 
-    The class is a process-local singleton. All reads and writes are protected
-    by a reentrant lock so event publication and handler registration may query
+    Each instance owns its observations. All reads and writes are protected
+    by a reentrant lock so event observation and handler registration may query
     the registry safely from different threads.
     """
 
-    _instance = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
     def __init__(self) -> None:
-        if getattr(self, "_initialized", False):
-            return
-
         self._registered_events: set[str] = set()
         self._lock = RLock()
-        self._initialized = True
 
     def record_event(self, event: ApixEvent) -> None:
-        """Record the exact name of one published event.
+        """Record the exact name of one observed event.
 
-        Repeated publication of the same event name has no additional effect.
+        The event loop records events after processing dequeue. Repeated
+        observations of the same event name have no additional effect.
 
         Args:
-            event: Published event whose exact name should be recorded.
+            event: Observed event whose exact name should be recorded.
 
         Raises:
             TypeError: If ``event`` is not an :class:`ApixEvent`.
@@ -68,7 +58,4 @@ class ApixEventRegistry:
             self._registered_events.clear()
 
 
-APIX_EVENT_REGISTRY = ApixEventRegistry()
-
-
-__all__ = ["ApixEventRegistry", "APIX_EVENT_REGISTRY"]
+__all__ = ["ApixEventRegistry"]

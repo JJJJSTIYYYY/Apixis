@@ -9,13 +9,14 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from apixis.core.event import get_event_registry
+
 from apixis.core.event.base import ApixEvent, EventType
 from apixis.core.event.event_loop import ApixEventLoop
-from apixis.core.event.event_pipe import (
-    ApixEventPipe,
+from apixis.core.event.event_pipe import ApixEventPipe
+from apixis.core.event.pipe_channel import (
     WritableEventChannel,
     BuiltinChannel,
-    EventChannelPermissionError,
     GatewayChannel,
     KafkaChannel,
     RabbitMQChannel,
@@ -24,6 +25,7 @@ from apixis.core.event.event_pipe import (
     event_from_json,
     event_to_json,
 )
+from apixis.core.utils.exception import EventChannelPermissionError
 from apixis.core.event.handler_registry import ApixHandlerRegistry
 from apixis.core.config.core_config import EVENT_LOOP_BACKPRESSURE
 
@@ -297,7 +299,7 @@ class TestGatewayRemainingBranches:
         owned = SimpleNamespace(aclose=AsyncMock())
         constructor = lambda **kwargs: owned
         monkeypatch.setattr(
-            "apixis.core.event.event_pipe.httpx.AsyncClient", constructor
+            "apixis.core.event.pipe_channel.httpx.AsyncClient", constructor
         )
         gateway = GatewayChannel(
             base_url="http://gateway/",
@@ -528,7 +530,7 @@ class TestApixEventPipeRemainingBranches:
         pipe._started = True
         with pytest.raises(RuntimeError, match="offline broadcast failed"):
             await pipe.stop()
-        assert pipe._started is False
+        assert pipe._started is True
 
     @pytest.mark.asyncio
     async def test_stop_raises_close_error(self):
@@ -546,20 +548,20 @@ class TestEventLoopRemainingBranches:
     async def test_real_consumer_loop_dispatches_and_handles_cancellation(
         self, monkeypatch
     ):
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         registry.registry.clear()
         registry.priority_buckets.clear()
         registry.cached_chain.clear()
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
         event = make_event()
         get_event = AsyncMock(side_effect=[event, asyncio.CancelledError()])
         dispatch = AsyncMock()
         monkeypatch.setattr(
-            "apixis.core.event.event_loop.EVENT_PIPE.get", get_event
+            handler._event_pipe, "get", get_event
         )
         monkeypatch.setattr(handler, "_dispatch_event", dispatch)
         acknowledge = MagicMock()
-        monkeypatch.setattr("apixis.core.event.event_loop.EVENT_PIPE.task_done", acknowledge)
+        monkeypatch.setattr(handler._event_pipe, "task_done", acknowledge)
 
         await handler.start()
         await handler._event_consumer_task
@@ -571,11 +573,11 @@ class TestEventLoopRemainingBranches:
 
     @pytest.mark.asyncio
     async def test_dispatcher_releases_semaphore_when_get_fails(self, monkeypatch):
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         registry.registry.clear()
         registry.priority_buckets.clear()
         registry.cached_chain.clear()
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
         initial_value = handler._dispatch_semaphore._value
         monkeypatch.setattr(
             handler._processing_queue,
@@ -588,11 +590,11 @@ class TestEventLoopRemainingBranches:
 
     @pytest.mark.asyncio
     async def test_dispatch_without_timeout(self):
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         registry.registry.clear()
         registry.priority_buckets.clear()
         registry.cached_chain.clear()
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
         callback = AsyncMock()
         from apixis.core.event.base import ApixEventHandler
 

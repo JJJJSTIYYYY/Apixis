@@ -10,7 +10,7 @@ import typing
 from uuid import uuid4
 
 from apixis.core.event.base import ApixEvent, EventType, ApixEventHandler
-from apixis.core.event.event_registry import APIX_EVENT_REGISTRY
+from apixis.core.event.factory import get_event_registry
 
 try:
     from typing import NotRequired
@@ -30,9 +30,9 @@ import pytest
 @pytest.fixture(autouse=True)
 def reset_event_registry():
     """Keep observed event names isolated between event-module tests."""
-    APIX_EVENT_REGISTRY.clear()
+    get_event_registry().clear()
     yield
-    APIX_EVENT_REGISTRY.clear()
+    get_event_registry().clear()
 
 
 # ============================

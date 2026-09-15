@@ -15,7 +15,9 @@
 | --- | --- |
 | `config/base.py`、`config/core_config.py` | YAML/远程配置加载与运行时常量 |
 | `event/base.py` | 事件、错误记录和处理器 |
-| `event/event_loop.py`、`event/event_pipe.py` | 本地调度、背压和外部通道 |
+| `event/factory.py`、`event/subscription.py` | 组件构建、启动和全局订阅便捷接口 |
+| `event/event_loop.py`、`event/event_pipe.py` | 本地调度、背压和管道编排 |
+| `event/pipe_channel.py` | 通道能力、外部传输和序列化 |
 | `event/event_registry.py`、`event/handler_registry.py` | 已观察事件名、订阅、排序与当前链缓存 |
 | `graph/base.py` | marker、Command、常量与图注册表 |
 | `graph/graph_manager.py`、`graph/node.py`、`graph/node_graph.py` | 图构建、节点和编译图执行 |
@@ -32,8 +34,8 @@ Graph Runtime 并不在 `NodeGraph` 对象中保存每次调用的状态。一�
 
 1. `GraphManager` 编译图时，为当前 namespace 注册一个通用 `GRAPH_DISPATCH` handler。
 2. `NodeGraph.invoke()` 或 `NodeGraph.stream()` 创建 context，或接受该图已准备的 context，并在检查归属与生命周期后绑定本次运行。
-3. 新 context 从 `START` 开始，同图恢复 context 使用快照目标；运行时向 `EVENT_PIPE` 发布 namespace 隔离后的 `GRAPH_DISPATCH` 事件。
-4. 全局 `APIX_EVENT_LOOP` 消费事件，通用 dispatch handler 根据 `target_node_name` 执行单个目标节点或有序并发批次。
+3. 新 context 从 `START` 开始，同图恢复 context 使用快照目标；运行时向 `get_event_pipe()` 发布 namespace 隔离后的 `GRAPH_DISPATCH` 事件。
+4. 全局 `get_event_loop()` 消费事件，通用 dispatch handler 根据 `target_node_name` 执行单个目标节点或有序并发批次。
 5. 节点返回 `dict` 或 `Command`；批次结果按目标顺序收集和提交，再把一个或多个下一目标写回 `target_node_name` 并发布同一个 dispatch 事件。
 6. 当目标变为 `END` 时，dispatch handler 将最终状态写入完成 Future，调用方得到结果。
 
@@ -110,10 +112,11 @@ asyncio.run(main())
 
 ```python
 from apixis.core.event import (
-    APIX_EVENT_LOOP,
-    APIX_EVENT_REGISTRY,
-    APIX_HANDLER_REGISTRY,
-    EVENT_PIPE,
+    start_core,
+    get_event_loop,
+    get_event_registry,
+    get_handler_registry,
+    get_event_pipe,
     ApixEvent,
     EventType,
     get_handler_meta,
@@ -159,19 +162,21 @@ from apixis.core.graph.interrupter import (
 
 ### 全局事件运行时
 
-`NodeGraph` 会在调用时执行 `APIX_EVENT_LOOP.start()`，因此一般不需要手动启动事件循环。应用关闭或测试收尾时应主动停止事件循环：
+`NodeGraph` 通过工厂 getter 获取管道时触发核心启动，图内无需显式调用 `start_core()`，图调用前通常也不需要手动启动。应用关闭或测试收尾时应主动停止事件循环：
 
 ```python
-from apixis.core.event import APIX_EVENT_LOOP, EVENT_PIPE
+from apixis.core.event import get_event_loop, get_event_pipe, start_core
 
 
 async def shutdown_core_runtime() -> None:
-    await EVENT_PIPE.join()
-    await APIX_EVENT_LOOP.stop()
-    await EVENT_PIPE.stop()
+    event_loop, event_pipe = get_event_loop(), get_event_pipe()
+    await start_core()
+    await event_pipe.join()
+    await event_loop.stop()
+    await event_pipe.stop()
 ```
 
-如果应用使用远程 `mailbox` 或 `mailtruck` 通道，应在启动阶段先执行 `await EVENT_PIPE.start()`，否则外部连接和邮箱转发任务不会建立。
+四个同步 getter 在 asyncio 中调度共享启动任务：先启动管道（包括启用的远程通道及转发任务），再启动事件循环。需要等待启动完成或捕获启动异常时，在异步入口执行 `await start_core()`。停止期间应使用事先保存的组件引用，避免再次调用 getter 触发重启。
 
 ### 编译图
 

@@ -8,12 +8,11 @@ import httpx
 import pytest
 
 from apixis.core.event.base import ApixEvent, EventType
-from apixis.core.event.event_pipe import (
-    EVENT_PIPE,
-    ApixEventPipe,
+from apixis.core.event.factory import get_event_pipe
+from apixis.core.event.event_pipe import ApixEventPipe
+from apixis.core.utils.exception import EventChannelUnavailableError
+from apixis.core.event.pipe_channel import (
     BuiltinChannel,
-    EventChannelPermissionError,
-    EventChannelUnavailableError,
     GatewayChannel,
     KafkaChannel,
     RabbitMQChannel,
@@ -21,6 +20,7 @@ from apixis.core.event.event_pipe import (
     event_from_json,
     event_to_json,
 )
+from apixis.core.utils.exception import EventChannelPermissionError
 
 
 def make_event(name: str = "test.event") -> ApixEvent:
@@ -93,18 +93,18 @@ class TestBuiltinChannel:
 
     @pytest.mark.asyncio
     async def test_global_pipe_is_apix_event_pipe_singleton(self):
-        from apixis.core.event.event_pipe import EVENT_PIPE as second_import
+        from apixis.core.event.factory import get_event_pipe as second_import
 
-        assert isinstance(EVENT_PIPE, ApixEventPipe)
-        assert EVENT_PIPE is second_import
-        assert EVENT_PIPE.maxsize == 0
+        assert isinstance(get_event_pipe(), ApixEventPipe)
+        assert get_event_pipe() is second_import()
+        assert get_event_pipe().maxsize == 0
 
-        while not EVENT_PIPE.empty():
-            EVENT_PIPE.get_nowait()
-            EVENT_PIPE.task_done()
-        await EVENT_PIPE.put("event")
-        assert await EVENT_PIPE.get() == "event"
-        EVENT_PIPE.task_done()
+        while not get_event_pipe().empty():
+            get_event_pipe().get_nowait()
+            get_event_pipe().task_done()
+        await get_event_pipe().put("event")
+        assert await get_event_pipe().get() == "event"
+        get_event_pipe().task_done()
 
 
 class TestApixEventPipeEvents:
@@ -257,7 +257,7 @@ class TestGatewayChannel:
         client = FakeClient([response(503), response(503), response(200)])
         gateway = make_gateway(client)
         sleep = AsyncMock()
-        monkeypatch.setattr("apixis.core.event.event_pipe.asyncio.sleep", sleep)
+        monkeypatch.setattr("apixis.core.event.pipe_channel.asyncio.sleep", sleep)
 
         await gateway.put(make_event(), recipient="node-b")
 
@@ -269,7 +269,7 @@ class TestGatewayChannel:
         client = FakeClient([response(503), response(503), response(503)])
         gateway = make_gateway(client)
         monkeypatch.setattr(
-            "apixis.core.event.event_pipe.asyncio.sleep", AsyncMock()
+            "apixis.core.event.pipe_channel.asyncio.sleep", AsyncMock()
         )
 
         with pytest.raises(httpx.HTTPStatusError):
@@ -284,7 +284,7 @@ class TestGatewayChannel:
         )
         gateway = make_gateway(client)
         sleep = AsyncMock()
-        monkeypatch.setattr("apixis.core.event.event_pipe.asyncio.sleep", sleep)
+        monkeypatch.setattr("apixis.core.event.pipe_channel.asyncio.sleep", sleep)
 
         await gateway.put(make_event(), recipient="node-b")
         sleep.assert_awaited_once_with(0.1)
@@ -429,8 +429,7 @@ class TestChannelCapabilities:
 
         event = make_event()
         mailbox = Mailbox(event)
-        pipe = ApixEventPipe(
-            mailbox=mailbox,
+        pipe = ApixEventPipe(mailbox=mailbox,
             mailtruck=make_gateway(FakeClient([response(), response(), response()])),
             remote_enabled=True,
         )

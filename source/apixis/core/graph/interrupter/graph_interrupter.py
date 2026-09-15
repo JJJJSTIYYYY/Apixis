@@ -8,14 +8,12 @@ from typing import Any, Callable
 from apixis.core.graph.context.manager import get_graph_context
 from apixis.core.graph.base import GLOBALNS
 from apixis.core.graph.context.graph_context import GraphContext
-from apixis.core.graph.utils.namespace import get_graph_interrupted_name, get_graph_namespace
-from apixis.core.event import (
-    ApixEvent,
-    ApixEventHandler,
-    EVENT_PIPE,
-    EventType,
-    subscribe,
+from apixis.core.graph.utils.namespace import (
+    get_graph_interrupted_name,
+    get_graph_namespace,
 )
+from apixis.core.event import ApixEvent, ApixEventHandler, EventType, subscribe
+from apixis.core.event.factory import aget_event_pipe
 from apixis.core.graph.interrupter.block import Block
 from apixis.core.utils.exception import GraphNodeError
 
@@ -88,7 +86,7 @@ async def interrupt(
 
     completion.add_done_callback(close_block)
     try:
-        await EVENT_PIPE.post_event(
+        await (await aget_event_pipe()).post_event(
             event_type=EventType.WORKFLOW,
             event_name=get_graph_interrupted_name(namespace, missing_ok=True),
             context=block,

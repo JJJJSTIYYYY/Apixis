@@ -5,14 +5,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from apixis.core.event import ApixEventPipe, get_event_registry
+
 from apixis.core.event import ApixEvent, ApixEventError, ApixEventHandler, EventType
-from apixis.core.event.event_pipe import encode_event, event_from_json
+from apixis.core.event.pipe_channel import encode_event, event_from_json
 from apixis.core.event.event_loop import ApixEventLoop
-from apixis.core.event.handler_registry import (
-    APIX_HANDLER_REGISTRY,
-    get_handler_meta,
-    subscribe,
-)
+from apixis.core.event.factory import get_handler_registry
+from apixis.core.event.subscription import get_handler_meta, subscribe
 
 
 def make_event(*, has_error=False, accepted=False):
@@ -208,7 +207,7 @@ async def test_error_stack_round_trip_and_instance_isolation():
 
 @pytest.fixture
 def registry():
-    registry = APIX_HANDLER_REGISTRY
+    registry = get_handler_registry()
     registry.registry.clear()
     registry.priority_buckets.clear()
     registry.cached_chain.clear()
@@ -277,7 +276,7 @@ async def test_dispatch_notifies_all_later_handlers_after_failure_and_acceptance
         handler.name = f"later_{index}"
         subscribe("contract.*")(handler)
     event = make_event()
-    await ApixEventLoop(registry)._dispatch_event(
+    await ApixEventLoop(registry, ApixEventPipe(), get_event_registry())._dispatch_event(
         event,
         registry.get_handlers_chain_for_event(event.event_name),
     )
@@ -303,7 +302,7 @@ async def test_background_failure_before_next_core_is_still_log_only(registry):
 
     notified = AsyncMock()
     subscribe("contract.*")(ApixEventHandler(last, on_has_error=notified))
-    loop = ApixEventLoop(registry)
+    loop = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
     event = make_event()
     with patch("apixis.core.event.base.logger") as logger:
         await asyncio.wait_for(loop._dispatch_event(event, loop._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else []), 1)
@@ -325,7 +324,7 @@ async def test_background_handler_checks_acceptance_when_it_starts(registry):
     async def accept(event):
         event.accept()
 
-    loop = ApixEventLoop(registry)
+    loop = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
     event = make_event()
     await loop._dispatch_event(
         event,
@@ -483,7 +482,7 @@ async def test_subscribe_preserves_on_error_and_later_handler_observes_failure(r
         assert event.error_stack[0].message == "own failure"
 
     subscribe("contract.*")(ApixEventHandler(later_core, on_has_error=upstream_error))
-    await ApixEventLoop(registry)._dispatch_event(make_event(), registry.get_handlers_chain_for_event("contract.event"))
+    await ApixEventLoop(registry, ApixEventPipe(), get_event_registry())._dispatch_event(make_event(), registry.get_handlers_chain_for_event("contract.event"))
     assert calls == ["own error", "upstream error"]
 
 
@@ -569,7 +568,7 @@ async def test_set_core_func_preserves_identity_options_and_error_callback(regis
         assert registry.get_handlers_chain_for_event("contract.event") == [handler.name]
         assert registry.get_handlers_chain_for_event("contract.excluded") == []
         assert handler.priority == 8
-        await ApixEventLoop(registry)._dispatch_event(event, [handler.name])
+        await ApixEventLoop(registry, ApixEventPipe(), get_event_registry())._dispatch_event(event, [handler.name])
     else:
         await handler(event)
     original.assert_not_awaited()

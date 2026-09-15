@@ -3,14 +3,10 @@
 import pytest
 import pytest_asyncio
 
-from apixis.core.event import (
-    ApixEvent,
-    APIX_HANDLER_REGISTRY,
-    unsubscribe,
-    subscribe,
-)
-from apixis.core.event.event_loop import APIX_EVENT_LOOP
-from apixis.core.event import EVENT_PIPE
+from apixis.core.event import ApixEvent, unsubscribe, subscribe
+from apixis.core.event.factory import get_handler_registry
+from apixis.core.event.factory import get_event_loop
+from apixis.core.event.factory import get_event_pipe
 from apixis.core.graph import (
     GLOBALNS,
     START,
@@ -34,8 +30,8 @@ pytestmark = pytest.mark.asyncio(loop_scope="session")
 async def stop_event_loop_after_module():
     """Stop and clear the shared event runtime after this module."""
     yield
-    await APIX_EVENT_LOOP.stop()
-    await EVENT_PIPE.clear()
+    await get_event_loop().stop()
+    await get_event_pipe().clear()
 
 
 @pytest.mark.parametrize("namespace", [None, "", "<global>", "plugin-demo"])
@@ -81,7 +77,7 @@ async def test_subscribe_inserts_plugin_before_node_graph_listener(namespace):
         state["pipeline"].append("enrichment-plugin")
         state["plugin_value"] = "injected through event plugin"
 
-    handler_names = APIX_HANDLER_REGISTRY.get_handlers_chain_for_event(
+    handler_names = get_handler_registry().get_handlers_chain_for_event(
         graph.dispatch_name
     )
     assert handler_names == [
@@ -90,7 +86,7 @@ async def test_subscribe_inserts_plugin_before_node_graph_listener(namespace):
         graph.dispatch_name,
     ]
 
-    plugin_meta = APIX_HANDLER_REGISTRY.get_handler(plugin_demo_enrichment.__name__)
+    plugin_meta = get_handler_registry().get_handler(plugin_demo_enrichment.__name__)
     assert plugin_meta.between_handlers == (
         plugin_demo_authentication.__name__,
         graph.dispatch_name,
@@ -365,7 +361,7 @@ async def test_dispatch_name_orders_plugins_on_both_sides_of_graph(namespace):
 
     try:
         assert await graph.invoke({}) == {"done": True}
-        await EVENT_PIPE.join()
+        await get_event_pipe().join()
         node_index = calls.index("node")
         assert calls[node_index - 1 : node_index + 2] == ["before", "node", "after"]
         assert calls.count("before") == calls.count("after")

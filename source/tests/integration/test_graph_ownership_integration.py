@@ -304,9 +304,10 @@ async def test_abort_closes_owned_interrupt_before_namespace_replacement():
         new_called.append(block)
 
     # Reposting a delayed interruption cannot transfer it to the new graph.
-    from apixis.core.event import EVENT_PIPE, EventType
+    from apixis.core.event.factory import get_event_pipe
+    from apixis.core.event import EventType
 
-    await EVENT_PIPE.post_event(
+    await get_event_pipe().post_event(
         event_type=EventType.WORKFLOW,
         event_name=get_graph_interrupted_name(new.namespace, missing_ok=True),
         context=block,

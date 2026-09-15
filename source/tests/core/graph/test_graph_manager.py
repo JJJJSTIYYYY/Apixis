@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from apixis.core.event import APIX_HANDLER_REGISTRY
+from apixis.core.event.factory import get_handler_registry
 from apixis.core.graph import (
     END,
     GLOBALNS,
@@ -254,8 +254,8 @@ def test_compile_exist_ok_decomposes_and_replaces_original_graph(namespace):
         .compile_graph(using_namespace=namespace)
     )
     first_callbacks = {
-        APIX_HANDLER_REGISTRY.get_handler(handler_name).core_func
-        for handler_name in APIX_HANDLER_REGISTRY.get_handlers_chain_for_event(
+        get_handler_registry().get_handler(handler_name).core_func
+        for handler_name in get_handler_registry().get_handlers_chain_for_event(
             first_graph.dispatch_name
         )
     }
@@ -270,8 +270,8 @@ def test_compile_exist_ok_decomposes_and_replaces_original_graph(namespace):
         )
     )
     replacement_callbacks = {
-        APIX_HANDLER_REGISTRY.get_handler(handler_name).core_func
-        for handler_name in APIX_HANDLER_REGISTRY.get_handlers_chain_for_event(
+        get_handler_registry().get_handler(handler_name).core_func
+        for handler_name in get_handler_registry().get_handlers_chain_for_event(
             replacement.dispatch_name
         )
     }
@@ -359,13 +359,13 @@ def test_compile_rejects_glob_namespace_without_changing_registry(namespace, exi
     """Invalid names cannot acquire ownership or replace existing listeners."""
     manager = GraphManager().add_node(source).add_edge(START, "source")
     original = manager.compile_graph()
-    handlers = dict(APIX_HANDLER_REGISTRY.registry)
+    handlers = dict(get_handler_registry().registry)
 
     with pytest.raises(ValueError, match="glob characters"):
         manager.compile_graph(using_namespace=namespace, exist_ok=exist_ok)
 
     assert _namespace_graphs == {original.namespace: original}
-    assert APIX_HANDLER_REGISTRY.registry == handlers
+    assert get_handler_registry().registry == handlers
     assert original._decomposed is False
 
 

@@ -1,6 +1,6 @@
 # 事件通道、序列化与远程传输
 
-`ApixEventPipe` 将事件通道分为三个固定角色：
+`event_pipe.py` 中的 `ApixEventPipe` 将事件通道分为三个固定角色；通道类型与序列化函数均位于 `pipe_channel.py`：
 
 | 通道 | 方向 | 默认实现 | 用途 |
 | --- | --- | --- | --- |
@@ -8,14 +8,14 @@
 | `mailbox` | 只读 | `KafkaChannel` 或 `RabbitMQChannel` | 接收网关投递给当前节点的远程事件 |
 | `mailtruck` | 只写 | `GatewayChannel` | 通过 HTTP 网关发送或广播事件 |
 
-`APIX_EVENT_LOOP` 只消费 `builtin`。远程 mailbox 收到的事件由 `ApixEventPipe` 的 forwarder 转发到 `builtin` 统一消费。
+`get_event_loop()` 只消费 `builtin`。远程 mailbox 收到的事件由 `ApixEventPipe` 的 forwarder 转发到 `builtin` 统一消费。
 
 ## ApixEventPipe API
 
 全局实例：
 
 ```python
-from apixis.core.event import EVENT_PIPE
+from apixis.core.event import start_core, get_event_pipe, get_event_loop
 ```
 
 常用接口：
@@ -39,14 +39,15 @@ from apixis.core.event import EVENT_PIPE
 ## 本地事件
 
 ```python
-await EVENT_PIPE.post_event(
+await start_core()
+await get_event_pipe().post_event(
     event_type=EventType.WORKFLOW,
     event_name="document.index.requested",
     context={"document_id": "doc-1"},
 )
 ```
 
-默认写入 `builtin`。全局管道的本地发布自动启动消费者，成功写入后记录精确事件名；发布端不查询或重建 handler_chain。
+默认写入 `builtin`。在 asyncio 中调用 `get_event_pipe()` 会调度核心启动；需要等待启动完成时使用 `await start_core()`。发布本身只入队，不记录事件名，也不查询或重建 handler_chain。事件名由 `ApixEventLoop` 从背压处理队列取出事件后统一记录。
 
 `builtin` 是无限制的 ready 队列，`maxsize == 0`，`full()` 始终为 `False`；本地 `put()` 不等待容量，`put_nowait()` 不会因为事件积压而抛出 `asyncio.QueueFull`。事件循环通过处理队列和信号量分别限制排队量与执行量；两者当前都使用 `max(128, EVENT_LOOP_BACKPRESSURE)`，详见[两阶段队列与背压](./README.md#两阶段队列与背压)。
 
@@ -64,17 +65,17 @@ await EVENT_PIPE.post_event(
     "context": {"task_id": "task-1"},
     "timestamp": 1787414400.0,
     "accepted": False,
-    "seen": ["upstream_handler_1", "upstream_handler_2"]
-    "error_stack": [] # list of ApixEventError,
+    "seen": ["upstream_handler_1", "upstream_handler_2"],
+    "error_stack": [],  # Serialized ApixEventError records.
 }
 ```
 
 `error_stack` 按顺序保存错误记录字典，每条包含 `handler_name`、`phase`、`exception_type`、`message` 和 traceback 文本。反序列化后恢复为 `ApixEventError`，因此下游仍可通过 `has_error` 判断前置错误。前台 handler 的 `CancelledError` 记录也会保留。
 
-内部辅助函数位于 `apixis.core.event.event_pipe`：
+序列化辅助函数位于 `apixis.core.event.pipe_channel`：
 
 ```python
-from apixis.core.event.event_pipe import (
+from apixis.core.event.pipe_channel import (
     encode_event,
     event_from_json,
     event_to_json,
@@ -101,7 +102,7 @@ event = ApixEvent(
     timestamp=time.time(),
 )
 
-await EVENT_PIPE.send(event, recipient="worker-node-id")
+await get_event_pipe().send(event, recipient="worker-node-id")
 ```
 
 `recipient` 必须是非空 mq id。`GatewayChannel` 通过 HTTP POST 请求网关的 pipe endpoint，并携带 sender、recipient 和事件 payload。
@@ -113,8 +114,8 @@ await EVENT_PIPE.send(event, recipient="worker-node-id")
 ### 广播
 
 ```python
-result = await EVENT_PIPE.broadcast(event)
-nodes = EVENT_PIPE.nodes
+result = await get_event_pipe().broadcast(event)
+nodes = get_event_pipe().nodes
 ```
 
 当远程网关未启用时，`broadcast()` 直接返回空字典。
@@ -188,6 +189,8 @@ Apixis 核心不管理数据库或共享缓存，远程事件模式无需配置 
 可以为独立 `ApixEventPipe` 按通道角色注入自定义对象：
 
 ```python
+from apixis.core.event import ApixEventPipe
+
 pipe = ApixEventPipe(
     builtin=CustomBuiltinChannel(),
     mailbox=CustomMailboxChannel(),
@@ -223,18 +226,18 @@ pipe = ApixEventPipe(
 ## 生命周期与失败处理
 
 ```python
-await EVENT_PIPE.start()
+await start_core()
+event_loop, event_pipe = get_event_loop(), get_event_pipe()
 try:
-    await APIX_EVENT_LOOP.start()
     ...
 finally:
-    await APIX_EVENT_LOOP.stop()
-    await EVENT_PIPE.stop()
+    await event_loop.stop()
+    await event_pipe.stop()
 ```
 
-`EVENT_PIPE.start()` 是幂等的。如果启动任一外部通道失败，已打开的通道会被关闭。
+`get_event_pipe().start()` 是幂等的。如果启动任一外部通道失败，已打开的通道会被关闭。
 
-`EVENT_PIPE.stop()` 会：
+`get_event_pipe().stop()` 会：
 
 1. 尝试广播 offline 生命周期事件；
 2. 取消 mailbox forwarder；

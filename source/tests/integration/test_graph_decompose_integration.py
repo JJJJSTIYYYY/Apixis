@@ -8,7 +8,7 @@ from typing import Annotated, TypedDict
 
 import pytest
 
-from apixis.core.event import APIX_HANDLER_REGISTRY
+from apixis.core.event.factory import get_handler_registry
 from apixis.core.graph import NodeGraph, Node, START, END, KeepRef, AutoMerge
 from apixis.core.graph.base import namespace_set
 from apixis.core.graph.utils import acquire_namespace, release_namespace
@@ -193,13 +193,13 @@ async def test_rejected_shortcut_does_not_leave_an_unreachable_context():
 async def test_namespace_registration_without_decomposition_only_changes_ownership():
     """Explicit registry-only cleanup does not require lifecycle capabilities."""
     owner = SimpleNamespace(namespace="pure-registry")
-    before = dict(APIX_HANDLER_REGISTRY.registry)
+    before = dict(get_handler_registry().registry)
     try:
         assert acquire_namespace(owner) is owner
         assert "pure-registry" in namespace_set
-        assert APIX_HANDLER_REGISTRY.registry == before
+        assert get_handler_registry().registry == before
         with pytest.raises(ValueError, match="already in use"):
             acquire_namespace(SimpleNamespace(namespace="pure-registry"))
     finally:
         release_namespace(owner, decompose_immediately=False)
-    assert APIX_HANDLER_REGISTRY.registry == before
+    assert get_handler_registry().registry == before

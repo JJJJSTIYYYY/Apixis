@@ -6,8 +6,8 @@ from typing import Annotated, TypedDict
 import pytest
 import pytest_asyncio
 
-from apixis.core.event.event_loop import APIX_EVENT_LOOP
-from apixis.core.event import EVENT_PIPE
+from apixis.core.event.factory import get_event_loop
+from apixis.core.event.factory import get_event_pipe
 from apixis.core.graph import AutoMerge, END, START, GraphManager
 from apixis.core.utils.exception import InvalidContextError
 from apixis.core.graph.context import get_stream_writer
@@ -29,8 +29,8 @@ class AbortState(TypedDict, total=False):
 async def clean_graph_runtime_after_module():
     """Leave the shared event runtime clean for other integration modules."""
     yield
-    await APIX_EVENT_LOOP.stop()
-    await EVENT_PIPE.clear()
+    await get_event_loop().stop()
+    await get_event_pipe().clear()
 
 
 async def test_abort_invoke_returns_last_completed_snapshot_and_stops_routing():

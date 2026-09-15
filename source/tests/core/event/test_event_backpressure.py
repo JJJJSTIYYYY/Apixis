@@ -4,9 +4,11 @@ import asyncio
 
 import pytest
 
+from apixis.core.event import get_event_registry
+
 from apixis.core.event import ApixEvent, EventType, subscribe, unsubscribe
 from apixis.core.event import event_loop, event_pipe
-from apixis.core.event.handler_registry import APIX_HANDLER_REGISTRY
+from apixis.core.event.factory import get_handler_registry
 from apixis.core.graph import START, END, GraphManager
 from apixis.core.graph import node_graph
 
@@ -17,19 +19,19 @@ MIN_BACKPRESSURE = 128
 @pytest.fixture
 async def runtime(monkeypatch, request):
     """Exercise real publication with the production minimum backpressure."""
-    for name in tuple(APIX_HANDLER_REGISTRY.registry):
+    for name in tuple(get_handler_registry().registry):
         unsubscribe(name)
     monkeypatch.setattr(event_loop, "EVENT_LOOP_BACKPRESSURE", getattr(request, "param", 2))
     monkeypatch.setattr(event_loop, "BACKGROUND_HANDLER_BACKPRESSURE", 1)
     monkeypatch.setattr(event_loop, "SHOW_EVENT_DISPATCH", False)
-    monkeypatch.setattr(event_pipe, "EVENT_PIPE_MAX_LEN", 1)
     pipe = event_pipe.ApixEventPipe(remote_enabled=False)
-    loop = event_loop.ApixEventLoop(APIX_HANDLER_REGISTRY)
-    monkeypatch.setattr(event_loop, "EVENT_PIPE", pipe)
-    monkeypatch.setattr(event_pipe, "EVENT_PIPE", pipe)
-    monkeypatch.setattr(event_loop, "APIX_EVENT_LOOP", loop)
-    monkeypatch.setattr(node_graph, "EVENT_PIPE", pipe)
-    monkeypatch.setattr(node_graph, "APIX_EVENT_LOOP", loop)
+    loop = event_loop.ApixEventLoop(get_handler_registry(), pipe, get_event_registry())
+    async def start_runtime():
+        await pipe.start()
+        await loop.start()
+
+    monkeypatch.setattr(node_graph, "get_event_pipe", lambda: pipe)
+    await start_runtime()
     try:
         yield pipe, loop
     finally:
@@ -39,7 +41,7 @@ async def runtime(monkeypatch, request):
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await pipe.clear()
-        for name in tuple(APIX_HANDLER_REGISTRY.registry):
+        for name in tuple(get_handler_registry().registry):
             unsubscribe(name)
 
 
@@ -98,6 +100,7 @@ async def test_queue_capacity_and_running_dispatch_limit_are_independent(runtime
     handlers_allowed = asyncio.Event()
     gets = active = peak = 0
     completed = []
+    await loop.stop()
     original_get = pipe.get
 
     async def observe_get(*args, **kwargs):
@@ -110,6 +113,7 @@ async def test_queue_capacity_and_running_dispatch_limit_are_independent(runtime
         return event
 
     monkeypatch.setattr(pipe, "get", observe_get)
+    await loop.start()
 
     @subscribe("work.*", time_out=None)
     async def work(event):
@@ -165,8 +169,8 @@ async def test_join_tracks_event_until_handler_finishes(runtime):
         await asyncio.gather(waiter, return_exceptions=True)
 
 
-async def test_publication_during_stop_keeps_restarted_consumers_alive(runtime):
-    """A running handler may restart publication while old workers stop."""
+async def test_explicit_start_during_stop_keeps_restarted_consumers_alive(runtime):
+    """Explicit startup may resume consumption while old workers stop."""
     pipe, loop = runtime
     entered, release = asyncio.Event(), asyncio.Event()
     completed = []
@@ -175,6 +179,7 @@ async def test_publication_during_stop_keeps_restarted_consumers_alive(runtime):
     async def parent(event):
         entered.set()
         await release.wait()
+        await loop.start()
         await pipe.post_event(event_type=EventType.INFO, event_name="child")
 
     @subscribe("child")
@@ -188,7 +193,7 @@ async def test_publication_during_stop_keeps_restarted_consumers_alive(runtime):
     await asyncio.wait_for(stopping, 1)
     await asyncio.wait_for(pipe.join(), 1)
     assert completed == ["child"]
-    assert loop.started
+    assert loop._started
 
 
 async def test_task_creation_failure_does_not_block_later_events(runtime, monkeypatch):
@@ -253,7 +258,7 @@ async def test_stop_during_blocked_transfer_preserves_fifo_and_join(runtime, mon
     await asyncio.wait_for(blocked.wait(), 1)
     for index in range(restart_count):
         await asyncio.wait_for(loop.stop(), 1)
-        assert not loop.started
+        assert not loop._started
         if index < restart_count - 1:
             blocked.clear()
             await loop.start()
@@ -266,6 +271,7 @@ async def test_stop_during_blocked_transfer_preserves_fifo_and_join(runtime, mon
     try:
         await asyncio.sleep(0)
         assert not waiter.done()
+        await loop.start()
         await pipe.post_event(event_type=EventType.INFO, event_name=f"work.{event_count}")
         await asyncio.wait_for(waiter, 1)
         assert completed == [f"work.{index}" for index in range(event_count + 1)]

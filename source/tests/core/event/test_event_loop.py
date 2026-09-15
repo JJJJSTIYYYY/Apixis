@@ -11,6 +11,8 @@ from uuid import uuid4
 
 import pytest
 
+from apixis.core.event import ApixEventPipe, get_event_registry
+
 from apixis.core.event.base import ApixEvent, EventType, ApixEventHandler
 from apixis.core.event.handler_registry import ApixHandlerRegistry
 from apixis.core.event.event_loop import ApixEventLoop
@@ -81,9 +83,9 @@ class TestStartStop:
     @pytest.mark.asyncio
     async def test_start_creates_consumer_task(self):
         """start() should create a consumer asyncio.Task."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         with patch.object(
             handler, "_event_consumer_loop", AsyncMock()
@@ -97,9 +99,9 @@ class TestStartStop:
     @pytest.mark.asyncio
     async def test_start_idempotent(self):
         """Calling start() multiple times should not create multiple tasks."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         with patch.object(handler, "_event_consumer_loop", AsyncMock()):
             await handler.start()
@@ -113,9 +115,9 @@ class TestStartStop:
     @pytest.mark.asyncio
     async def test_stop_cancels_consumer_task(self):
         """stop() should cancel the consumer task."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         async def block_forever():
             try:
@@ -134,18 +136,18 @@ class TestStartStop:
     @pytest.mark.asyncio
     async def test_stop_when_not_started_is_safe(self):
         """Calling stop() when not started should not raise."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         await handler.stop()
 
     @pytest.mark.asyncio
     async def test_stop_preserves_dispatch_tasks(self):
         """stop() should leave pending dispatch tasks running."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         async def slow_dispatch():
             await asyncio.sleep(10)
@@ -161,9 +163,9 @@ class TestStartStop:
     @pytest.mark.asyncio
     async def test_stop_preserves_background_tasks(self):
         """stop() should leave pending background handler tasks running."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         async def slow_background():
             await asyncio.sleep(10)
@@ -188,9 +190,9 @@ class TestDispatchEvent:
     @pytest.mark.asyncio
     async def test_dispatch_empty_event_name_returns_none(self):
         """Event with empty event_name should return None."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         event = _make_event(event_name="")
         result = await handler._dispatch_event(
@@ -205,9 +207,9 @@ class TestDispatchEvent:
         When no handlers are registered, event is returned as-is.
         Dispatch does not implicitly accept events.
         """
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         event = _make_event()
         result = await handler._dispatch_event(
@@ -221,9 +223,9 @@ class TestDispatchEvent:
     @pytest.mark.asyncio
     async def test_dispatch_calls_handler(self):
         """Registered handler should be called with the event."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         mock_callback = AsyncMock()
         entry = _make_handler_entry(callback=mock_callback)
@@ -241,9 +243,9 @@ class TestDispatchEvent:
     @pytest.mark.asyncio
     async def test_dispatch_multiple_handlers_called_in_order(self):
         """Multiple handlers should be called in registry order."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         call_order = []
 
@@ -269,9 +271,9 @@ class TestDispatchEvent:
     @pytest.mark.asyncio
     async def test_dispatch_event_accepted_skips_remaining_cores(self):
         """When event.accepted is True, remaining core functions are skipped."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         called = []
 
@@ -298,9 +300,9 @@ class TestDispatchEvent:
     @pytest.mark.asyncio
     async def test_dispatch_event_already_accepted_skips_core(self):
         """If event is already accepted, its core function is not called."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         mock_callback = AsyncMock()
         entry = _make_handler_entry(callback=mock_callback)
@@ -318,9 +320,9 @@ class TestDispatchEvent:
     @pytest.mark.asyncio
     async def test_dispatch_handler_timeout_logs_error(self):
         """Handler timeout should log an error and continue."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         async def slow_handler(event):
             await asyncio.sleep(10)
@@ -346,9 +348,9 @@ class TestDispatchEvent:
     @pytest.mark.asyncio
     async def test_dispatch_handler_exception_logs_error(self):
         """Handler exception should log an error."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         async def failing_handler(event):
             raise ValueError("test error")
@@ -369,9 +371,9 @@ class TestDispatchEvent:
     @pytest.mark.asyncio
     async def test_dispatch_upstream_stop_flag_does_not_control_next_handler(self):
         """The next handler uses its own stop_when_error setting."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         called = []
 
@@ -400,9 +402,9 @@ class TestDispatchEvent:
     @pytest.mark.asyncio
     async def test_dispatch_handler_stop_when_error_false_continues(self):
         """A later handler with stop_when_error=False runs despite upstream errors."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         called = []
 
@@ -431,9 +433,9 @@ class TestDispatchEvent:
     @pytest.mark.asyncio
     async def test_dispatch_background_handler_creates_task(self):
         """Background handlers should create background tasks."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         async def bg_handler(event):
             await asyncio.sleep(0.01)
@@ -455,11 +457,11 @@ class TestDispatchEvent:
     @pytest.mark.asyncio
     async def test_direct_dispatch_does_not_own_consumer_capacity(self):
         """Only consumer task completion owns and releases dispatch capacity."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
-        # Use patch.object to ensure proper cleanup (registry is a singleton)
+        # Restore the patched registry method when the assertion finishes.
         mock_get_handlers = MagicMock(side_effect=RuntimeError("fatal error"))
         with patch.object(
             registry,
@@ -487,9 +489,9 @@ class TestRunBackgroundHandler:
     @pytest.mark.asyncio
     async def test_background_handler_no_timeout(self):
         """Background handler with time_out=None should run normally."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         mock_callback = AsyncMock()
         entry = _make_handler_entry(callback=mock_callback, time_out=None)
@@ -502,9 +504,9 @@ class TestRunBackgroundHandler:
     @pytest.mark.asyncio
     async def test_background_handler_with_timeout(self):
         """Background handler with a timeout should use wait_for."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         mock_callback = AsyncMock()
         entry = _make_handler_entry(callback=mock_callback, time_out=5.0)
@@ -517,9 +519,9 @@ class TestRunBackgroundHandler:
     @pytest.mark.asyncio
     async def test_background_handler_timeout_error(self):
         """Background handler timeout should log error."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         async def slow_handler(event):
             await asyncio.sleep(10)
@@ -535,9 +537,9 @@ class TestRunBackgroundHandler:
     @pytest.mark.asyncio
     async def test_background_handler_cancelled_error_propagates(self):
         """CancelledError should be re-raised in background handler."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         async def cancelled_handler(event):
             raise asyncio.CancelledError()
@@ -552,9 +554,9 @@ class TestRunBackgroundHandler:
     @pytest.mark.asyncio
     async def test_background_handler_exception_logs(self):
         """Background handler exception should be logged."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         async def error_handler(event):
             raise ValueError("background error")
@@ -570,9 +572,9 @@ class TestRunBackgroundHandler:
     @pytest.mark.asyncio
     async def test_background_handler_semaphore_used(self):
         """Background handler should acquire the semaphore."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         mock_callback = AsyncMock()
         entry = _make_handler_entry(callback=mock_callback, time_out=None)
@@ -596,9 +598,9 @@ class TestCreateBackgroundHandlerTask:
     @pytest.mark.asyncio
     async def test_creates_task_adds_to_set(self):
         """Should create a task and add it to _background_handler_tasks."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         mock_callback = AsyncMock()
         entry = _make_handler_entry(callback=mock_callback, time_out=None)
@@ -629,9 +631,9 @@ class TestEventConsumerLoop:
     @pytest.mark.asyncio
     async def test_consumer_dispatch_flow(self):
         """End-to-end: event -> dispatch -> handler called without implicit acceptance."""
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
         mock_callback = AsyncMock()
         entry = _make_handler_entry(callback=mock_callback)
@@ -649,9 +651,9 @@ class TestEventConsumerLoop:
 
     @pytest.mark.asyncio
     async def test_dispatch_acknowledges_event_even_when_dispatch_fails(self):
-        registry = ApixHandlerRegistry()
+        registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
-        handler = ApixEventLoop(registry)
+        handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
         event = _make_event()
 
         with (
@@ -660,8 +662,8 @@ class TestEventConsumerLoop:
                 "_dispatch_event",
                 AsyncMock(side_effect=RuntimeError("dispatch failed")),
             ),
-            patch(
-                "apixis.core.event.event_loop.EVENT_PIPE.task_done"
+            patch.object(
+                handler._event_pipe, "task_done"
             ) as task_done,
         ):
             await handler._dispatch_semaphore.acquire()
@@ -677,15 +679,15 @@ class TestEventConsumerLoop:
 
 
 # ============================
-# Tests: Module-level singleton
+# Tests: Factory-managed runtime
 # ============================
 
 
 class TestModuleSingleton:
-    """Tests for the module-level APIX_EVENT_LOOP."""
+    """Tests for the factory-managed event loop."""
 
     def test_pipe_event_handler_is_PipeEventHandler_instance(self):
-        """Module-level APIX_EVENT_LOOP should be a ApixEventLoop."""
-        from apixis.core.event.event_loop import APIX_EVENT_LOOP
+        """Factory-managed event loop should be a ApixEventLoop."""
+        from apixis.core.event.factory import get_event_loop
 
-        assert isinstance(APIX_EVENT_LOOP, ApixEventLoop)
+        assert isinstance(get_event_loop(), ApixEventLoop)

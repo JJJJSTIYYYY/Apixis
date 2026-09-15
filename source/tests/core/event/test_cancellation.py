@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from apixis.core.event import ApixEventPipe, get_event_registry
+
 from apixis.core.event import ApixEvent, ApixEventHandler, EventType
 from apixis.core.event.event_loop import ApixEventLoop
 from apixis.core.event.handler_registry import ApixHandlerRegistry
@@ -13,7 +15,7 @@ from apixis.core.event.handler_registry import ApixHandlerRegistry
 @pytest.fixture(autouse=True)
 def isolate_registry():
     """Keep the process-wide registry independent between contract tests."""
-    registry = ApixHandlerRegistry()
+    registry = ApixHandlerRegistry(get_event_registry())
     for name in list(registry.registry):
         registry.unregister_handler(name)
     yield
@@ -39,8 +41,8 @@ def make_event():
 @pytest.mark.parametrize("stop_when_error", [False, True])
 async def test_cancelled_phase_notifies_entire_foreground_chain(phase, stop_when_error):
     """Completed, current and unreached subscribers all receive cleanup once."""
-    registry = ApixHandlerRegistry()
-    runtime = ApixEventLoop(registry)
+    registry = ApixHandlerRegistry(get_event_registry())
+    runtime = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
     event = make_event()
     notified = []
 
@@ -96,8 +98,8 @@ async def test_cancelled_phase_notifies_entire_foreground_chain(phase, stop_when
 @pytest.mark.parametrize("failure", ["error", "timeout", "cancel"])
 async def test_cleanup_failure_cannot_hide_cancellation_or_skip_other_subscribers(failure):
     """A failing cleanup preserves the original cancellation and other hooks."""
-    registry = ApixHandlerRegistry()
-    runtime = ApixEventLoop(registry)
+    registry = ApixHandlerRegistry(get_event_registry())
+    runtime = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
     event = make_event()
     original = asyncio.CancelledError("original cancellation")
 
@@ -132,8 +134,8 @@ async def test_cleanup_failure_cannot_hide_cancellation_or_skip_other_subscriber
 
 async def test_cancel_notifications_run_concurrently_and_wait_for_every_hook():
     """Every cleanup starts while the others wait, and dispatch waits for all."""
-    registry = ApixHandlerRegistry()
-    runtime = ApixEventLoop(registry)
+    registry = ApixHandlerRegistry(get_event_registry())
+    runtime = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
     event = make_event()
     entered = [asyncio.Event() for _ in range(3)]
     release = [asyncio.Event() for _ in range(3)]
@@ -180,8 +182,8 @@ async def test_cancel_notifications_run_concurrently_and_wait_for_every_hook():
 
 async def test_repeated_dispatch_cancellation_interrupts_all_running_notifications():
     """Cancelling gather interrupts its hooks and propagates the new cancellation."""
-    registry = ApixHandlerRegistry()
-    runtime = ApixEventLoop(registry)
+    registry = ApixHandlerRegistry(get_event_registry())
+    runtime = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
     event = make_event()
     entered = [asyncio.Event(), asyncio.Event()]
     interrupted = []
@@ -225,8 +227,8 @@ async def test_repeated_dispatch_cancellation_interrupts_all_running_notificatio
 
 
 async def test_external_dispatch_cancellation_notifies_after_core_cleanup():
-    registry = ApixHandlerRegistry()
-    runtime = ApixEventLoop(registry)
+    registry = ApixHandlerRegistry(get_event_registry())
+    runtime = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
     entered = asyncio.Event()
     calls = []
 
@@ -250,8 +252,8 @@ async def test_external_dispatch_cancellation_notifies_after_core_cleanup():
 
 
 async def test_cancellation_while_waiting_for_background_capacity_notifies_foreground():
-    registry = ApixHandlerRegistry()
-    runtime = ApixEventLoop(registry)
+    registry = ApixHandlerRegistry(get_event_registry())
+    runtime = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
     runtime._background_handler_semaphore = asyncio.Semaphore(1)
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -285,8 +287,8 @@ async def test_cancellation_while_waiting_for_background_capacity_notifies_foreg
 
 @pytest.mark.parametrize("cause", ["raise", "external"])
 async def test_background_cancellation_only_notifies_its_own_handler(cause):
-    registry = ApixHandlerRegistry()
-    runtime = ApixEventLoop(registry)
+    registry = ApixHandlerRegistry(get_event_registry())
+    runtime = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
     entered = asyncio.Event()
 
     async def core(event):
@@ -313,8 +315,8 @@ async def test_background_cancellation_only_notifies_its_own_handler(cause):
 
 @pytest.mark.parametrize("action", ["success", "accept", "error", "timeout"])
 async def test_non_cancellation_does_not_notify_cancelled(action):
-    registry = ApixHandlerRegistry()
-    runtime = ApixEventLoop(registry)
+    registry = ApixHandlerRegistry(get_event_registry())
+    runtime = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
     async def core(event):
         if action == "accept":
@@ -333,7 +335,7 @@ async def test_non_cancellation_does_not_notify_cancelled(action):
 def test_on_cancelled_registration_validation_and_replacement():
     with pytest.raises(TypeError):
         ApixEventHandler(AsyncMock(), on_cancelled=1)
-    registry = ApixHandlerRegistry()
+    registry = ApixHandlerRegistry(get_event_registry())
     cleanup = AsyncMock()
     handler = register(registry, "handler", AsyncMock(), on_cancelled=cleanup)
     assert registry.get_handler("handler").on_cancelled is cleanup

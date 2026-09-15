@@ -6,13 +6,11 @@ import time
 import pytest
 import pytest_asyncio
 
-from apixis.core.event import (
-    ApixEvent,
-    EventType,
-    APIX_EVENT_LOOP,
-    APIX_HANDLER_REGISTRY,
-    unsubscribe,
-    EVENT_PIPE,
+from apixis.core.event import ApixEvent, EventType, unsubscribe
+from apixis.core.event.factory import (
+    get_event_loop,
+    get_handler_registry,
+    get_event_pipe,
 )
 from apixis.core.graph import START, END, GLOBALNS, GraphManager
 from apixis.core.graph.context import apix_graph_context
@@ -27,8 +25,8 @@ pytestmark = pytest.mark.asyncio(loop_scope="session")
 async def stop_event_loop_after_module():
     """Leave the process-global event worker clean for later test modules."""
     yield
-    await APIX_EVENT_LOOP.stop()
-    await EVENT_PIPE.clear()
+    await get_event_loop().stop()
+    await get_event_pipe().clear()
 
 
 def _block(*, data=None) -> Block:
@@ -99,10 +97,10 @@ async def test_interrupted_hook_rejects_non_block_event_context():
     assert decorated is invalid_context_hook
 
     try:
-        [handler_name] = APIX_HANDLER_REGISTRY.get_handlers_chain_for_event(
+        [handler_name] = get_handler_registry().get_handlers_chain_for_event(
             get_graph_interrupted_name(GLOBALNS, missing_ok=True)
         )
-        handler = APIX_HANDLER_REGISTRY.get_handler(handler_name)
+        handler = get_handler_registry().get_handler(handler_name)
         event = ApixEvent(
             event_id="event-id",
             event_type=EventType.WORKFLOW,
@@ -162,9 +160,9 @@ async def test_graph_pauses_and_resumes_at_multiple_breakpoints(namespace):
         "answers": ["approved", {"edited": True}],
     }
 
-    assert capture_review_block.__name__ in (APIX_HANDLER_REGISTRY.registry)
+    assert capture_review_block.__name__ in (get_handler_registry().registry)
     graph.decompose()
-    assert capture_review_block.__name__ not in (APIX_HANDLER_REGISTRY.registry)
+    assert capture_review_block.__name__ not in (get_handler_registry().registry)
 
     with pytest.raises(RuntimeError, match="NodeGraph has been decomposed"):
         graph.add_interrupted_hook(capture_review_block)

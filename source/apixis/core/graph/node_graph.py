@@ -9,13 +9,11 @@ from contextlib import suppress
 from functools import wraps
 from typing import Any
 
+from apixis.core.event.factory import aget_event_pipe
 from apixis.core.event import (
-    EVENT_PIPE,
     ApixEvent,
     ApixEventHandler,
     EventType,
-    APIX_EVENT_LOOP,
-    APIX_HANDLER_REGISTRY,
     unsubscribe,
     subscribe,
     get_handler,
@@ -495,7 +493,6 @@ class NodeGraph:
         if completion is None:
             raise RuntimeError("Completion in GraphContext could not be None.")
         try:
-            await APIX_EVENT_LOOP.start()
             if self._is_active_context(context):
                 await self._post_next(context.target_node_name, context)
             result = await completion
@@ -754,7 +751,7 @@ class NodeGraph:
         """Target one node or concurrent batch and post one dispatch."""
         self._validate_target(node_name, context.steps)
         context._set_target_node(node_name)
-        await EVENT_PIPE.post_event(
+        await (await aget_event_pipe()).post_event(
             event_type=EventType.WORKFLOW,
             event_name=self.dispatch_name,
             context=context,

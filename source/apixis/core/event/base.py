@@ -314,7 +314,7 @@ class ApixEventHandler:
             This instance after successful registration or replacement.
         """
         # Import at call time because handler_registry imports this class.
-        from apixis.core.event.handler_registry import subscribe
+        from apixis.core.event.subscription import subscribe
 
         return subscribe(
             *event_names,
@@ -337,7 +337,7 @@ class ApixEventHandler:
         this handler under the same name. Already running calls continue.
         """
         # Import at call time because handler_registry imports this class.
-        from apixis.core.event.handler_registry import unsubscribe
+        from apixis.core.event.subscription import unsubscribe
 
         unsubscribe(self.name, missing_ok=missing_ok)
 

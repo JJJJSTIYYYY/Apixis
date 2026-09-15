@@ -4,7 +4,8 @@ import asyncio
 
 import pytest
 
-from apixis.core.event import ApixEventHandler, EVENT_PIPE, subscribe, unsubscribe
+from apixis.core.event import ApixEventHandler, subscribe, unsubscribe
+from apixis.core.event.factory import get_event_pipe
 from apixis.core.graph import END, START, GraphManager
 from apixis.core.graph.context import get_stream_writer
 from apixis.core.graph.interrupter.graph_interrupter import interrupt
@@ -67,7 +68,7 @@ async def test_upstream_plugin_cancellation_ends_call_and_runtime_remains_usable
                 dependency.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
             assert task.cancelled()
             assert context.status == "aborted"
             assert not context.is_active
@@ -80,7 +81,7 @@ async def test_upstream_plugin_cancellation_ends_call_and_runtime_remains_usable
 
             unsubscribe(handler.name)
             assert await graph.invoke({}) == {"done": True}
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
     finally:
         if not task.done():
             task.cancel()
@@ -112,7 +113,7 @@ async def test_node_cancellation_ends_call_without_committing_or_routing(mode):
         async with asyncio.timeout(1):
             with pytest.raises(asyncio.CancelledError):
                 await run_graph(graph, context, mode, [])
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
         assert context.completion.cancelled()
         assert context.status == "aborted"
         assert context.state == {"value": "initial"}
@@ -151,7 +152,7 @@ async def test_interruption_dispatch_cancellation_releases_block_and_call(mode, 
         async with asyncio.timeout(1):
             with pytest.raises(asyncio.CancelledError):
                 await run_graph(graph, context, mode, [])
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
         assert context.status == "aborted"
         assert context.completion.cancelled()
         assert len(blocks) == 1 and blocks[0].done
@@ -192,7 +193,7 @@ async def test_background_plugin_cancellation_does_not_cancel_graph(mode):
     try:
         async with asyncio.timeout(1):
             await run_graph(graph, context, mode, [])
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
         assert context.status == "finished"
         assert context.state == {"done": True}
         assert len(cleanup_events) == 1
@@ -224,7 +225,7 @@ async def test_cleanup_failure_before_graph_notification_cannot_strand_call():
         async with asyncio.timeout(1):
             with pytest.raises(asyncio.CancelledError):
                 await graph.invoke(graph_context=context)
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
         assert context.completion.cancelled()
     finally:
         unsubscribe(handler.name)

@@ -152,7 +152,7 @@ handler = subscribe("request.*")(
 - 独立后台任务取消时，仅通知该后台 handler 自己，不通知主事件的其他 handler，也不取消图调用。前台事件取消不会取消已经启动的后台任务。
 - `time_out` 独立应用于每次取消回调。回调应只执行必要清理；`None` 仍表示无限等待。
 - 取消回调的普通异常、超时以及再次传播的 `CancelledError` 均只记录日志，不写入 `error_stack`，不触发 `on_error`，不阻止后续取消通知。完成通知后，事件循环重新抛出最初的 `CancelledError`。
-- 普通错误、正常转换为 `TimeoutError` 的超时、`event.accept()` 和正常完成不会触发取消通知。`APIX_EVENT_LOOP.stop()` 不取消正在运行的事件，因此也不会触发它们的取消通知。
+- 普通错误、正常转换为 `TimeoutError` 的超时、`event.accept()` 和正常完成不会触发取消通知。`get_event_loop().stop()` 不取消正在运行的事件，因此也不会触发它们的取消通知。
 
 上述“保留原始取消”适用于清理回调自身失败。若整个分发 task 在等待并发通知时再次被外部取消，`gather` 会中断尚未完成的通知，传播新的取消；不能保证每个清理回调都运行到结束。若取消发生在等待后台额度等 handler 外部阶段，仍会通知前台链，但不会凭空追加一条 handler 执行错误。
 
@@ -253,7 +253,7 @@ async def normalize_order(event: ApixEvent) -> None:
 
 ## 出队时解析当前链
 
-handler_chain 不维护版本。发布端只写入 ready 队列并记录精确事件名，不读取 handler 注册表。消费者仅将事件从 ready 转入处理队列。分发器取得分发额度并从处理队列取出事件后，立即同步取得或重建当前链，再创建分发任务。因此，在处理队列中等待的事件会使用正式分发前的最新注册顺序。
+handler_chain 不维护版本。发布端只写入 ready 队列，不记录事件名，也不读取 handler 注册表。消费者仅将事件从 ready 转入处理队列。分发器取得分发额度并从处理队列取出事件后，先记录非空精确事件名，再同步取得或重建当前链，再创建分发任务。因此，在处理队列中等待的事件会使用正式分发前的最新注册顺序。
 
 `cached_chain` 的类型注解为 `dict[str, list[str] | None]`，但正常失效操作会**删除缓存键**，而不是把值写成 `None`。每个精确事件名只有一份当前结果：
 
@@ -349,7 +349,7 @@ meta = get_handler_meta("observe_agent_event")
 patterns = get_unmatched_subscriptions("observe_agent_event")
 ```
 
-该结果基于 `APIX_EVENT_REGISTRY` 已观察到的精确事件名。应用刚启动、尚未发布事件时，所有订阅模式都可能被报告为 unmatched。
+该结果基于 `get_event_registry()` 已观察到的精确事件名。应用刚启动、尚未发布事件时，所有订阅模式都可能被报告为 unmatched。
 
 ## 低级数据模型与 Registry API
 
@@ -426,7 +426,7 @@ handler.set_core_func(process_updated_event)
 
 ### ApixHandlerRegistry
 
-该类是进程级 singleton；新建 `ApixHandlerRegistry()` 得到的仍是全局同一实例。主要方法：
+该类是普通实例，通过 `ApixHandlerRegistry(event_registry)` 注入事件观察注册表。共享实例由工厂的 `get_handler_registry()` 获取。主要方法：
 
 | 方法 | 说明 |
 | --- | --- |

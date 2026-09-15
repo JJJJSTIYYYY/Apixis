@@ -5,15 +5,14 @@ import traceback
 from apixis.core.config.core_config import (
     BACKGROUND_HANDLER_BACKPRESSURE,
     EVENT_LOOP_BACKPRESSURE,
-    EVENT_PIPE_MAX_LEN,
     SHOW_EVENT_DISPATCH
 )
 from apixis.core.event.base import ApixEvent
 from apixis.core.event.handler_registry import (
     ApixHandlerRegistry,
-    APIX_HANDLER_REGISTRY,
 )
-from apixis.core.event.event_pipe import EVENT_PIPE
+from apixis.core.event.event_pipe import ApixEventPipe
+from apixis.core.event.event_registry import ApixEventRegistry
 from apixis.core.utils.logger import logger
 
 
@@ -26,8 +25,12 @@ class ApixEventLoop:
     def __init__(
         self,
         registry: ApixHandlerRegistry,
+        event_pipe: ApixEventPipe,
+        event_registry: ApixEventRegistry,
     ):
         self._registry = registry
+        self._event_pipe = event_pipe
+        self._event_registry = event_registry
 
         self._event_consumer_task: asyncio.Task | None = None
         self._event_dispatcher_task: asyncio.Task | None = None
@@ -45,47 +48,59 @@ class ApixEventLoop:
         self._background_handler_tasks: set[asyncio.Task] = set()
         self._background_handler_semaphore = asyncio.Semaphore(BACKGROUND_HANDLER_BACKPRESSURE)
 
-        self.started = False
-
-    def start_nowait(self) -> None:
-        """Start ready admission and event dispatch in the running loop, once."""
-        if self._event_dispatcher_task is None or self._event_dispatcher_task.done():
-            self._event_dispatcher_task = asyncio.create_task(
-                self._event_dispatcher_loop(), name="pipe-event-dispatcher",
-            )
-        if self._event_consumer_task is None or self._event_consumer_task.done():
-            self._event_consumer_task = asyncio.create_task(
-                self._event_consumer_loop(), name="pipe-event-consumer",
-            )
-            self.started = True
-            logger.info("Worker started.")
+        self._started = False
 
     async def start(self) -> None:
-        """Start event consumption. Safe to call multiple times."""
-        self.start_nowait()
+        """Start ready admission and event dispatch in the running loop, once."""
+        if self._started:
+            return
+        self._started = True
+        
+        try:
+            if self._event_dispatcher_task is None or self._event_dispatcher_task.done():
+                self._event_dispatcher_task = asyncio.create_task(
+                    self._event_dispatcher_loop(), name="pipe-event-dispatcher",
+                )
+            if self._event_consumer_task is None or self._event_consumer_task.done():
+                self._event_consumer_task = asyncio.create_task(
+                    self._event_consumer_loop(), name="pipe-event-consumer",
+                )
+            self._started = True
+            logger.info("Worker started.")
+        except Exception:
+            self._started = False
+            raise
 
     async def stop(self) -> None:
         """Stop queue transfer and dispatch without discarding pending events.
 
         Ready events, the pending transfer, and processing queue entries remain
         available for restart. Running dispatch and background tasks finish
-        normally without being awaited here. Local publication restarts workers.
+        normally without being awaited here. Call start() to resume consumption.
         """
-        task = self._event_consumer_task
-        dispatcher = self._event_dispatcher_task
-        # Publications during shutdown may start new workers. Only stop the
-        # captured workers, and leave any replacement references intact.
-        self._event_consumer_task = None
-        self._event_dispatcher_task = None
-        self.started = False
-        workers = [worker for worker in (task, dispatcher) if worker is not None]
-        for worker in workers:
-            worker.cancel()
-        results = await asyncio.gather(*workers, return_exceptions=True)
-        for result in results:
-            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
-                raise result
-        logger.info("Worker stopped.")
+        if not self._started:
+            return
+        self._started = False
+
+        try:
+            task = self._event_consumer_task
+            dispatcher = self._event_dispatcher_task
+            # A concurrent start() may create new workers. Only stop the
+            # captured workers, and leave any replacement references intact.
+            self._event_consumer_task = None
+            self._event_dispatcher_task = None
+            self._started = False
+            workers = [worker for worker in (task, dispatcher) if worker is not None]
+            for worker in workers:
+                worker.cancel()
+            results = await asyncio.gather(*workers, return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                    raise result
+            logger.info("Worker stopped.")
+        except Exception:
+            self._started = True
+            raise
 
     # Consumer
     async def _event_consumer_loop(self):
@@ -98,7 +113,7 @@ class ApixEventLoop:
         try:
             while True:
                 if self._pending_event is None:
-                    self._pending_event = await EVENT_PIPE.get()
+                    self._pending_event = await self._event_pipe.get()
 
                 # Clear ownership only after put succeeds. Cancellation while
                 # waiting leaves this event first in line for the next consumer.
@@ -119,6 +134,10 @@ class ApixEventLoop:
                 raise
 
             try:
+                # Observe only events admitted for local dispatch, including
+                # events received from a mailbox or written to builtin directly.
+                if event.event_name:
+                    self._event_registry.record_event(event)
                 # Resolve synchronously after processing dequeue, before any task
                 # can observe later registration or ordering changes.
                 handler_chain = (
@@ -141,7 +160,7 @@ class ApixEventLoop:
                     raise
             except Exception as exc:
                 # A failed resolution or launch must not strand queue ownership.
-                EVENT_PIPE.task_done()
+                self._event_pipe.task_done()
                 self._dispatch_semaphore.release()
                 logger.error(
                     f"Dispatch preparation failed: {type(exc).__name__}: "
@@ -159,7 +178,7 @@ class ApixEventLoop:
         """Release queue ownership even when cancelled before coroutine entry."""
         self._dispatch_tasks.discard(task)
         try:
-            EVENT_PIPE.task_done()
+            self._event_pipe.task_done()
         finally:
             self._dispatch_semaphore.release()
 
@@ -266,6 +285,4 @@ class ApixEventLoop:
             )
 
 
-APIX_EVENT_LOOP = ApixEventLoop(APIX_HANDLER_REGISTRY)
-
-__all__ = ['APIX_EVENT_LOOP', 'ApixEventLoop']
+__all__ = ["ApixEventLoop"]

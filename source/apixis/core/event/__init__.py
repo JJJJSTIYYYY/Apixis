@@ -10,12 +10,12 @@ from apixis.core.event.base import (
     ChannelType,
 )
 from apixis.core.event.event_loop import (
-    APIX_EVENT_LOOP,
     ApixEventLoop,
 )
 from apixis.core.event.event_pipe import (
-    EVENT_PIPE,
     ApixEventPipe,
+)
+from apixis.core.event.pipe_channel import (
     BaseEventChannel,
     ReadableEventChannel,
     WritableEventChannel,
@@ -37,7 +37,20 @@ from apixis.core.utils.exception import (
 )
 from apixis.core.event.handler_registry import (
     ApixHandlerRegistry,
-    APIX_HANDLER_REGISTRY,
+)
+from apixis.core.event.factory import (
+    start_core,
+    get_event_registry,
+    get_event_pipe,
+    get_handler_registry,
+    get_event_loop,
+    aget_event_registry,
+    aget_event_pipe,
+    aget_handler_registry,
+    aget_event_loop,
+    EventCore,
+)
+from apixis.core.event.subscription import (
     get_unmatched_subscriptions,
     subscribe,
     unsubscribe,
@@ -47,10 +60,19 @@ from apixis.core.event.handler_registry import (
 )
 from apixis.core.event.event_registry import (
     ApixEventRegistry,
-    APIX_EVENT_REGISTRY,
 )
 
 __all__ = [
+    "start_core",
+    "get_event_registry",
+    "get_event_pipe",
+    "get_handler_registry",
+    "get_event_loop",
+    "aget_event_registry",
+    "aget_event_pipe",
+    "aget_handler_registry",
+    "aget_event_loop",
+    "EventCore",
     "EventType",
     "ApixEvent",
     "ApixEventError",
@@ -58,9 +80,7 @@ __all__ = [
     "EventHandlerErrorFunc",
     "ApixEventHandler",
     "ChannelType",
-    "APIX_EVENT_LOOP",
     "ApixEventLoop",
-    "EVENT_PIPE",
     "ApixEventPipe",
     "BaseEventChannel",
     "ReadableEventChannel",
@@ -79,7 +99,6 @@ __all__ = [
     "InvalidNodeReturnsError",
     "InvalidContextError",
     "ApixHandlerRegistry",
-    "APIX_HANDLER_REGISTRY",
     "get_unmatched_subscriptions",
     "subscribe",
     "unsubscribe",
@@ -87,5 +106,4 @@ __all__ = [
     "get_handler_meta",
     "is_registered",
     "ApixEventRegistry",
-    "APIX_EVENT_REGISTRY",
 ]

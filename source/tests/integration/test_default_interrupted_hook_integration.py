@@ -4,12 +4,8 @@ import asyncio
 
 import pytest
 
-from apixis.core.event import (
-    EVENT_PIPE,
-    get_handler,
-    subscribe,
-    unsubscribe,
-)
+from apixis.core.event.factory import get_event_pipe
+from apixis.core.event import get_handler, subscribe, unsubscribe
 from apixis.core.graph import END, GLOBALNS, START, GraphManager
 from apixis.core.graph.interrupter import interrupt, interrupted_hook
 from apixis.core.graph.utils.namespace import get_graph_interrupted_name
@@ -41,7 +37,7 @@ async def test_missing_hook_fails_without_waiting_for_timeout(mode, namespace, t
         async with asyncio.timeout(1):
             with pytest.raises(BlockHookNotRegisteredError, match=graph.namespace):
                 await run_graph(graph, context, mode)
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
         assert context.status == "failed"
         assert context.completion.done()
         assert continued == []
@@ -80,12 +76,12 @@ async def test_default_allows_hook_to_defer_response_until_external_resolution(r
             assert not task.done()
             block.resolve("approved")
             assert await task == {"answer": "approved"}
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
         unsubscribe(capture.__name__)
         async with asyncio.timeout(1):
             with pytest.raises(BlockHookNotRegisteredError):
                 await graph.invoke({})
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
     finally:
         if not task.done():
             task.cancel()
@@ -125,7 +121,7 @@ async def test_plain_observer_entry_allows_deferred_resolution(subscription, unr
             assert not task.done()
             event.context.resolve("approved")
             assert await task == {"answer": "approved"}
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
     finally:
         if not task.done():
             task.cancel()
@@ -160,7 +156,7 @@ async def test_registered_hook_without_prior_core_entry_does_not_suppress_fallba
         async with asyncio.timeout(1):
             with pytest.raises(BlockHookNotRegisteredError):
                 await graph.invoke({})
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
         assert called == []
     finally:
         handler.unregister()
@@ -183,7 +179,7 @@ async def test_simultaneous_graphs_keep_seen_and_fallback_independent():
     try:
         async with asyncio.timeout(1):
             results = await asyncio.gather(first.invoke({}), second.invoke({}), return_exceptions=True)
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
         assert results[0] == {"answer": "approved"}
         assert isinstance(results[1], BlockHookNotRegisteredError)
     finally:
@@ -223,7 +219,7 @@ async def test_default_handles_upstream_termination_without_user_hook(mode, acti
                 error = GraphNodeError if action == "error" else asyncio.CancelledError
                 with pytest.raises(error):
                     await run_graph(graph, context, mode)
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
         assert context.status == ("failed" if action == "error" else "aborted")
         assert context.completion.cancelled() is (action == "cancel")
         assert len(blocks) == 1 and blocks[0].done
@@ -244,7 +240,7 @@ async def test_node_can_recover_from_missing_hook_error():
     try:
         async with asyncio.timeout(1):
             assert await graph.invoke({}) == {"review_skipped": True}
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
     finally:
         graph.decompose()
 
@@ -292,6 +288,6 @@ async def test_decomposition_removes_default_and_namespace_reuse_restores_it():
         async with asyncio.timeout(1):
             with pytest.raises(BlockHookNotRegisteredError):
                 await graph.invoke({})
-            await EVENT_PIPE.join()
+            await get_event_pipe().join()
     finally:
         graph.decompose()

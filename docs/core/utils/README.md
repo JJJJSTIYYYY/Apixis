@@ -121,4 +121,4 @@ except EventHandlerNotRegisteredError:
 | `resource_cleaner.start()` / `stop()` | 启动或停止周期清理任务，无 interval 参数 |
 | `resource_cleaner.run_once()` | 按登记顺序执行一轮；普通异常隔离，int 返回值用于累计清理数量 |
 
-导入时 `resource_cleaner` 会注册到 `auto_init`，但不自动启动。`Logger`、`EVENT_PIPE` 和 `APIX_EVENT_LOOP` 未自动注册到 `auto_init`；需要由应用显式管理。清理间隔见[配置](../config/README.md)。
+导入时 `resource_cleaner` 会注册到 `auto_init`，但不自动启动。`Logger`、`get_event_pipe()` 和 `get_event_loop()` 未自动注册到 `auto_init`；事件系统在 asyncio 中调用工厂 getter 时调度统一启动，也可通过 `await start_core()` 等待启动完成；关闭时仍由应用显式管理。清理间隔见[配置](../config/README.md)。

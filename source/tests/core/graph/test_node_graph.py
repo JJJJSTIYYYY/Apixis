@@ -5,13 +5,12 @@ from typing import Annotated, TypedDict
 
 import pytest
 
-from apixis.core.event import (
-    APIX_EVENT_LOOP,
-    APIX_HANDLER_REGISTRY,
-    unsubscribe,
-    subscribe,
-    EVENT_PIPE,
+from apixis.core.event.factory import (
+    get_event_loop,
+    get_handler_registry,
+    get_event_pipe,
 )
+from apixis.core.event import unsubscribe, subscribe
 from apixis.core.utils.exception import EventHandlerAlreadyRegisteredError
 from apixis.core.graph import (
     AutoMerge,
@@ -498,15 +497,15 @@ async def test_invoke_rejects_non_context_argument():
 
 
 @pytest.mark.asyncio
-async def test_cancel_during_startup_aborts_the_accepted_context(monkeypatch):
-    """Cancellation during event-loop startup aborts the accepted attempt."""
+async def test_cancel_during_initial_publication_aborts_the_accepted_context(monkeypatch):
+    """Cancellation while publishing the first event aborts the accepted attempt."""
     graph = NodeGraph({}, {START: END})
     context = graph.create_context({})
 
-    async def cancel_start():
+    async def cancel_post(**kwargs):
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(APIX_EVENT_LOOP, "start", cancel_start)
+    monkeypatch.setattr(get_event_pipe(), "post_event", cancel_post)
 
     with pytest.raises(asyncio.CancelledError):
         await graph.invoke(graph_context=context)
@@ -534,7 +533,7 @@ async def test_post_failure_marks_running_context_failed(monkeypatch):
     assert context.completion is not None
     with pytest.raises(RuntimeError, match="post failed"):
         await context.completion
-    await APIX_EVENT_LOOP.stop()
+    await get_event_loop().stop()
 
 
 @pytest.mark.asyncio
@@ -597,7 +596,7 @@ async def test_post_next_propagates_event_pipe_failure(monkeypatch):
     async def fail_post_event(**kwargs):
         raise RuntimeError("event pipe unavailable")
 
-    monkeypatch.setattr(EVENT_PIPE, "post_event", fail_post_event)
+    monkeypatch.setattr(get_event_pipe(), "post_event", fail_post_event)
 
     with pytest.raises(RuntimeError, match="event pipe unavailable"):
         await graph._post_next(END, context)
@@ -624,8 +623,8 @@ def test_decompose_unregisters_only_graph_handlers_and_is_idempotent():
 
     assert graph._decomposed is True
     assert graph._handlers == {}
-    assert graph_handler_names.isdisjoint(APIX_HANDLER_REGISTRY.registry)
-    assert APIX_HANDLER_REGISTRY.get_handlers_chain_for_event("node") == [
+    assert graph_handler_names.isdisjoint(get_handler_registry().registry)
+    assert get_handler_registry().get_handlers_chain_for_event("node") == [
         retained_plugin.__name__
     ]
 
@@ -648,7 +647,7 @@ def test_dispatch_listener_registration_collision_does_not_leak_handler():
             using_namespace="rollback",
         )
 
-    assert APIX_HANDLER_REGISTRY.get_handler(
+    assert get_handler_registry().get_handler(
         conflicting_handler.__name__
     ).subscribe == ["foreign"]
     assert "rollback" not in namespace_set
@@ -703,4 +702,4 @@ async def test_decompose_rejects_active_invocation():
     release.set()
     assert await invocation == {"finished": True}
     graph.decompose()
-    await APIX_EVENT_LOOP.stop()
+    await get_event_loop().stop()

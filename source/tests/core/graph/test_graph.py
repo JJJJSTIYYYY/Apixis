@@ -6,8 +6,8 @@ from typing import Annotated, TypedDict
 import pytest
 import pytest_asyncio
 
-from apixis.core.event.event_loop import APIX_EVENT_LOOP
-from apixis.core.event import EVENT_PIPE
+from apixis.core.event.factory import get_event_loop
+from apixis.core.event.factory import get_event_pipe
 from apixis.core.utils.exception import InvalidNodeReturnsError
 from apixis.core.graph import (
     AutoMerge,
@@ -30,8 +30,8 @@ pytestmark = pytest.mark.asyncio(loop_scope="session")
 async def stop_event_loop_after_module():
     """Stop the shared event worker after this module's tests finish."""
     yield
-    await APIX_EVENT_LOOP.stop()
-    await EVENT_PIPE.clear()
+    await get_event_loop().stop()
+    await get_event_pipe().clear()
 
 
 class CommandListNode(BaseNode):
