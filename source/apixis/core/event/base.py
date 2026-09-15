@@ -37,7 +37,7 @@ class ApixEvent:
     context: Any
     timestamp: float
     accepted: bool = False
-    seen: list[str] = field(default_factory=list) # List of handler names that have processed this event.
+    seen: list[str] = field(default_factory=list) # Handler names recorded immediately before core execution.
     error_stack: list[ApixEventError] = field(default_factory=list)
 
     def accept(self) -> None:
@@ -144,15 +144,17 @@ class ApixEventHandler:
         Error notification precedes acceptance notification when both apply.
         Each upstream notification runs at most once. State is checked again after
         notification, so accepting the event there also suppresses the core.
-        A timeout applies separately to each invoked function. Cancellation
-        propagates; other failures are logged and foreground failures are
-        appended to the event without terminating dispatch.
+        A timeout applies separately to each invoked function. The handler name
+        is appended to seen immediately before the core starts, even if it fails.
+        Cancellation is recorded for foreground handlers and then re-raised;
+        other failures are logged without terminating dispatch.
 
         Each failed core or upstream notification calls ``on_error(event, exc)``
         once. A failure in ``on_error`` is recorded without recursive handling.
         Successful error handling does not remove the original error or retry
         the failed function. Cancellation propagates without calling on_error.
-        Background failures still invoke on_error but never enter error_stack.
+        Background exceptions still invoke on_error but never enter error_stack;
+        background cancellation propagates without on_error or an error record.
         """
         if event.has_error and self.on_has_error is not None:
             await self._execute_func(self.on_has_error, "on_has_error", event)
@@ -210,7 +212,11 @@ class ApixEventHandler:
                 await self._execute_func(self.on_error, "on_error", event, exc)
 
     def set_core_func(self, callback: EventHandlerFunc) -> None:
-        """Reset the core function, optionally rejecting replacement."""
+        """Replace the core callback without changing identity or registration.
+
+        The callback must be callable and return an awaitable when invoked.
+        Existing invocations finish with their original callback.
+        """
         if not callable(callback):
             raise TypeError("Core function must be callable.")
         self.core_func = callback

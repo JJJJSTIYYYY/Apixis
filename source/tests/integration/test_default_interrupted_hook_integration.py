@@ -94,28 +94,101 @@ async def test_default_allows_hook_to_defer_response_until_external_resolution(r
         graph.decompose()
 
 
-async def test_plain_observer_does_not_count_as_registered_block_hook():
-    blocks = []
+@pytest.mark.parametrize("subscription", ["exact", "wildcard"])
+@pytest.mark.parametrize("unregister_after_entry", [False, True])
+async def test_plain_observer_entry_allows_deferred_resolution(subscription, unregister_after_entry):
+    """Seen records actual core entry even when that subscriber later unregisters."""
+    events = asyncio.Queue()
+
+    async def review(state):
+        return {"answer": await interrupt()}
+
+    graph = GraphManager().add_node(review).add_edge(START, "review").compile_graph()
+
+    event_name = get_graph_interrupted_name(graph.namespace, missing_ok=True)
+    pattern = event_name if subscription == "exact" else get_graph_interrupted_name("*", missing_ok=True)
+
+    @subscribe(pattern, priority=10)
+    async def observe(event):
+        await events.put(event)
+        if unregister_after_entry:
+            unsubscribe(observe.__name__)
+
+    task = asyncio.create_task(graph.invoke({}))
+    try:
+        async with asyncio.timeout(1):
+            event = await events.get()
+            # Interruption dispatch finishes while the graph still awaits its Block.
+            await asyncio.sleep(0)
+            assert event.seen == [observe.__name__, event_name]
+            assert not event.context.done
+            assert not task.done()
+            event.context.resolve("approved")
+            assert await task == {"answer": "approved"}
+            await EVENT_PIPE.join()
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        unsubscribe(observe.__name__)
+        graph.decompose()
+
+
+@pytest.mark.parametrize("reason", ["filtered", "later"])
+async def test_registered_hook_without_prior_core_entry_does_not_suppress_fallback(reason):
+    """A matching registration alone is insufficient when its core has not run."""
+    called = []
 
     async def review(state):
         await interrupt()
         return state
 
     graph = GraphManager().add_node(review).add_edge(START, "review").compile_graph()
+    event_name = get_graph_interrupted_name(graph.namespace, missing_ok=True)
 
-    @subscribe(get_graph_interrupted_name(graph.namespace, missing_ok=True), priority=10)
-    async def observe(event):
-        blocks.append(event.context)
+    @interrupted_hook(graph.namespace)
+    async def capture(block):
+        called.append(block)
 
+    handler = get_handler(capture.__name__)
+    handler.register(
+        event_name,
+        priority=10 if reason == "filtered" else -1,
+        filter_event=[event_name] if reason == "filtered" else [],
+    )
     try:
         async with asyncio.timeout(1):
             with pytest.raises(BlockHookNotRegisteredError):
                 await graph.invoke({})
             await EVENT_PIPE.join()
-        assert len(blocks) == 1 and blocks[0].done
+        assert called == []
     finally:
-        unsubscribe(observe.__name__)
+        handler.unregister()
         graph.decompose()
+
+
+async def test_simultaneous_graphs_keep_seen_and_fallback_independent():
+    """A handled interruption in one graph cannot mask a missing hook in another."""
+    async def review(state):
+        return {"answer": await interrupt()}
+
+    manager = GraphManager().add_node(review).add_edge(START, "review")
+    first = manager.compile_graph("seen-first")
+    second = manager.compile_graph("seen-second")
+
+    @first.add_interrupted_hook
+    async def resolve(block):
+        block.resolve("approved")
+
+    try:
+        async with asyncio.timeout(1):
+            results = await asyncio.gather(first.invoke({}), second.invoke({}), return_exceptions=True)
+            await EVENT_PIPE.join()
+        assert results[0] == {"answer": "approved"}
+        assert isinstance(results[1], BlockHookNotRegisteredError)
+    finally:
+        first.decompose()
+        second.decompose()
 
 
 @pytest.mark.parametrize("mode", ["invoke", "stream"])

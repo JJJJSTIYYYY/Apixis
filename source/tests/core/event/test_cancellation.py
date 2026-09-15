@@ -86,6 +86,11 @@ async def test_cancelled_phase_notifies_entire_foreground_chain(phase, stop_when
     assert [error.exception_type for error in event.error_stack] == (
         ["ValueError", "CancelledError"] if phase in ("on_error", "on_has_error") else ["CancelledError"]
     )
+    error = event.error_stack[-1]
+    assert error.handler_name == "current"
+    assert error.phase == phase
+    assert error.message == "original cancellation"
+    assert event.seen == (["before", "current"] if phase in ("core_func", "on_error") else ["before"])
 
 
 @pytest.mark.parametrize("failure", ["error", "timeout", "cancel"])
@@ -118,7 +123,11 @@ async def test_cleanup_failure_cannot_hide_cancellation_or_skip_other_subscriber
         logger.error.assert_called_once()
     tail_cleanup.assert_awaited_once_with(event)
     on_error.assert_not_awaited()
-    assert len(event.error_stack) == 1 and event.error_stack[0].exception_type == 'CancelledError'
+    [error] = event.error_stack
+    assert error.exception_type == "CancelledError"
+    assert error.message == "original cancellation"
+    assert error.phase == "core_func"
+    assert event.seen == ["broken"]
 
 
 async def test_cancel_notifications_run_concurrently_and_wait_for_every_hook():

@@ -32,12 +32,15 @@ async def test_execution_state_matrix(has_error, accepted, stop_when_error):
     calls = []
 
     async def core(event):
+        assert event.seen == [handler.name]
         calls.append("core")
 
     async def on_error(event):
+        assert event.seen == []
         calls.append("error")
 
     async def on_accepted(event):
+        assert event.seen == []
         calls.append("accepted")
 
     handler = ApixEventHandler(core, on_accepted, on_error,
@@ -50,6 +53,7 @@ async def test_execution_state_matrix(has_error, accepted, stop_when_error):
     elif not (has_error and stop_when_error):
         expected.append("core")
     assert calls == expected
+    assert event.seen == ([handler.name] if "core" in expected else [])
 
 
 async def test_own_core_failure_never_calls_own_error_notification():
@@ -117,6 +121,7 @@ async def test_error_notification_may_accept_event_before_core():
     await ApixEventHandler(core, accepted, on_error, stop_when_error=False)(event)
     core.assert_not_awaited()
     accepted.assert_awaited_once_with(event)
+    assert event.seen == []
 
 
 async def test_repeated_core_failure_does_not_repeat_upstream_notification():
@@ -157,18 +162,35 @@ async def test_timeout_is_per_phase_and_background_errors_are_log_only(phase, ba
 
 
 @pytest.mark.parametrize("phase", ["core_func", "on_has_error", "on_accepted"])
-async def test_cancellation_propagates_recording_an_error(phase):
+@pytest.mark.parametrize("background", [False, True])
+async def test_cancellation_records_only_foreground_errors_and_preserves_exception(phase, background):
+    original = asyncio.CancelledError("callback cancelled")
+
     async def cancelled(event):
-        raise asyncio.CancelledError()
+        raise original
 
     event = make_event(has_error=phase == "on_has_error", accepted=phase == "on_accepted")
     before = list(event.error_stack)
-    handler = ApixEventHandler(**{"core_func": AsyncMock(), phase: cancelled})
-    with pytest.raises(asyncio.CancelledError):
+    on_error = AsyncMock()
+    handler = ApixEventHandler(
+        **{"core_func": AsyncMock(), phase: cancelled},
+        on_error=on_error, background=background, name="cancelled-handler",
+    )
+    with pytest.raises(asyncio.CancelledError) as caught:
         await handler(event)
+    assert caught.value is original
+    on_error.assert_not_awaited()
+    assert event.seen == ([handler.name] if phase == "core_func" else [])
+    if background:
+        assert event.error_stack == before
+        return
     assert event.error_stack[:-1] == before
+    assert event.error_stack[-1].handler_name == handler.name
     assert event.error_stack[-1].phase == phase
     assert event.error_stack[-1].exception_type == "CancelledError"
+    assert event.error_stack[-1].message == "callback cancelled"
+    assert "raise original" in event.error_stack[-1].traceback
+    assert event_from_json(encode_event(event)).error_stack == event.error_stack
 
 
 async def test_error_stack_round_trip_and_instance_isolation():
@@ -401,19 +423,26 @@ async def test_on_error_receives_timeout_after_core_cleanup():
     assert isinstance(observed[0], TimeoutError)
 
 
-async def test_on_error_cancellation_propagates_with_error_record():
+@pytest.mark.parametrize("background", [False, True])
+async def test_on_error_cancellation_records_only_foreground_errors(background):
     async def on_error(event, exc):
         raise asyncio.CancelledError()
 
     event = make_event()
-    handler = ApixEventHandler(AsyncMock(side_effect=ValueError("core failure")), on_error=on_error)
+    handler = ApixEventHandler(
+        AsyncMock(side_effect=ValueError("core failure")),
+        on_error=on_error, background=background,
+    )
     with pytest.raises(asyncio.CancelledError):
         await handler(event)
-    assert [error.phase for error in event.error_stack] == ["core_func", "on_error"]
-    assert event.error_stack[-1].exception_type == "CancelledError"
+    assert [error.phase for error in event.error_stack] == (
+        [] if background else ["core_func", "on_error"]
+    )
+    if not background:
+        assert event.error_stack[-1].exception_type == "CancelledError"
 
 
-async def test_external_cancellation_does_call_on_error():
+async def test_external_cancellation_records_error_without_calling_on_error():
     started = asyncio.Event()
 
     async def core(event):
@@ -476,3 +505,110 @@ async def test_on_error_acceptance_still_allows_remaining_notifications():
     await ApixEventHandler(core, accepted, upstream_error, on_error, stop_when_error=False)(event)
     assert calls == ["own error", "accepted"]
     core.assert_not_awaited()
+
+
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize("outcome", ["success", "error", "timeout", "cancel"])
+async def test_seen_marks_core_entry_and_survives_failure(background, outcome):
+    """Seen records entry rather than successful completion, including background work."""
+    event = make_event()
+    event.seen.append("earlier")
+
+    async def core(event):
+        assert event.seen == ["earlier", "worker"]
+        if outcome == "error":
+            raise ValueError("failed")
+        if outcome == "timeout":
+            await asyncio.Future()
+        if outcome == "cancel":
+            raise asyncio.CancelledError("cancelled")
+
+    handler = ApixEventHandler(core, name="worker", background=background, time_out=0.01)
+    if outcome == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await handler(event)
+    else:
+        await handler(event)
+    assert event.seen == ["earlier", "worker"]
+    assert make_event().seen == []
+
+
+async def test_seen_preserves_entry_order_and_repeated_calls():
+    """Reusing an event records each core invocation without deduplication."""
+    event = make_event()
+    first = ApixEventHandler(AsyncMock(), name="first")
+    second = ApixEventHandler(AsyncMock(), name="second")
+    await first(event)
+    await second(event)
+    await first(event)
+    assert event.seen == ["first", "second", "first"]
+
+
+@pytest.mark.parametrize("registered", [False, True])
+async def test_set_core_func_preserves_identity_options_and_error_callback(registry, registered):
+    """Replacement works before or after registration and retains lifecycle hooks."""
+    original = AsyncMock()
+    failure = ValueError("replacement failed")
+    on_error = AsyncMock()
+    handler = ApixEventHandler(original, on_error=on_error, name="stable-name", time_out=2)
+    identity = handler.id
+    if registered:
+        handler.register("contract.*", priority=8, filter_event=["contract.excluded"])
+
+    async def replacement(event):
+        assert event.seen == ["stable-name"]
+        raise failure
+
+    handler.set_core_func(replacement)
+    assert handler.id == identity
+    assert handler.name == "stable-name"
+    assert handler.time_out == 2
+    event = make_event()
+    if registered:
+        assert registry.get_handler(handler.name) is handler
+        assert registry.get_handlers_chain_for_event("contract.event") == [handler.name]
+        assert registry.get_handlers_chain_for_event("contract.excluded") == []
+        assert handler.priority == 8
+        await ApixEventLoop(registry)._dispatch_event(event, [handler.name])
+    else:
+        await handler(event)
+    original.assert_not_awaited()
+    on_error.assert_awaited_once_with(event, failure)
+
+
+@pytest.mark.parametrize("callback", [None, 1, "callback"])
+async def test_set_core_func_rejects_non_callable_without_losing_original(callback):
+    original = AsyncMock()
+    handler = ApixEventHandler(original)
+    with pytest.raises(TypeError, match="callable"):
+        handler.set_core_func(callback)
+    event = make_event()
+    await handler(event)
+    original.assert_awaited_once_with(event)
+
+
+async def test_set_core_func_does_not_replace_an_in_flight_invocation():
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def original(event):
+        entered.set()
+        await release.wait()
+        calls.append("original")
+
+    async def replacement(event):
+        calls.append("replacement")
+
+    handler = ApixEventHandler(original)
+    task = asyncio.create_task(handler(make_event()))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        handler.set_core_func(replacement)
+        await handler(make_event())
+        release.set()
+        await asyncio.wait_for(task, 1)
+        assert calls == ["replacement", "original"]
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)

@@ -86,20 +86,22 @@ await EVENT_PIPE.join()
 
 `error_stack` 按顺序保存错误记录字典，每条包含 `handler_name`、`phase`、`exception_type`、`message` 和 traceback 文本。反序列化后恢复为 `ApixEventError`，因此下游仍可通过 `has_error` 判断前置错误。
 
+前台 handler 的 `CancelledError` 记录也会保留。当前 wire payload 不包含 `seen`；从远程 payload 创建的新事件使用空列表，记录接收端后续的核心函数执行。
+
 内部辅助函数位于 `apixis.core.event.event_pipe`：
 
 ```python
 from apixis.core.event.event_pipe import (
     encode_event,
-    event_from_payload,
-    event_to_payload,
+    event_from_json,
+    event_to_json,
 )
 ```
 
-- `event_to_payload(event)` 将 `ApixEvent` 转为字典。
+- `event_to_json(event)` 将 `ApixEvent` 转为字典。
 - `encode_event(event)` 生成 UTF-8 JSON bytes，用于 Kafka 或 RabbitMQ。
-- `event_from_payload(payload)` 接受 mapping、JSON string、bytes，或直接返回传入的 `ApixEvent`。
-- `event_from_payload()` 也能解析 `{"event": {...}}` 形式的网关路由 envelope。
+- `event_from_json(payload)` 接受 mapping、JSON string、bytes，或直接返回传入的 `ApixEvent`，直接返回时保留其 `seen`。
+- `event_from_json()` 也能解析 `{"event": {...}}` 形式的网关路由 envelope。
 
 跨进程传输时，`context` 必须可 JSON 序列化。编码器额外支持 `Enum` 和 dataclass 实例；其他复杂运行时对象（例如 `GraphContext`、Future、文件句柄）只适合本地 `builtin` 通道。
 

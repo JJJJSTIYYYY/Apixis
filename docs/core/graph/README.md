@@ -323,7 +323,7 @@ graph = manager.compile_graph(
 
 图的内部调度事件会使用 `using_namespace` 限定作用域。每个 `NodeGraph` 注册一个通用 dispatch handler，其处理器名和订阅事件名均为 `graph.dispatch_name`。路由时，运行时先把目标节点写入 `GraphContext.target_node_name`，再发布 namespace 隔离后的 `GRAPH_DISPATCH` 事件；通用 handler 根据 `target_node_name` 执行对应节点。不同 namespace 因此拥有不同的 dispatch 事件处理链，事件消费同时检查 context.graph_id 是否为当前图 ID，以及 context 是否由当前图管理，因此 namespace 重用不会转移旧 context。
 
-图还默认注册 `graph_{namespace}_interrupted` 中断处理器：没有匹配的 Block 处理钩子时，以 `BlockHookNotRegisteredError` 结束等待，并始终提供错误、accepted 和取消收尾。用户通过 `graph.add_interrupted_hook()` 或 `@interrupted_hook(...)` 注册处理钩子；详见 [图中断与恢复](interrupter/README.md)。
+图还默认注册 `get_graph_interrupted_name(graph.namespace)` 对应的中断处理器，优先级为 `0`：当本次 `event.seen` 只有默认处理器自身时，以 `BlockHookNotRegisteredError` 结束等待。判断依据是核心函数的实际执行记录，普通订阅者执行过也算；仅注册但尚未执行的 hook 不算。默认处理器始终提供错误、accepted 和取消收尾。用户通常通过 `graph.add_interrupted_hook()` 或 `@interrupted_hook(...)` 注册处理钩子；详见 [图中断与恢复](interrupter/README.md)。
 
 模块导出的 `namespace_set` 可用于只读诊断当前被占用的 namespace。不要直接增删其中的值；正常释放必须经过 `graph.decompose()`，以同时清理图索引和事件处理器。
 
@@ -445,7 +445,7 @@ async def observe_graph_dispatch(event: ApixEvent) -> None:
 - 两种状态同时存在时，错误优先，已失败的 context 不会再次中止。
 - 后台插件的未捕获异常只写日志，不影响图的核心分发。
 - 图分发函数或 accepted 通知自身异常由 `on_error` 以原始异常结束调用，不依赖 `on_has_error`。
-- 前台插件、节点或图分发传播 `CancelledError` 时，通过 `on_cancelled` 结束仍活跃的调用。context 状态进入 `aborted`，completion 被取消，`invoke()` / `stream()` 向调用方抛出 `CancelledError`；stream 先产出已排队的 chunk。已完成、失败或中止的结果不会被后续取消通知覆盖。
+- 前台插件、节点或图分发传播 `CancelledError` 时，事件处理器先记录取消错误并重新抛出，再通过事件循环的 `on_cancelled` 通知结束仍活跃的调用。context 状态进入 `aborted`，completion 被取消，`invoke()` / `stream()` 向调用方抛出 `CancelledError`；stream 先产出已排队的 chunk。已完成、失败或中止的结果不会被后续取消通知覆盖。
 - 后台插件取消仅执行该插件自身的取消清理，不会取消图调用。`abort()` 和 `Block.cancel()` 仍按既有语义正常返回快照，不等同于运行时取消。
 
 这里需要注意：

@@ -94,6 +94,9 @@ request_handler: ApixEventHandler = subscribe("request.*", time_out=5)(
 
 未设置的通知直接跳过。错误通知执行后会重新检查事件状态，因此通知中调用 `accept()` 也会阻止核心函数执行。每次 `execute()` 内同一种通知最多执行一次。
 
+只有准备执行 `core_func` 时，才会向 `event.seen` 追加当前 handler 的 `name`，且追加发生在调用之前。
+通知回调本身不会追加名称；核心函数失败、超时或取消也不会撤销记录。后台 handler 同样记录实际开始执行的核心函数。
+
 核心函数自己的异常不会触发自己的 `on_has_error`；核心函数自己调用 `accept()` 也不会回调自己的 `on_accepted`。这些状态供之后的 handler 处理。
 
 ### 当前 handler 的 on_error
@@ -116,7 +119,7 @@ ApixEventHandler(
 - `core_func`、`on_has_error`、`on_accepted` 中任何一个抛出未捕获异常或超时，都先记录错误，再调用 `on_error(event, exception)`；第二个参数是原始异常对象。
 - `on_error` 成功返回不会移除已记录的错误，也不会重试失败的函数。后续 handler 仍可通过 `on_has_error` 感知该失败。
 - 每次回调失败只调用一次 `on_error`。一次 `execute()` 内若多个回调依次失败，分别通知；`on_error` 自身失败则只记录 `phase="on_error"` 的错误信息在 `event.error_stack` 堆栈，不递归调用。
-- `time_out` 也独立应用于 `on_error`。任务取消继续传播，不调用 `on_error`，也不追加业务错误记录。
+- `time_out` 也独立应用于 `on_error`。前台 handler 的核心函数或上述通知回调传播 `CancelledError` 时，先以实际 phase 追加取消记录，再重新抛出原异常；不会因取消调用 `on_error`。后台取消不追加记录。
 - 后台 handler 同样调用 `on_error`，但原始错误和 `on_error` 自身错误都仅写日志，不写入事件错误栈。显式修改事件或业务上下文仍是回调自身的行为。
 - `subscribe()` 保留实例上的 `on_error`。若业务希望自行捕获并恢复异常而不留下事件失败记录，应继续在原函数内使用 `try/except/finally`。
 
@@ -143,9 +146,9 @@ handler = subscribe("request.*")(
 `handler.add_on_cancelled_callback(callback, exist_ok=True)` 设置；`exist_ok=False`
 在已有回调时抛出 `ValueError`。构造、设置和注册时均检查回调是否可调用。
 
-- 正在执行的前台事件传播 `CancelledError` 时，立即停止正常 handler 链。事件循环向仍注册、仍匹配该事件的所有前台 handler 发送取消通知，包括已执行、当前执行和尚未执行的 handler。
+- 正在执行的前台事件传播 `CancelledError` 时，立即停止正常 handler 链。若取消来自 handler 执行阶段，取消记录已写入 `error_stack`，回调可读取它。事件循环并发通知本次候选链中仍注册、仍匹配该事件的前台 handler，包括已执行、当前执行和尚未执行的 handler，并等待全部通知完成。
 - 每个符合条件的 handler 通知一次；`accepted`、`has_error` 和 `stop_when_error` 不阻止取消通知。通知期间不会执行剩余 handler 的 `core_func`，也不会重新调用 `on_has_error` 或 `on_accepted`。
-- 通知独立于正常执行，由事件循环调用。直接执行 `await handler(event)` 或 `await handler.execute(event)` 只传播取消，不负责整条事件链的取消通知。
+- 通知独立于正常执行，由事件循环调用。直接执行 `await handler(event)` 或 `await handler.execute(event)` 仍会记录前台取消并重新抛出，但不负责取消通知。
 - 独立后台任务取消时，仅通知该后台 handler 自己，不通知主事件的其他 handler，也不取消图调用。前台事件取消不会取消已经启动的后台任务。
 - `time_out` 独立应用于每次取消回调。回调应只执行必要清理；`None` 仍表示无限等待。
 - 取消回调的普通异常、超时以及再次传播的 `CancelledError` 均只记录日志，不写入 `error_stack`，不触发 `on_error`，不阻止后续取消通知。完成通知后，事件循环重新抛出最初的 `CancelledError`。
@@ -391,6 +394,29 @@ handler.unregister(missing_ok=False)
 `handler.register(*event_names, **options)` 等价于 `subscribe(*event_names, **options)(handler)`，支持相同的参数、默认值和异常语义，成功后返回实例自身。执行选项为 `None` 时保留实例配置；订阅、过滤和排序配置重新设置。默认替换同名注册，校验失败时保留原配置和注册。
 
 `handler.unregister(*, missing_ok=True)` 等价于 `unsubscribe(handler.name, missing_ok=missing_ok)`，按处理器名删除整个注册，而非移除某个事件订阅。名称不存在时默认忽略，`missing_ok=False` 时抛出 `EventHandlerNotRegisteredError`。如果原实例已被另一个同名实例替换，调用原实例的 `unregister()` 也会删除当前同名注册；已开始执行的调用仍继续完成。
+
+### 初始化后替换核心函数
+
+`handler.set_core_func(callback: EventHandlerFunc) -> None` 可在初始化后、注册前或注册后替换核心函数：
+
+```python
+async def process_event(event):
+    print("initial", event.context)
+
+
+async def process_updated_event(event):
+    print("updated", event.context)
+
+
+handler = ApixEventHandler(process_event, name="request-handler")
+handler.register("request.*")
+handler.set_core_func(process_updated_event)
+```
+
+替换仅修改 `core_func`，保留 handler 的 `name`、`id`、订阅、优先级、执行选项及通知回调，无需重新注册。
+`seen` 继续记录 handler 名称，不改为新函数名称。已经进入原核心函数的调用继续执行原函数；
+后续进入核心函数的调用使用新函数。重复设置会直接覆盖，没有 `exist_ok` 参数。
+传入不可调用对象时抛出 `TypeError` 并保留原函数；接口只检查 `callable()`，调用方须保证回调返回可等待对象。
 
 ### ApixHandlerRegistry
 

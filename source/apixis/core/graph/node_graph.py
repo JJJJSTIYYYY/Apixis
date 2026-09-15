@@ -225,15 +225,15 @@ class NodeGraph:
             block = event.context
             if not self._is_active_block(block):
                 return
-            if not event.seen or event.seen == [event_name]:
+            if not event.seen or event.seen == [event_name] or event.has_error:
                 raise BlockHookNotRegisteredError(
                     f"Graph namespace `{self.namespace}` emitted a Block without a "
-                    "registered interruption hook. Register graph.add_interrupted_hook() "
+                    "registered interruption hook or hooks failed. Register graph.add_interrupted_hook() "
                     "or interrupted_hook(namespace=...) before calling interrupt()."
                 )
 
         temp_hook.__name__ = event_name
-        handler = BlockEventHandler(require_interrupted_hook)
+        handler = BlockEventHandler(temp_hook)
         handler.set_core_func(require_interrupted_hook)
         subscribe(event_name, priority=0, exist_ok=False)(handler)
         self._handlers[handler.name] = handler

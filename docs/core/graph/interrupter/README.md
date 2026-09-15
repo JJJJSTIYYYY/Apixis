@@ -8,7 +8,7 @@
 
 1. 节点调用 `await interrupt(data=...)`。
 2. 运行时创建一个 `Block`。
-3. 运行时发布事件 `graph_{namespace}_interrupted`，其 `event.context` 为该 `Block`。
+3. 运行时发布 `get_graph_interrupted_name(graph.namespace)` 对应的事件，其 `event.context` 为该 `Block`。
 4. interruption hook 收到 `Block` 并把它交给外部决策流程。
 5. 外部调用 `block.resolve(value)`。
 6. `interrupt()` 返回 value，节点从暂停点继续执行。
@@ -16,10 +16,9 @@
 如果外部调用 `block.cancel()`，当前图 attempt 会回到当前节点或并发批次执行前的最新快照并进入 `aborted`。
 
 每个图在构造时都会默认注册中断处理器，负责未处理 Block 的检查，以及错误、accepted 和取消通知的收尾。
-默认处理器的名称和订阅事件名均为 `graph_{namespace}_interrupted`，随图分解而注销。
+默认处理器的名称和订阅事件名均由 `get_graph_interrupted_name(graph.namespace)` 生成，即 `__graph_interrupted___{namespace}`，随图分解而注销。
 
-如果默认处理器收到尚未完成的 Block，而当前没有通过 `graph.add_interrupted_hook()` 或
-`@interrupted_hook(...)` 注册匹配的处理钩子，它会立即使 `await interrupt()` 抛出
+如果默认处理器执行核心函数时，`event.seen` 中只有它自己的名称，即此前没有其他 handler 开始执行核心函数，它会使 `await interrupt()` 抛出
 `BlockHookNotRegisteredError`，不会无限等待。异常定义于
 `apixis.core.utils.exception`，也可从 `apixis.core.utils` 导入。节点没有捕获该异常时，
 图进入 `failed`，`invoke()` 和 `stream()` 向调用方传播同一个异常。
@@ -33,10 +32,21 @@ except BlockHookNotRegisteredError:
     decision = "skip review"
 ```
 
-默认处理器的优先级为 `0`，用户 hook 默认优先级为 `1`。已有 hook 时，默认处理器允许
-Block 继续等待外部回复；hook 将 Block 保存到队列后返回也不会触发缺失异常。
-是否存在 hook 以当前匹配的注册为准，支持在图编译前注册独立 hook；注销最后一个匹配 hook 后，
-后续中断恢复默认报错。普通事件观察插件不会被视为 Block 处理钩子；已经被处理完成的 Block 不会再次报错。
+默认处理器的优先级为 `0`，用户 hook 默认优先级为 `1`。判断依据是本次事件的 `seen` 执行记录，
+不再扫描注册表，也不要求已执行的 handler 必须是 `BlockEventHandler`。
+默认处理器自己的名称也会在核心函数调用前加入 `seen`，因此仅有自身记录仍表示无人接手。
+
+| 默认处理器执行前的情况 | 结果 |
+| --- | --- |
+| 其他 handler 已执行核心函数，无错误且事件未 accepted | 允许 Block 继续等待；hook 可以将它交给外部后返回 |
+| 普通 `subscribe()` 观察者已执行核心函数 | 同样计入 `seen`，不再触发缺失 hook 异常 |
+| handler 执行后注销自己 | 本次 `seen` 保留；下次新事件重新判断 |
+| handler 仅注册但被过滤，或排在默认处理器之后 | 不算已执行，无法阻止默认报错 |
+| 前置 handler 失败、接受事件或传播取消 | 由错误、accepted 或取消通知结束等待，保留原来的终止结果 |
+
+`seen` 不是 Block 完成状态。只有观察者执行过、但无人 `resolve()`、`cancel()` 或 `fail()` 时，
+Block 仍会等待外部处理；`timeout=None` 时可能一直等待。后台 handler 也会记录 `seen`，但是否先于默认处理器开始执行取决于调度，
+不适合作为确定的接手机制。已完成的 Block 不会被后续通知改写。
 
 ## 推荐用法：图拥有的 hook
 
@@ -103,13 +113,13 @@ async def on_document_review(block: Block) -> None:
 对应事件名为：
 
 ```text
-graph_document-review_interrupted
+__graph_interrupted___document-review
 ```
 
 独立 hook 的全局 namespace（`None`、空字符串或 `GLOBALNS`）对应：
 
 ```text
-graph_<global>_interrupted
+__graph_interrupted___<global>
 ```
 
 图本身只有显式使用 `compile_graph(using_namespace=GLOBALNS)` 时才属于该全局命名域；省略 `using_namespace` 会为图自动生成唯一 namespace。
@@ -138,7 +148,7 @@ await interrupt(
 | 参数 | 说明 |
 | --- | --- |
 | `data` | 发送给 hook 的任意本地对象，保存于 `Block.with_data` |
-| `timeout` | 最大等待秒数；已有 hook 时 `None` 无限等待；超时返回 `None` |
+| `timeout` | 最大等待秒数；通过默认处理器的 `seen` 检查后，`None` 无限等待；超时返回 `None` |
 | `context` | 可选 active `GraphContext`；节点内省略时自动读取当前 context |
 
 节点外省略 `context` 会抛出 `RuntimeError`。即使显式传入 context，它也必须仍处于 active 调用中。
@@ -153,9 +163,9 @@ await interrupt(
 
 用户 hook 自己抛出的异常由事件系统记录后交给 `on_error(event, error)`，再通过 `block.fail(error)` 传给等待中的节点；不会回调自己的 `on_has_error`。节点仍可以用 `try/except` 自行处理 `await interrupt()` 收到的异常；未捕获时按现有节点失败流程结束图。只有 `interrupt(timeout=...)` 自身的等待期限到达才返回 `None`，hook 传回的 `TimeoutError` 不会被当作等待超时吞掉。
 
-前置前台插件或中断 hook 传播 `CancelledError` 时，内置 `on_cancelled` 通知向等待的 Block 传递取消异常，节点继续传播后，图调用也抛出 `CancelledError`。这条路径不会转换成 `interrupt()` 的超时返回，也不会被当作人工 `Block.cancel()` 而正常返回快照；等待中的 Block 和图调用均能结束。
+前置前台插件或中断 hook 传播 `CancelledError` 时，事件处理器先将取消追加到 `event.error_stack`，再重新抛出；不会因取消调用 `on_error`。事件循环的 `on_cancelled` 通知向等待的 Block 传递取消异常，节点继续传播后，图调用也抛出 `CancelledError`。这条路径不会转换成 `interrupt()` 的超时返回，也不会被当作人工 `Block.cancel()` 而正常返回快照；等待中的 Block 和图调用均能结束。
 
-这些通知需要存在通过 `interrupted_hook()` 或 `graph.add_interrupted_hook()` 注册的消费者。后台 handler 的未捕获异常仅记录日志，不产生错误通知。
+默认处理器始终提供这些通知，用户通过 `interrupted_hook()` 或 `graph.add_interrupted_hook()` 注册的 hook 也提供相同的生命周期处理。后台 handler 的普通异常只写日志，取消不写入事件错误栈；取消清理回调自身的失败也不追加记录。
 
 ## Block
 

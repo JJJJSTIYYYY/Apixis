@@ -41,12 +41,13 @@ async def interrupt(
 
     This method will post a :class:`Block` by event pipe, not by stream writer.
     To receive a :class:`Block` posted by this method, it is required to register a handler
-    for event `graph_{namespace}_interrupted` and get block item from event context.
+    for get_graph_interrupted_name(namespace) and get the Block from event context.
 
     Raises:
         BlockHookNotRegisteredError: If the graph's default interruption handler
-            receives a pending Block without a matching registered Block hook.
-            Register one through graph.add_interrupted_hook() or interrupted_hook().
+            finds no preceding core execution in event.seen. Register a hook
+            through graph.add_interrupted_hook() or interrupted_hook() so it
+            executes before the default handler.
     """
 
     if context is None:
@@ -124,8 +125,9 @@ async def interrupt(
 class BlockEventHandler(ApixEventHandler):
     """Adapt a Block callback and its event lifecycle notifications together.
 
-    Both graph defaults and user hooks use this adapter. The default handler
-    recognizes registered Block callbacks through this common adapter type.
+    Both graph defaults and user hooks use this adapter for lifecycle cleanup.
+    The default handler uses event.seen to detect prior core execution,
+    regardless of whether the preceding handler uses this adapter.
     """
 
     def __init__(self, func: InterruptedHandler) -> None:
