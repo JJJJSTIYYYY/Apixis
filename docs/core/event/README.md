@@ -14,7 +14,7 @@
 | 对象 | 用途 |
 | --- | --- |
 | `ApixEvent` | 单个事件的数据模型 |
-| `EventType` | 事件类别：`workflow`、`lifecycle`、`info`、`warning`、`error` |
+| `EventType` | 事件类别：`internal`、`workflow`、`lifecycle`、`info`、`warning`、`error` |
 | `EVENT_PIPE` | 默认全局事件管道 |
 | `APIX_EVENT_LOOP` | 默认全局事件消费者与分发器 |
 | `subscribe()` | 注册异步事件处理器 |
@@ -133,11 +133,11 @@ async def reject_invalid_request(event: ApixEvent) -> None:
 2. 消费者从 ready 队列取出事件，通过 `await processing_queue.put(event)` 转入处理队列；队列满时等待容量，不占用分发额度。
 3. 分发器先取得 `EVENT_LOOP_BACKPRESSURE` 额度，再从处理队列取出事件、确定候选 handler 名称及顺序，并创建分发任务。直到整个分发任务完成、异常或取消，才确认事件并释放额度。
 
-因此，**处理队列中的排队事件数受 `EVENT_PIPE_MAX_LEN` 限制，正在执行的分发任务数受 `EVENT_LOOP_BACKPRESSURE` 独立限制**。ready 中的事件和处理队列中的排队事件都不占用分发额度。消费者最多另外持有一个正在等待转入处理队列的事件；处理队列满时停止继续读取 ready。
+当前实现将**处理队列容量和分发并发额度都设为 `max(128, EVENT_LOOP_BACKPRESSURE)`**，默认各为 1024。队列和信号量分别控制排队与执行，但使用同一个配置值；`EVENT_PIPE_MAX_LEN` 不控制处理队列。ready 中的事件和处理队列中的排队事件不占用正在执行的分发额度。消费者最多另外持有一个正在等待转入处理队列的事件；处理队列满时停止继续读取 ready。
 
 `BACKGROUND_HANDLER_BACKPRESSURE` 继续独立限制后台 handler。分发任务等待后台额度时仍占用分发额度；后台任务成功创建后，其执行由后台额度独立跟踪。
 
-`EVENT_PIPE_MAX_LEN` 同时用于处理队列容量和外部 mailbox 的本地缓冲容量。ready 队列没有容量上限；持续超出处理速度的发布会增加 ready 积压和内存使用。
+`EVENT_PIPE_MAX_LEN` 用于默认外部 mailbox 的本地缓冲容量。ready 队列没有容量上限；持续超出处理速度的发布会增加 ready 积压和内存使用。
 
 如需隔离测试或构建独立运行时，可以创建 `ApixEventLoop(custom_registry)`；但当前实现仍从全局 `EVENT_PIPE` 消费，因此生产应用通常使用 `APIX_EVENT_LOOP`。
 
@@ -173,7 +173,7 @@ await EVENT_PIPE.join()
 
 - `stop_when_error=True`：事件已有前置错误时，当前 handler 执行 `on_has_error`，跳过自己的 `core_func`。
 - `stop_when_error=False`：执行错误通知后，事件未被 accepted 时继续运行自己的 `core_func`。
-- `background=True`：核心函数和通知函数的未捕获异常、超时均只记录日志，不写入 `error_stack`，不影响其他 handler 的核心函数执行。
+- `background=True`：核心函数和通知函数的未捕获普通异常、超时只记录日志，不写入 `error_stack`。回调显式修改共享事件或业务上下文仍会影响后续行为。
 - `time_out=None`：无限等待；正数超时分别应用于每个实际调用的核心函数或通知函数。
 - `time_out <= 0`：注册时被标准化为 `None`。
 
@@ -194,7 +194,7 @@ await EVENT_PIPE.join()
 
 ## 观察到的事件名
 
-`APIX_EVENT_REGISTRY` 只记录成功发布过的精确事件名，不保存事件对象，也不负责分发：
+`APIX_EVENT_REGISTRY` 记录通过管道成功发布或从 mailbox 转入的非空精确事件名，不保存事件对象，也不负责分发。`EventType.INTERNAL` 会被排除，但仍按普通订阅规则分发。调用方也可显式使用 `record_event(event)` 写入观察记录；直接操作底层通道不会自动记录。
 
 ```python
 from apixis.core.event import APIX_EVENT_REGISTRY
@@ -218,6 +218,8 @@ APIX_EVENT_REGISTRY.clear()
 ```
 
 `ApixEventRegistry` 本身是进程级 singleton；通常直接使用 `APIX_EVENT_REGISTRY`。如需依赖注入或类型标注，可以导入 class，但再次实例化仍会得到同一个 registry。
+
+`record_event()` 对重复名称去重；非 `ApixEvent` 参数抛出 `TypeError`，非 INTERNAL 事件的空名称抛出 `ValueError`。内部读写使用 `RLock`，这不表示整个异步事件运行时可跨线程直接调用。
 
 ## 生命周期建议
 

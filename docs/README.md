@@ -12,7 +12,9 @@
   - [状态模型、Command 与复制语义](./core/graph/state.md)
   - [GraphContext、快照、恢复与流式上下文](./core/graph/context/README.md)
   - [图中断与恢复控制](./core/graph/interrupter/README.md)
-- [Core 异常类型](./core/utils/README.md)
+- [核心配置](./core/config/README.md)
+- [Core 异常与辅助工具](./core/utils/README.md)
+- [文档逐项核对清单](./alignment-review.md)
 
 ## 阅读建议
 
@@ -23,4 +25,3 @@
 3. [Graph Runtime](./core/graph/README.md)
 4. [状态模型、Command 与复制语义](./core/graph/state.md)
 5. 根据需要继续阅读快照、流式输出、中断或远程事件通道文档
-

@@ -13,7 +13,7 @@
 5. 外部调用 `block.resolve(value)`。
 6. `interrupt()` 返回 value，节点从暂停点继续执行。
 
-如果外部调用 `block.cancel()`，当前图 attempt 会回到当前节点或并发批次执行前的最新快照并进入 `aborted`。
+如果外部调用 `block.cancel()`，`interrupt()` 捕获取消后中止当前 attempt，调用结果使用当前节点或并发批次执行前的最新快照；这不会原地改写 live state。关闭自动快照且没有手动快照时，结果回退到当前 live state。
 
 每个图在构造时都会默认注册中断处理器，负责未处理 Block 的检查，以及错误、accepted 和取消通知的收尾。
 默认处理器的名称和订阅事件名均由 `get_graph_interrupted_name(graph.namespace)` 生成，即 `__graph_interrupted___{namespace}`，随图分解而注销。
@@ -132,15 +132,17 @@ from apixis.core.event import unsubscribe
 unsubscribe(on_document_review.__name__)
 ```
 
+`interrupted_hook(namespace=None, *, exist_ok=True)` 原样返回被装饰函数，默认允许替换同名注册；`graph.add_interrupted_hook()` 使用 `exist_ok=False`。handler 名在整个进程内唯一，不因 namespace 不同而允许重名。独立 hook 也可用 `namespace="*"` 订阅所有图；图本身的 namespace 仍不能包含通配符。
+
 ## interrupt()
 
 ```python
-await interrupt(
+async def interrupt(
     *,
     data: Any = None,
     timeout: float | None = None,
     context: GraphContext | None = None,
-) -> Any
+) -> Any: ...
 ```
 
 参数：
@@ -148,12 +150,12 @@ await interrupt(
 | 参数 | 说明 |
 | --- | --- |
 | `data` | 发送给 hook 的任意本地对象，保存于 `Block.with_data` |
-| `timeout` | 最大等待秒数；通过默认处理器的 `seen` 检查后，`None` 无限等待；超时返回 `None` |
+| `timeout` | 发布事件后的最大等待秒数，包含事件排队及 hook 处理；`None` 不设置期限，自身超时返回 `None` |
 | `context` | 可选 active `GraphContext`；节点内省略时自动读取当前 context |
 
 节点外省略 `context` 会抛出 `RuntimeError`。即使显式传入 context，它也必须仍处于 active 调用中。
 
-`interrupt()` 本身不创建额外快照。Graph Runtime 已在当前节点或并发批次执行之前自动保存快照，所以取消中断会回到本次调度之前的状态。
+`interrupt()` 本身不创建额外快照。默认情况下 Graph Runtime 在当前节点或并发批次执行之前自动保存快照；`no_snapshot=True` 时不会自动保存。中断等待期限从事件发布后开始，不等到默认处理器通过 `seen` 检查后才开始；极短期限可能先于默认缺失 hook 检查到达。
 
 ## Hook 错误与事件接受
 
@@ -176,14 +178,17 @@ await interrupt(
 | `run_id` | 所属图调用 attempt |
 | `block_id` | 当前中断点唯一 id |
 | `namespace` | 所属图 namespace |
+| `graph_id` | 运行时创建时写入所属图 ID；手动构造允许默认 `None` |
 | `with_data` | `interrupt(data=...)` 传入的数据 |
 | `done` | Future 是否已经完成 |
 | `cancelled` | Future 是否被取消 |
 | `resolve(result)` | 让节点以 result 继续 |
-| `cancel()` | 取消 Future，并触发当前 attempt abort |
+| `cancel()` | 取消 Future；由等待它的 `interrupt()` 捕获取消并中止所属 attempt |
 | `fail(error)` | 以异常结束 Future，将异常传回等待 `Block` 的节点 |
 
 `resolve()`、`fail()` 和 `cancel()` 都是一次性操作。Future 已完成后再次调用不改变原结果。
+
+手动构造 Block 必须传入 `asyncio.Future` 作为 `_future`，否则抛出 `TypeError`。Block 本身不持有图 context，单独调用其 `cancel()` 不会查找或中止图。
 
 应用在外部保存 Block 时，建议以 `(run_id, block_id)` 为唯一键，而不是只按 namespace 或 data 查找。
 
@@ -211,7 +216,7 @@ decision = await interrupt(
 )
 ```
 
-30 秒内未 resolve 时：
+等待期间 Block 未完成、且未先发生其他错误或取消时，自身的 30 秒期限到达会产生以下结果：
 
 - `interrupt()` 返回 `None`；
 - Block 的 Future 被取消，`block.cancelled` 为 `True`；
@@ -235,7 +240,7 @@ block.cancel()
 5. 下游节点不会运行；
 6. `invoke()` 返回当前节点或并发批次执行前的最新快照状态。
 
-运行时自身取消任务（例如节点 timeout、stream 消费者退出）与外部 `Block.cancel()` 会被区分，不会被误当作一次人工取消。节点 timeout 仍按 `TimeoutError` 向调用方传播。
+节点任务自身被取消时，`interrupt()` 根据任务的 `cancelling()` 状态区分运行时取消与外部 `Block.cancel()`。节点 timeout 仍按 `TimeoutError` 向调用方传播。显式关闭 stream 会结束所属 context，未完成 Block 随 completion 的结束被关闭；它不保证强行取消仍在事件分发任务中执行的其他节点逻辑。
 
 ## 与 stream() 组合
 

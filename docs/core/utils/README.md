@@ -1,6 +1,6 @@
-# Core 异常类型
+# Core 异常与辅助工具
 
-`apixis.core.utils.exception` 定义事件系统和 Graph Runtime 的公共异常。事件模块会重新导出这些类型，通常可以直接从 `apixis.core.event` 导入。
+`apixis.core.utils.exception` 定义事件系统和 Graph Runtime 的公共异常，全部由 `apixis.core.utils` 重新导出。`apixis.core.event` 也导出其中大部分异常，但不包含 `BlockHookNotRegisteredError`；后者应从 utils、`apixis.core` 或顶层 `apixis` 导入。
 
 ## 事件异常
 
@@ -42,7 +42,19 @@
 
 ### GraphNodeError
 
-图节点错误的通用异常类型。目前常规 `NodeGraph` 执行会直接传播节点原始异常、`InvalidNodeReturnsError`、`TimeoutError`、`ValueError` 等，并不会统一包装为 `GraphNodeError`。自定义扩展可以在需要统一错误分类时使用此类型。
+图的前置前台事件处理器发生普通异常或超时时，内置 dispatch handler 的 `on_has_error` 会使用 `GraphNodeError` 结束调用；`errors` 保存此前的事件错误记录。中断事件的前置错误也通过 `block.fail(GraphNodeError(...))` 传给等待中的节点。
+
+节点自身错误通常直接传播原异常，如 `InvalidNodeReturnsError`、`TimeoutError` 或 `ValueError`，不统一包装为 `GraphNodeError`。
+
+### InvalidContextError
+
+`invoke()` / `stream()` 收到其他图的 context、非 pending context，或未由当前图管理的 context 时抛出。`apply_command()` 的 context 归属或管理校验失败也使用该异常。
+
+并非所有 context 错误都使用此类型：`graph.abort()` 对不属于当前图管理的 pending/running context 抛出 `ValueError`；`restore_context()` 对外图快照或 context 也抛出 `ValueError`；参数类型错误通常为 `TypeError`。
+
+### BlockHookNotRegisteredError
+
+默认中断处理器执行时，若本次事件的 `seen` 只有它自己，表示此前没有其他核心函数执行，将此异常传给等待的节点。检查依据是执行记录，不是注册表中是否存在 `interrupted_hook`。节点可以捕获此异常；未捕获时图调用失败。详见[图中断](../graph/interrupter/README.md)。
 
 ## 导入示例
 
@@ -60,12 +72,16 @@ from apixis.core.event import (
 或从定义模块导入：
 
 ```python
-from apixis.core.utils.exception import GraphNodeError
+from apixis.core.utils.exception import (
+    BlockHookNotRegisteredError,
+    GraphNodeError,
+    InvalidContextError,
+)
 ```
 
 ## 错误处理边界
 
-事件处理器异常由 `APIX_EVENT_LOOP` 捕获并记录，通常不会传播回事件发布者。Graph 节点异常则通过 `GraphContext.completion` 传播给 `NodeGraph.invoke()` 或 `NodeGraph.stream()` 的调用方。
+普通事件处理器的异常由 `ApixEventHandler` 记录并触发相应通知，发布与处理异步解耦，因此不会反向传播给事件发布者。前台取消记入错误栈后继续传播，取消清理由事件循环发起。Graph 节点异常通过 `GraphContext.completion` 传播给 `NodeGraph.invoke()` 或 `NodeGraph.stream()` 的调用方。
 
 ```python
 try:
@@ -88,3 +104,21 @@ except EventHandlerNotRegisteredError:
     ...
 ```
 
+## 日志与生命周期
+
+`Logger`、`logger`、`auto_init` 和 `resource_cleaner` 也由 `apixis.core.utils` 导出。
+
+| 接口 | 当前行为 |
+| --- | --- |
+| `logger.info/debug/warning/error/success(...)` | 按日志级别筛选，输出终端并缓存 |
+| `logger.exception(...)` | 当前与 error 一样记录传入文本，不自动附加 traceback |
+| `Logger.start()` / `Logger.stop()` | 启动刷盘任务；停止时刷出剩余缓存 |
+| `Logger.flush()` | 主动写出当前日志缓存 |
+| `auto_init.register(service)` | 注册有 `start`、`stop` 属性的服务，重复对象忽略 |
+| `auto_init.start()` / `stop()` | 按注册顺序启动、逆序停止；单服务普通异常记录后继续 |
+| `resource_cleaner.register(func)` | 登记不带参数的清理函数；调度支持普通返回值及 coroutine |
+| `resource_cleaner.auto_clear(func)` | 注册原函数并返回异步 wrapper；直接调用 wrapper 时会 await 原函数结果 |
+| `resource_cleaner.start()` / `stop()` | 启动或停止周期清理任务，无 interval 参数 |
+| `resource_cleaner.run_once()` | 按登记顺序执行一轮；普通异常隔离，int 返回值用于累计清理数量 |
+
+导入时 `resource_cleaner` 会注册到 `auto_init`，但不自动启动。`Logger`、`EVENT_PIPE` 和 `APIX_EVENT_LOOP` 未自动注册到 `auto_init`；需要由应用显式管理。清理间隔见[配置](../config/README.md)。

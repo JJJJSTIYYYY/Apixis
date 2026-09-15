@@ -5,7 +5,7 @@ from functools import wraps
 
 from apixis.core.utils.lifespan.auto_init import auto_init
 from apixis.core.utils.logger import logger
-from apixis.core.config.core_config import CACHE_CLEAN_INTERVAL
+from apixis.core.config.core_config import RESOURCE_CLEAN_INTERVAL
 
 
 class ResourceCleaner:
@@ -36,7 +36,7 @@ class ResourceCleaner:
         # Background task
         self._task: Optional[asyncio.Task] = None
         # Default interval (seconds)
-        self._interval = CACHE_CLEAN_INTERVAL
+        self._interval = RESOURCE_CLEAN_INTERVAL
         # Running flag
         self._running = False
         self._initialized = True
@@ -85,7 +85,7 @@ class ResourceCleaner:
         Args:
             interval: Cleanup interval in seconds
         """
-        interval = CACHE_CLEAN_INTERVAL or 30
+        interval = RESOURCE_CLEAN_INTERVAL or 30
 
         if self._running:
             return

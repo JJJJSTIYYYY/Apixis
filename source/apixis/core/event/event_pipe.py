@@ -62,6 +62,7 @@ def event_to_json(event: ApixEvent) -> dict[str, Any]:
         "context": event.context,
         "timestamp": event.timestamp,
         "accepted": event.accepted,
+        "seen": event.seen,
         "error_stack": [asdict(error) for error in event.error_stack],
     }
 
@@ -97,6 +98,7 @@ def event_from_json(payload: Any) -> ApixEvent:
         context=payload.get("context"),
         timestamp=float(payload["timestamp"]),
         accepted=bool(payload.get("accepted", False)),
+        seen=list(payload.get("seen", [])),
         error_stack=[ApixEventError(**error) for error in payload.get("error_stack", [])],
     )
 

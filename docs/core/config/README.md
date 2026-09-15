@@ -1,64 +1,93 @@
-# 核心配置与迁移说明
+# 核心配置
 
-## 模块职责
+配置由 `apixis.core.config.base` 在首次导入时从当前工作目录的 `./config.yaml` 加载一次，`core_config.py` 再生成运行时常量。修改文件不会自动热更新；应在导入前准备配置。
 
-- `apixis.core.config.base` 统一负责 YAML 读取、远程配置读取、本地优先的递归合并、节点本地配置过滤和点分路径取值。`_config` 在此模块初始化，配置只加载一次。
-- `apixis.core.config.core_config` 从共享加载器读取核心配置常量，保留节点 ID 的原有生成方式。
-- 配置文件仍按当前工作目录下的 `./config.yaml` 读取；不存在或为空时使用默认值。YAML 和远程 JSON 的类型验证、本地覆盖远程、`EVENT_CHANNEL` 不从远程继承的规则保持不变。
+当前项目包不附带 `config.yaml`。文件缺失或内容为空时使用默认值；从 `source/` 运行时，可自行创建 `source/config.yaml`。
 
-## 保留的配置
+## 加载与取值
 
-| 配置节 | 保留字段 | 用途 |
+1. 本地 YAML 必须是 mapping；其他非空顶层类型抛出 `ValueError`。
+2. 仅当本地 `REMOTE_GATEWAY.enable` 为布尔值 `True` 时读取远程配置。该节必须是 mapping，`enable` 必须是 bool；启用时 `base_url` 和 `config_endpoint` 必须是非空字符串。
+3. 远程请求使用同步 `httpx.get(..., timeout=10)`，要求成功状态和 JSON object。请求失败、无效 JSON 或错误类型会向导入方传播，不静默退回本地配置。
+4. 远程 `EVENT_CHANNEL` 整节被排除；其余配置与本地递归合并，本地值优先。
+5. `_get_config("A.b", default)` 按点分路径读取。键缺失、途中遇到非 mapping，或最终值为 `None` 时返回默认值；`False`、`0` 和空字符串保留原值。
+
+远程配置 HTTP 请求固定使用 10 秒超时。`REMOTE_GATEWAY.timeout` 与重试参数配置的是事件网关请求，不改变配置加载请求。
+
+## 网关与节点
+
+| YAML 键 | 默认值 | 导出常量或作用 |
 | --- | --- | --- |
-| `REMOTE_GATEWAY` | `enable`、`base_url`、`config_endpoint`、`pipe_endpoint`、`max_retry`、`retry_initial_delay`、`timeout` | 远程配置和事件投递 |
-| `SERVER` | `base_dir`、`node_name` | 日志目录、节点名称 |
-| `LOG` | `debug_level`、`trace`、`show_event_dispatch`、`max_log_file_size` | 日志输出 |
-| `PIPELINE` | `event_pipe_max_len` | 处理队列和外部 mailbox 的缓冲容量，默认 65536；本地 ready 队列始终无限制 |
-| `PIPELINE` | `event_loop_backpressure` | 正在执行的事件分发任务数上限，与处理队列容量独立，默认 1024 |
-| `PIPELINE` | `background_handler_backpressure` | 独立的后台 handler 并发额度，默认 4096 |
-| `EVENT_CHANNEL` | `type`、`kafka`、`rabbitmq` | 外部事件邮箱 |
-| `RUNTIME` | `cache_clean_interval` | 核心资源清理间隔 |
+| `REMOTE_GATEWAY.enable` | `false` | `REMOTE_GATEWAY_ENABLE`；同时控制导入时拉取远程配置与默认远程通道模式 |
+| `REMOTE_GATEWAY.base_url` | `http://localhost:8080` | `REMOTE_GATEWAY_BASE_URL` |
+| `REMOTE_GATEWAY.config_endpoint` | `/api/config` | `REMOTE_GATEWAY_CONFIG_ENDPOINT`；启用远程加载时仍须在本地显式配置 |
+| `REMOTE_GATEWAY.pipe_endpoint` | `/api/pipe` | `REMOTE_GATEWAY_PIPE_ENDPOINT` |
+| `REMOTE_GATEWAY.max_retry` | `5` | `GATEWAY_MAX_RETRY`，最多额外重试 5 次 |
+| `REMOTE_GATEWAY.retry_initial_delay` | `1.0` | `GATEWAY_RETRY_INITIAL_DELAY`，指数退避基数，单位秒 |
+| `REMOTE_GATEWAY.timeout` | `10.0` | `GATEWAY_TIMEOUT`，事件网关 HTTP 客户端超时 |
+| `SERVER.base_dir` | `./.apix_data/` | `BASE_DIR`，日志根目录 |
+| `SERVER.node_name` | `apix_service` | `NODE_NAME`，节点展示名称 |
 
-资源清理间隔仍导出为 `CACHE_CLEAN_INTERVAL`，默认值仍为 300 秒。新配置使用 `RUNTIME.cache_clean_interval`，缺省时仍读取旧的 `AGENT_RUNTIME.cache_clean_interval`，使已有配置继续生效。
+`NODE_ID` 在导入时生成：远程模式使用 `uuid4().hex`，本地模式为 `apix_service`。它与可配置的 `NODE_NAME` 不同。
 
-移除了未被核心使用的 `PROXY`、`CACHE`、`DATA_STORE`、`LLM` 配置，以及 Agent 的工具输出限制、重试次数和各项 TTL。`SERVER.base_url`、`SERVER.worker_count`、旧消息队列容量、已废弃的 handler 默认超时和未接入实现的 `BACKPRESSURE` 示例项也已移除。事件循环自身的背压实现及其参数保持不变。
+## 日志
 
-移除了原属于宿主应用的数据库/缓存后端兼容性校验；独立核心启用远程事件模式时，无需再配置 MySQL 或 Redis。
+| YAML 键 | 默认值 | 导出常量 |
+| --- | --- | --- |
+| `LOG.debug_level` | `DEBUG` | `DEBUG_LEVEL`，读取后转为大写；内置级别为 `DEBUG`、`INFO`、`WARN`、`ERROR` |
+| `LOG.trace` | `true` | `TRACE` |
+| `LOG.show_event_dispatch` | `true` | `SHOW_EVENT_DISPATCH` |
+| `LOG.max_log_file_size` | `10485760` | `MAX_LOG_FILE_SIZE`，10 MiB 的日志切换阈值 |
 
-为避免迁移时改变现有运行结果，日志目录、节点名、节点 ID 和邮箱资源命名没有统一改名。随附 `config.yaml` 中已有的 `apix.*` 是 broker 资源名称，不是 Python 导入路径；代码中的 `apixis.*` 默认资源名称同样保留原值。
+普通日志先输出到终端并加入内存缓存。`Logger.start()` 启动刷盘任务，`Logger.stop()` 停止并刷盘；`Logger.flush()` 可主动刷盘。文件大小在一批内容写入前检查，因此并非严格的单文件字节上限。
 
-## 导入与测试迁移
+## 队列与背压
 
-核心导入使用 `apixis.core.*`。上传源码中的核心导入已完成包名迁移，本次核查未发现仍可执行的 `apix.*` 导入。`ApixEvent`、`APIX_EVENT_LOOP` 等已有公共符号继续保留。
+| YAML 键 | 默认值 | 实际控制范围 |
+| --- | --- | --- |
+| `PIPELINE.event_pipe_max_len` | `65536` | `EVENT_PIPE_MAX_LEN`，默认外部 mailbox 本地缓冲容量 |
+| `PIPELINE.event_loop_backpressure` | `1024` | `EVENT_LOOP_BACKPRESSURE`，处理队列容量和前台分发并发额度；有效值至少 128 |
+| `PIPELINE.background_handler_backpressure` | `4096` | `BACKGROUND_HANDLER_BACKPRESSURE`，后台 handler 任务额度 |
 
-旧 `test_tool_graph_integration.py` 仍依赖仓库中不存在的 `apixis.agent.sdk`。现替换为 `test_custom_node_graph_integration.py`，通过 `BaseNode`、`ParallelNode` 和 `Command` 覆盖并发结果顺序、批量命令路由、空命令批次、异常传播和超时取消。Agent 消息模型与 ToolNode 本身的测试应由原 Agent 仓库维护。
+本地 builtin ready 队列始终无限制。处理队列与分发信号量分别限制排队和执行，但当前实现使用同一个 `max(128, EVENT_LOOP_BACKPRESSURE)` 值；`EVENT_PIPE_MAX_LEN` 不控制处理队列。
 
-配置测试改为针对 `base.py` 的加载器，并补充 `_get_config`、空值/缺失值、真实包导入、只加载一次、远程模式和新旧清理间隔配置的回归验证。
+## 外部邮箱
 
-## 依赖与运行
-
-现有运行依赖均被核心功能使用，因此保留：
-
-| 依赖 | 使用位置 |
+| YAML 键 | 默认值 |
 | --- | --- |
-| `pyyaml` | YAML 配置加载 |
-| `httpx[socks]` | 远程配置和网关 HTTP 请求；保留已有 SOCKS 支持 |
-| `aiokafka` | Kafka mailbox |
-| `aio-pika` | RabbitMQ mailbox |
+| `EVENT_CHANNEL.type` | `kafka`；远程模式支持 `kafka` 或 `rabbitmq` |
+| `EVENT_CHANNEL.kafka.bootstrap_servers` | `["localhost:9092"]` |
+| `EVENT_CHANNEL.kafka.topic_prefix` | `apixis.mailbox` |
+| `EVENT_CHANNEL.kafka.group_id_prefix` | `apixis.node` |
+| `EVENT_CHANNEL.rabbitmq.url` | `amqp://guest:guest@localhost/` |
+| `EVENT_CHANNEL.rabbitmq.exchange` | `apixis.events` |
+| `EVENT_CHANNEL.rabbitmq.queue_prefix` | `apixis.mailbox` |
+| `EVENT_CHANNEL.rabbitmq.prefetch_count` | `100` |
 
-没有引入 Agent SDK、模型客户端、数据库驱动或 Redis。`pytest`、`pytest-asyncio`、`pytest-cov` 仍放在开发依赖组。新增 `uv.lock` 固定本次验证使用的依赖版本，并补齐项目元数据引用的 `source/README.md`。测试工作流的触发分支已从旧仓库的 `NEXT_*` 对齐到当前 `main`。
+这些值只从本地配置读取，缺省时使用代码默认值。Kafka topic/group 和 RabbitMQ queue 均会拼接当前节点 ID，具体协议见[事件通道](../event/channels.md)。
 
-```bash
-cd source
-uv sync --locked
-uv run pytest -q
+## 生命周期清理
+
+```yaml
+LIFESPAN:
+  resource_clean_interval: 300
 ```
 
-事件、图、工具辅助模块的 Python 源码保持与上传版本逐字节一致；本次生产代码变更仅发生在配置模块。
+`ResourceCleaner.start()` 使用 `RESOURCE_CLEAN_INTERVAL or 30`，所以配置 `0` 时实际使用 30 秒，不表示禁用。启动方法不接收 interval 参数；导入只注册清理服务，周期运行需显式启动 `resource_cleaner` 或 `auto_init`。
 
-## 本次验证结果
+## 最小本地配置示例
 
-- Python 3.12.14：`uv run --locked pytest -q` → **567 passed**。
-- `compileall` 和 `git diff --check` 通过。
-- 已逐字节核对配置模块之外的 25 个核心 Python 文件，确认与上传版本一致。
-- 远程网关和 broker 通道通过模拟传输测试验证；未连接真实外部服务。
+```yaml
+REMOTE_GATEWAY:
+  enable: false
+LOG:
+  debug_level: INFO
+  show_event_dispatch: false
+PIPELINE:
+  event_loop_backpressure: 1024
+  background_handler_backpressure: 4096
+LIFESPAN:
+  resource_clean_interval: 300
+```
+
+核心不加载 Agent SDK、数据库驱动或 Redis，也不要求 `CACHE`、`DATA_STORE`、`LLM` 等宿主应用配置。加载器允许其他键存在，但只有代码实际读取的键才影响核心行为。

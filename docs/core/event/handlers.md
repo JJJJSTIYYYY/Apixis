@@ -5,7 +5,7 @@
 ## subscribe()
 
 ```python
-subscribe(
+def subscribe(
     *event_names: str,
     exist_ok: bool = True,
     priority: float | None = None,
@@ -14,10 +14,10 @@ subscribe(
     stop_when_error: bool | None = None,
     time_out: float | None = None,
     background: bool | None = None,
-)
+): ...
 ```
 
-装饰器接受异步函数或 `ApixEventHandler` 实例，并原样返回被装饰对象。订阅、过滤、优先级和边界校验统一由 `register_handler()` 在装饰器实际应用时完成；单独调用 `subscribe(...)` 只创建装饰器。`core_func`、`on_has_error`、`on_accepted` 和 `on_cancelled` 接收 `ApixEvent`；`on_error` 接收 `(event, exception)`。所有回调均为异步函数，返回 `None`。
+装饰器接受异步函数或 `ApixEventHandler` 实例，并原样返回被装饰对象。订阅、过滤、优先级和边界校验统一由 `register_handler()` 在装饰器实际应用时完成；单独调用 `subscribe(...)` 只创建装饰器。`core_func`、`on_has_error`、`on_accepted` 和 `on_cancelled` 接收 `ApixEvent`；`on_error` 接收 `(event, exception)`。回调应返回可等待对象，返回值被忽略；注册时只检查可调用性，不验证其是否为 `async def`。普通被装饰对象还需要有 `__name__`。
 
 ```python
 from apixis.core.event import ApixEvent, subscribe
@@ -77,7 +77,7 @@ request_handler: ApixEventHandler = subscribe("request.*", time_out=5)(
 )
 ```
 
-`request_handler` 仍是原实例；`await request_handler(event)` 等价于 `await request_handler.execute(event)`。处理器使用 `core_func.__name__` 作为注册名。
+`request_handler` 仍是原实例；`await request_handler(event)` 等价于 `await request_handler.execute(event)`。实例可用 `name=` 指定注册名；省略时使用 `core_func.__name__`，没有该属性则使用可调用对象的类型名。普通函数装饰器使用函数的 `__name__`。
 
 `subscribe()` 重设订阅、过滤和排序配置，保留通知回调。执行选项 `stop_when_error`、`time_out`、`background` 为 `None` 时沿用传入实例的配置，显式值则覆盖；非正数 `time_out` 清除超时限制。例如，实例设置 `background=True`，但装饰器传该参数为 `False`，则注册后实例的该值为 `False`。实例设置 `background=True`，但装饰器未传该参数，则注册后该实例值保持为 `True`。重复名称且 `exist_ok=True` 时使用本次 handler 和配置替换原注册；先完成校验，失败时保留原注册。替换先完成校验，再调用 `unregister_handler()` 删除旧注册，最后按删除后的桶重新插入。无需修正旧索引，校验失败时原注册保持不变。
 
@@ -116,7 +116,7 @@ ApixEventHandler(
 
 `on_error` 的类型为 `EventHandlerErrorFunc = Callable[[ApixEvent, Exception], Awaitable[None]]`，可从 `apixis.core.event` 导入。
 
-- `core_func`、`on_has_error`、`on_accepted` 中任何一个抛出未捕获异常或超时，都先记录错误，再调用 `on_error(event, exception)`；第二个参数是原始异常对象。
+- `core_func`、`on_has_error`、`on_accepted` 中任何一个抛出未捕获的普通异常或超时，都先记录错误，再调用 `on_error(event, exception)`；第二个参数是原始异常对象。
 - `on_error` 成功返回不会移除已记录的错误，也不会重试失败的函数。后续 handler 仍可通过 `on_has_error` 感知该失败。
 - 每次回调失败只调用一次 `on_error`。一次 `execute()` 内若多个回调依次失败，分别通知；`on_error` 自身失败则只记录 `phase="on_error"` 的错误信息在 `event.error_stack` 堆栈，不递归调用。
 - `time_out` 也独立应用于 `on_error`。前台 handler 的核心函数或上述通知回调传播 `CancelledError` 时，先以实际 phase 追加取消记录，再重新抛出原异常；不会因取消调用 `on_error`。后台取消不追加记录。
@@ -153,6 +153,8 @@ handler = subscribe("request.*")(
 - `time_out` 独立应用于每次取消回调。回调应只执行必要清理；`None` 仍表示无限等待。
 - 取消回调的普通异常、超时以及再次传播的 `CancelledError` 均只记录日志，不写入 `error_stack`，不触发 `on_error`，不阻止后续取消通知。完成通知后，事件循环重新抛出最初的 `CancelledError`。
 - 普通错误、正常转换为 `TimeoutError` 的超时、`event.accept()` 和正常完成不会触发取消通知。`APIX_EVENT_LOOP.stop()` 不取消正在运行的事件，因此也不会触发它们的取消通知。
+
+上述“保留原始取消”适用于清理回调自身失败。若整个分发 task 在等待并发通知时再次被外部取消，`gather` 会中断尚未完成的通知，传播新的取消；不能保证每个清理回调都运行到结束。若取消发生在等待后台额度等 handler 外部阶段，仍会通知前台链，但不会凭空追加一条 handler 执行错误。
 
 ## 匹配语义
 
@@ -253,16 +255,16 @@ async def normalize_order(event: ApixEvent) -> None:
 
 handler_chain 不维护版本。发布端只写入 ready 队列并记录精确事件名，不读取 handler 注册表。消费者仅将事件从 ready 转入处理队列。分发器取得分发额度并从处理队列取出事件后，立即同步取得或重建当前链，再创建分发任务。因此，在处理队列中等待的事件会使用正式分发前的最新注册顺序。
 
-缓存类型为 `dict[str, list[str] | None]`，每个精确事件名只有一份当前结果：
+`cached_chain` 的类型注解为 `dict[str, list[str] | None]`，但正常失效操作会**删除缓存键**，而不是把值写成 `None`。每个精确事件名只有一份当前结果：
 
 | 状态 | 语义 | 出队时处理 |
 | --- | --- | --- |
 | 键不存在 | 尚未建立缓存 | 重建并保存 |
-| `None` | 缓存失效 | 重建并覆盖 |
+| `None` | 查询逻辑仍兼容这一值，正常失效路径不会写入它 | 重建并覆盖 |
 | `[]` | 有效缓存，没有匹配项 | 直接使用 |
 | 非空列表 | 有效的有序 handler 名称列表 | 直接使用 |
 
-必须用 `is None` 判断是否重建，不能把 `[]` 当作失效。注册、替换和退订只将受影响的已有缓存设为 `None`；替换同时考虑旧、新订阅及过滤范围。不会预热、枚举未知事件名或修改已交给分发任务的列表。
+查询使用 `dict.get()` 和 `is None` 判断是否重建，不能把 `[]` 当作失效。注册、替换和退订删除受影响的已有缓存；替换同时考虑旧、新订阅及过滤范围。不会预热、枚举未知事件名或修改已交给分发任务的列表。查询返回缓存列表本身，调用方不应修改它。
 
 本次候选名称和顺序在出队时确定。每次调用前按名称读取当前 handler，并重新检查其订阅模式和 `filter_event`：缺失或不再匹配则直接跳过，不记录错误。因此，同名替换可影响本次尚未开始的调用；新增名称和排序变化由后续出队事件采用。已开始的调用继续完成。
 
@@ -283,8 +285,8 @@ async def write_audit_log(event: ApixEvent) -> None:
 后台处理器的行为：
 
 - 分发器创建任务后立即继续处理下一个 handler。
-- 后台任务之间最多并发 自定义 个。
-- 核心函数和通知函数的未捕获异常、超时只记录日志，不写入事件 `error_stack`。
+- 后台任务之间最多并发 `BACKGROUND_HANDLER_BACKPRESSURE` 个，默认 4096；额度不足时，当前分发任务先等待额度。
+- 核心函数和通知函数的未捕获普通异常、超时只记录日志，不写入事件 `error_stack`；取消按前述取消规则传播。
 - `stop_when_error` 决定当前后台 handler 是否因已存在的前台错误跳过核心函数。
 - 等待并发额度后，再按名称读取当前 handler，并检查当前订阅和过滤条件；只有仍匹配该事件时才调用。
 - 在实际执行时检查 `has_error` 和 `accepted`，不会为已经执行结束的 handler 补发通知。
@@ -339,6 +341,8 @@ meta = get_handler_meta("observe_agent_event")
 
 处理器不存在时返回 `None`。
 
+返回的外层 dict 是新对象，但 `subscribe` 和 `filter_event` 列表仍引用处理器的原列表；不要通过元数据修改注册配置。`get_handler(name)` 返回实际处理器实例或 `None`，`is_registered(name)` 返回当前是否存在该名称。
+
 ### 找出尚未匹配的订阅
 
 ```python
@@ -377,7 +381,9 @@ from apixis.core.event import ApixEventHandler
 | `time_out` | 每个实际调用的回调的超时时间 |
 | `background` | 是否后台执行 |
 
-构造函数接收五个回调、`stop_when_error`、`time_out` 和 `background`。其余注册参数由全局 `subscribe()` 或实例方法 `register()` 注入。底层 `register_handler(entry)` 要求 entry 已具备完整注册信息，负责验证模式、回调、priority 和边界，并使受影响的精确事件链缓存失效。
+构造函数接收五个回调，以及仅限关键字的 `stop_when_error`、`time_out`、`background` 和 `name`。其余注册参数由全局 `subscribe()` 或实例方法 `register()` 注入。底层 `register_handler(entry)` 要求 entry 已具备完整注册信息，负责验证模式、回调、priority 和边界，并使受影响的精确事件链缓存失效。
+
+通知可通过 `add_has_error_callback()`、`add_on_accepted_callback()`、`add_on_error_callback()`、`add_on_cancelled_callback()` 设置。它们都只保存一个回调；默认 `exist_ok=True` 时替换已有值，`exist_ok=False` 且已有回调时抛出 `ValueError`。不可调用参数抛出 `TypeError`。
 
 实例可以直接注册和退订：
 
@@ -425,7 +431,7 @@ handler.set_core_func(process_updated_event)
 | 方法 | 说明 |
 | --- | --- |
 | `register_handler(entry, exist_ok=False)` | 注册完整 handler；允许重名时校验后替换 |
-| `unregister_handler(name)` | 立即删除 entry 和桶记录；缺失时报错 |
+| `unregister_handler(name, missing_ok=False)` | 立即删除 entry 和桶记录；缺失时默认报错，`True` 时忽略 |
 | `get_handler(name)` | 返回 entry 或 `None` |
 | `get_handlers_chain_for_event(event_name)` | 获取精确事件当前的有序名称列表 |
 | `get_unmatched_subscriptions(name)` | 返回未覆盖已观察事件的订阅模式 |

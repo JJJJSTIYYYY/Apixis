@@ -86,6 +86,8 @@ RABBITMQ_QUEUE_PREFIX = _get_config(
 RABBITMQ_PREFETCH_COUNT = _get_config(
     "EVENT_CHANNEL.rabbitmq.prefetch_count", 100
 )
-CACHE_CLEAN_INTERVAL = _get_config(
+
+
+RESOURCE_CLEAN_INTERVAL = _get_config(
     "LIFESPAN.resource_clean_interval", 300
 )

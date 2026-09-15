@@ -441,13 +441,12 @@ async def test_abort_releases_pending_context():
 
 @pytest.mark.asyncio
 async def test_abort_rejects_context_for_inactive_run():
-    """A retained or foreign context cannot abort an inactive graph run."""
+    """A retained or foreign context can abort an inactive graph run with no side effects."""
     graph = NodeGraph({}, {START: END})
     context = _bound_context(graph, "inactive-run", {"checkpoint": 1})
     context.abort()
 
-    with pytest.raises(ValueError, match="not active in this graph"):
-        await graph.abort(context)
+    await graph.abort(context)
 
     completion = context.completion
     assert completion is not None
@@ -478,17 +477,15 @@ async def test_abort_finishes_active_run_with_saved_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_abort_cannot_finish_same_run_twice():
-    """A completed context cannot be aborted through the graph twice."""
+async def test_abort_same_run_twice():
+    """A completed context can be aborted through the graph twice."""
     graph = NodeGraph({}, {START: END})
     context = _bound_context(graph, "active-run", {})
     context.target_node_name = "retry"
     context.take_a_snapshot()
 
     await graph.abort(context)
-
-    with pytest.raises(ValueError, match="not active in this graph"):
-        await graph.abort(context)
+    await graph.abort(context)
 
 
 @pytest.mark.asyncio

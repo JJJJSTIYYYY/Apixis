@@ -478,10 +478,12 @@ class NodeGraph:
         if not isinstance(graph_context, GraphContext):
             raise TypeError("NodeGraph.abort requires a GraphContext instance.")
 
+        if not (graph_context.is_active or not graph_context.is_consumed):
+            return  # Already finished, aborted, or cancelled; nothing to do.
+
         if (
             graph_context.graph_id != self.graph_id
             or graph_context not in self._contexts
-            or graph_context.status not in ("pending", "running")
         ):
             raise ValueError("Graph context is not active in this graph.")
         graph_context.abort()

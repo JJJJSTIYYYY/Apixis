@@ -21,8 +21,9 @@ from apixis.core.graph import (
 
 | 定义模块 | 函数 |
 | --- | --- |
-| `utils.namespace` | `acquire_namespace`、`release_namespace`、`validate_namespace`、`get_graph_namespace`、`get_graph_dispatch_name` |
+| `utils.namespace` | `acquire_namespace`、`release_namespace`、`validate_namespace`、`get_graph_namespace`、`get_graph_dispatch_name`、`get_graph_interrupted_name` |
 | `utils.state` | `copy_state`、`parse_state_schema` |
+| `utils.validate` | `validate_graph_definition` |
 
 模块内部直接从定义模块导入依赖；仅用于类型注解的 `NodeGraph` 导入放在 `TYPE_CHECKING` 分支中，避免工具模块反向加载图运行时。
 
@@ -96,8 +97,8 @@ manager.add_nodes([first, second, third])
 - 普通函数的默认节点名为 `func.__name__`。
 - `START` 和 `END` 是保留名称。
 - 同一 manager 中节点名必须唯一。
-- `timeout=None` 或非正数表示不限制；正数必须有限。
-- 传入 `BaseNode` 时使用该对象自身的 `name`。
+- 新建普通节点时，`timeout=None` 或非正数表示不限制；数值须为有限的 int/float，bool 被拒绝。
+- 传入 `BaseNode` 时使用该对象自身的 `name`，忽略 `node_name`；`timeout=None` 保留对象原超时，显式非正数才清除限制。
 
 ```python
 async def fetch(state: State) -> dict:
@@ -161,6 +162,8 @@ router 可以返回：
 
 router 自身生成一个内部节点。内部条件和 router 节点也会占用一次执行 step。
 
+router 返回的 `Command.update` 或 mapping 中除 `goto` 外的字段会被忽略，路由节点生成的 Command 不携带业务更新。`add_edge(..., condition=..., timeout=...)` 和 `add_router(..., timeout=...)` 的 timeout 用于生成的内部节点；无 condition 的直接边不执行函数，也不使用 timeout。
+
 ## 节点返回值
 
 普通函数节点必须返回以下之一：
@@ -211,7 +214,7 @@ def fan_out(state: State) -> Command:
 图级批次遵循以下规则：
 
 1. 节点按 `goto` 列表顺序创建 task，并发执行。
-2. 每个节点接收当前 state 的独立 `_copy_state` 副本；一个节点直接修改输入不会串流到同批其他节点。
+2. 每个节点接收当前 state 的独立 `copy_state` 副本；普通字段的修改不影响同批其他节点，`KeepRef` 字段仍共享引用。
 3. 所有节点共享同一个 `GraphContext`。context 在节点执行期间按约定只读，可通过 `get_graph_context()` 获取。
 4. 结果按节点启动顺序收集，与完成顺序无关。节点返回 `list[Command]` 时会在其原位置展平。
 5. 所有节点都成功完成后，运行时按节点顺序、再按节点内部 Command 顺序直接更新 `GraphContext.state`。
@@ -277,7 +280,7 @@ graph = (
 
 所有分支接收同一份节点级 state 快照，而不是各自的 deepcopy。分支应把 state 当作只读输入，并通过返回值提交更新。直接并发修改普通嵌套对象会造成分支间干扰；并发修改 `KeepRef` 对象还可能影响调用方持有的共享资源，因此必须由资源自身提供并发控制。
 
-`ParallelNode` 表达的是“一个图节点内部的 fan-out/fan-in”：分支具有并发执行和统一汇聚，但没有各自独立的图边、快照或中断入口。图级并发则把多个已注册节点组成批次，每个节点都有独立 state 副本和自己的默认边。
+`ParallelNode` 表达的是“一个图节点内部的 fan-out/fan-in”：分支具有并发执行和统一汇聚，但没有各自独立的图边或快照。分支可各自调用 `interrupt()` 创建不同 Block，它们共享图 context、run id、namespace 和批次快照。图级并发则把多个已注册节点组成批次，每个节点都有独立 state 副本和自己的默认边。
 
 二者可以组合：`goto=["prepare_context", "audit"]` 可以让一个 `ParallelNode` 与普通节点并发。此时 `ParallelNode` 整体接收一个独立于 `audit` 的 state 副本，而它的内部所有分支仍共享该副本。冲突检测以图节点为边界：同一个 `ParallelNode` 返回的多条 Command 可以依次覆盖普通键；若它和同批 `audit` 都更新同一个普通键，则批次失败。
 
@@ -313,7 +316,7 @@ graph = manager.compile_graph(
 
 命名空间用于定位当前编译图和隔离事件路由；运行上下文归属于具体图实例：
 
-- `None` 或空字符串会通过雪花生成器获得全局唯一的命名空间，调用方无需为不关心命名空间的图手动命名。
+- `None` 或空字符串会使用共享雪花生成器的 `next_id()` 生成字符串命名空间，调用方无需手动命名。当前 `id_generator.py` 固定使用 worker_id=23，因此不能仅凭这一配置保证多个独立进程之间的唯一性。
 - 需要使用全局命名域时，显式传入模块导出的 `GLOBALNS` 常量。
 - 图命名空间不能包含 glob 字符 `*`、`?`、`[`、`]`，获取命名空间时会抛出 `ValueError`。
 - 同一时刻一个命名空间只能由一个已编译图占用。
@@ -326,6 +329,16 @@ graph = manager.compile_graph(
 图还默认注册 `get_graph_interrupted_name(graph.namespace)` 对应的中断处理器，优先级为 `0`：当本次 `event.seen` 只有默认处理器自身时，以 `BlockHookNotRegisteredError` 结束等待。判断依据是核心函数的实际执行记录，普通订阅者执行过也算；仅注册但尚未执行的 hook 不算。默认处理器始终提供错误、accepted 和取消收尾。用户通常通过 `graph.add_interrupted_hook()` 或 `@interrupted_hook(...)` 注册处理钩子；详见 [图中断与恢复](interrupter/README.md)。
 
 模块导出的 `namespace_set` 可用于只读诊断当前被占用的 namespace。不要直接增删其中的值；正常释放必须经过 `graph.decompose()`，以同时清理图索引和事件处理器。
+
+`namespace_set` 是底层字典的动态 keys 视图，已取得的视图也会反映后续注册和释放。
+
+### 直接构造与自动快照
+
+`NodeGraph(nodes, default_gotos, *, max_steps=1024, state_schema=None, using_namespace=None, no_snapshot=False, exist_ok=False)` 是底层构造接口。`nodes` 的键定义图内名称，值须为 `BaseNode`，键可以不同于对象自身的 `name`。默认边必须包含 START 的出边；不能以 START 为目标或以 END 为来源，其他端点须已定义。允许环及没有出边的普通节点。
+
+`validate_graph_definition(nodes, gotos)` 可单独执行上述定义校验。编译会复制节点映射和边映射，但复用其中的节点对象；之后修改某个节点对象的 timeout 等属性可能影响复用它的图。
+
+`no_snapshot=True` 只关闭自动快照。此时 abort 没有历史可用时返回当前 live state 的复制结果，也无法凭空恢复历史；手动快照仍可创建。`GraphManager.compile_graph()` 当前不提供 no_snapshot 参数，需要时直接构造 NodeGraph。
 
 ## invoke()
 
@@ -366,7 +379,18 @@ async def generate(state: dict) -> dict:
 
 流按写入顺序产生任意 Python 值。图失败时，已经排队的 chunk 会先被消费，然后原始异常由 async iterator 抛出。
 
-如果消费者提前结束迭代，`stream()` 的清理逻辑会取消尚未完成的图执行任务。
+关闭 stream 异步生成器时，清理逻辑会取消尚未完成的图执行等待任务并移除 context。单独 `break` 不保证立即关闭生成器；需要及时清理时使用 `aclosing`：
+
+```python
+from contextlib import aclosing
+
+async with aclosing(graph.stream(initial_state)) as chunks:
+    async for chunk in chunks:
+        print(chunk)
+        break
+```
+
+事件分发中的节点可能继续运行，但在 context 不再 active 后，其 Command 不会提交，也不会发布下一跳。这与节点自身的超时取消不同。
 
 ## 最大步数
 
@@ -378,6 +402,8 @@ graph.set_max_steps(100)
 
 每个普通、内部或图级并发批次成功提交命令后，step 加一；一个批次无论包含多少节点都只增加一次。达到上限后，仍可通过 `END` 或空目标列表正常结束；若继续路由到普通节点或并发批次，则在发布下一跳事件前抛出 `RecursionError`，后续节点不会执行。该限制用于阻止未受控循环，恢复快照后也会继续使用已记录的步数。
 
+`set_max_steps()` 返回图自身，可链式调用；当前仅保存传入值，不做类型或正数校验，调用方应传入正整数。
+
 ## 超时
 
 ```python
@@ -388,6 +414,8 @@ manager.add_node(slow_node, timeout=2.5)
 - 运行时会取消节点协程，并抛出包含节点名和秒数的 `TimeoutError`。
 - 节点自身主动抛出的 `TimeoutError` 不会被错误标记为运行时 deadline。
 - `None`、`0` 和负数表示不限制。
+
+普通同步函数直接在事件循环线程内调用，没有自动转移到线程池；其阻塞代码会阻塞事件循环，协作式 asyncio 超时无法在阻塞期间强行中断它。`Node.execute()` / `ParallelNode.execute()` 的直接调用也不会自行应用节点 timeout，该限时由 NodeGraph 执行层施加。
 
 ## 插件观察图调度事件
 

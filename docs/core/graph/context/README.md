@@ -58,7 +58,7 @@ context 的创建、执行和恢复使用所属图已经解析的规则，不接
 | `status` | 当前生命周期状态 |
 | `is_consumed` | 是否已经不能开始调用，即状态不再为 pending |
 | `is_bound` | 是否具有 run id、completion 和 writer |
-| `is_active` | 是否 running、运行资源完整且 completion 未完成 |
+| `is_active` | 仅判断 `status == "running"`，不额外检查运行资源或 completion |
 | `run_id` | 接受执行时分配的唯一运行 ID |
 | `state` | 最新已提交状态 |
 | `target_node_name` | 待执行节点或有序节点列表 |
@@ -69,7 +69,7 @@ context 的创建、执行和恢复使用所属图已经解析的规则，不接
 
 ## 快照时机与结构
 
-每个普通节点、图级并发批次或内部 router/condition 节点执行前自动创建快照。START 和 END 不创建快照；并发批次产生一份批次级检查点。
+默认情况下，每个普通节点、图级并发批次或内部 router/condition 节点执行前自动创建快照。START 和 END 不创建快照；并发批次产生一份批次级检查点。`NodeGraph(..., no_snapshot=True)` 关闭自动快照，但不禁止 active context 手动调用 `take_a_snapshot()`。
 
 ```python
 class GraphContextSnapshot(TypedDict):
@@ -99,7 +99,7 @@ history = context.get_all_snapshots()
 
 读取接口返回深拷贝，修改返回值不影响保存的历史。没有快照时 `get_snapshot()` 返回 None；版本越界沿用 Python list 的 IndexError。
 
-`take_a_snapshot()` 只允许 active context 调用，通常由图自动执行。没有快照的 context 无法恢复。
+`take_a_snapshot()` 只允许 active context 调用，通常由图自动执行。没有快照的 context 无法恢复，`restore_context()` 会抛出 `RuntimeError`。
 
 ## 在同一图上恢复
 
@@ -155,7 +155,7 @@ graph.decompose(force=False)   # Reject if any managed context is unfinished.
 
 force=False：存在未结束 context 时抛出 RuntimeError，不修改任何 context 或注册。没有未结束 context 时正常分解。两种模式都幂等。
 
-底层 `release_namespace(graph)` 默认触发强制分解，重复释放或释放旧图不会移除替代图的注册。`decompose_immediately=False` 仅释放该图的 namespace 注册，供分解内部清理或显式重新注册使用，不会终止 context 或移除监听器。`acquire_namespace(..., replace_existed=True)` 通过释放接口分解旧图；监听器注册仍由 NodeGraph 负责，在取得 namespace 后执行。注册失败时仅清理新图资源并抛出原始异常，不恢复旧图。
+底层 `release_namespace(graph)` 默认触发强制分解，重复释放或释放旧图不会移除替代图的注册。`decompose_immediately=False` 仅释放该图的 namespace 注册，不会终止 context 或移除监听器；这是内部清理能力，不是重启或恢复已分解图的接口。`acquire_namespace(..., replace_existed=True)` 通过释放接口分解旧图；监听器注册仍由 NodeGraph 负责，在取得 namespace 后执行。注册失败时仅清理新图资源并抛出原始异常，不恢复旧图。
 
 普通执行结束、失败或取消后，graph 会释放该次 context 的管理记录。调用方仍可保留 context 查看状态和快照。尚未执行的 context 由图保留；不再使用时可以调用 await graph.abort(context) 或分解图。
 
@@ -181,7 +181,7 @@ graph.abort() 也可以中止并释放该图管理的 pending context。active �
 - `stream()` 会先产出已经排队的 chunk，再结束；
 - 当前节点可能在后台继续运行，但它的结果不会被提交，也不会继续路由；
 - context 进入 `aborted`；
-- abort 幂等；
+- `context.abort()` 对已 aborted context 幂等；`graph.abort(context)` 会移除管理记录，重复调用会抛出 `ValueError`；
 - 所属中断 Block 会关闭，不会由替代图接管。
 
 因为自动快照在节点或并发批次执行前创建，abort 返回的是当前节点或整批之前的状态。若还没有快照，则回退到当前 live state。存在快照时，graph 会深拷贝返回值以隔离历史。context 的内部 completion 只传递原状态对象，不能当作公开的结果复制接口；调用方应 await graph.invoke() 或消费 graph.stream()。
@@ -189,6 +189,8 @@ graph.abort() 也可以中止并释放该图管理的 pending context。active �
 对尚未绑定的 pending context 调用 `abort()` 只把它置为 `aborted`，没有 completion 可返回；此 context 随后不能用于图调用。
 
 `finished` 或 `failed` context 不能再 abort。
+
+`abort()` 不把 `context.state` 原地恢复为快照；它选择快照状态作为调用结果。需要继续执行时，应通过 `restore_context()` 创建新 context。
 
 ## 节点内访问当前上下文
 
@@ -242,6 +244,8 @@ channel.close()
 chunks = [chunk async for chunk in channel]
 ```
 
+`StreamChannel` 和 `noop_stream_writer` 可从 `apixis.core.graph.context` 导入，未由 `apixis.core.graph` 顶层重新导出。
+
 关闭行为：
 
 - `close()` 幂等。
@@ -252,6 +256,8 @@ chunks = [chunk async for chunk in channel]
 一般应用只使用 `NodeGraph.stream()` 和 `get_stream_writer()`，无需直接创建 `StreamChannel`。
 
 `noop_stream_writer()` 返回全局可复用的丢弃型 writer，`NodeGraph.invoke()` 使用它统一节点接口。自定义运行器在不需要实际流式输出时也可以使用该函数。
+
+在仍保留 ContextVar 绑定的子任务中，`get_stream_writer()` 发现 context 已不 active 时会返回 no-op writer；已经保存的旧 writer 不会自动变成 no-op，仍受其原通道关闭状态约束。
 
 ## 快照持久化注意事项
 

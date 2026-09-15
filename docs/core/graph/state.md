@@ -127,7 +127,7 @@ def use_resource(state: RuntimeState) -> dict:
 
 ### 快照例外
 
-`GraphContext.take_a_snapshot()` 会对完整 recoverable state 使用 `copy.deepcopy()`，包括 `KeepRef` 字段。这样 abort 或 recovery 使用的是隔离快照，不会因为共享资源在节点中继续变动而污染历史状态。
+`GraphContext.take_a_snapshot()` 会对完整 recoverable state 使用 `copy.deepcopy()`，包括 `KeepRef` 字段。这样 abort 或 recovery 使用的是隔离快照，不会因为共享资源在节点中继续变动而污染历史状态。直接构造 `NodeGraph(..., no_snapshot=True)` 可关闭自动快照；手动调用 `take_a_snapshot()` 仍会执行完整深拷贝。
 
 `graph.restore_context()` 分别深拷贝保留历史与恢复后的 live state，防止 KeepRef 修改污染历史检查点。
 
@@ -163,13 +163,13 @@ class State(TypedDict):
 ## Command
 
 ```python
-Command(
-    update: dict[str, Any] = {},
-    goto: str | list[str] | None = None,
-)
+@dataclass(slots=True)
+class Command:
+    update: dict[str, Any] = field(default_factory=dict)
+    goto: str | list[str] | None = None
 ```
 
-`goto` 语义：
+以上为类型结构示意，`update` 每次创建独立字典。`goto` 语义：
 
 | 写法 | 路由行为 |
 | --- | --- |
@@ -181,7 +181,7 @@ Command(
 
 ## 多 Command 提交
 
-`ParallelNode` 和自定义 `BaseNode` 可以返回 `list[Command]`。运行时按顺序执行：
+`ParallelNode` 和自定义 `BaseNode` 可以返回 `list[Command]`。普通 `Node` 仍只接受单个 mapping 或 Command；自定义 `execute()` 的返回结果须自行满足 Command 约定，运行时不会为它自动转换 dict。运行时按顺序提交：
 
 ```python
 return [
@@ -199,6 +199,8 @@ return [
 后一条 command 看到前一条已经提交的 state。每条 command 都贡献 route；`goto=None` 使用其来源图节点的默认边。字符串列表和多 Command 产生的路由会按序展平并稳定去重；存在普通目标时忽略 `END`。
 
 空列表按一个空 `Command` 处理。
+
+`goto=[]` 只表示该条 Command 不贡献下一目标；若同批其他 Command 仍产生普通目标，图会继续执行这些目标，不会由一个空 goto 终止整批路由。
 
 ## 图级并发更新
 
@@ -242,6 +244,6 @@ assert initial == {"items": []}
 图编译时使用一次 `typing.get_type_hints(..., include_extras=True)` 同时解析两个标记；context 的创建、执行与恢复不再解析 schema：
 
 - `state_schema` 必须是 class 或 `None`。
-- 未解析的 forward reference 会在 manager 创建/图编译或 context 创建时暴露。
+- 未解析的 forward reference 在编译图时暴露；manager 构造只保存 schema，context 创建不重新解析。
 - 普通 annotated class 和 `TypedDict` 都可以使用。
 - schema 不负责验证节点 update 的 key 或 value 类型。
