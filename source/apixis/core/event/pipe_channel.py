@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -15,6 +14,7 @@ import httpx
 from apixis.core.config.core_config import EVENT_PIPE_MAX_LEN
 from apixis.core.event.base import ApixEvent, ApixEventError, EventType
 from apixis.core.utils.exception import EventChannelUnavailableError
+from apixis.core.utils.logger import logger
 
 
 def event_to_json(event: ApixEvent) -> dict[str, Any]:
@@ -60,6 +60,7 @@ def event_from_json(payload: Any) -> ApixEvent:
             "External event payload is missing fields: "
             + ", ".join(sorted(missing))
         )
+
     return ApixEvent(
         event_id=str(payload["event_id"]),
         event_type=EventType(payload["event_type"]),
@@ -68,7 +69,10 @@ def event_from_json(payload: Any) -> ApixEvent:
         timestamp=float(payload["timestamp"]),
         accepted=bool(payload.get("accepted", False)),
         seen=list(payload.get("seen", [])),
-        error_stack=[ApixEventError(**error) for error in payload.get("error_stack", [])],
+        error_stack=[
+            ApixEventError(**error)
+            for error in payload.get("error_stack", [])
+        ],
     )
 
 
@@ -206,7 +210,36 @@ class _BufferedMailboxChannel(ReadableEventChannel):
         return self._buffer.maxsize
 
     async def _enqueue(self, payload: Any) -> None:
-        await self._buffer.put(event_from_json(payload))
+        """Deserialize and enqueue one broker message.
+
+        Invalid external payloads are isolated to the current message so they
+        cannot terminate the broker consumer.
+        """
+        try:
+            event = event_from_json(payload)
+        except (UnicodeDecodeError, TypeError, ValueError) as exc:
+            logger.warning(f"{type(self).__name__} discarded an invalid external event: {exc}")
+            return
+
+        await self._buffer.put(event)
+
+    async def _close_consumer_task(
+        self,
+        task: asyncio.Task[None] | None,
+    ) -> None:
+        """Cancel and collect a broker consumer without leaking its failure."""
+        if task is None:
+            return
+
+        if not task.done():
+            task.cancel()
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception(f"{type(self).__name__} consumer task exited unexpectedly.")
 
     async def get(self) -> ApixEvent:
         return await self._buffer.get()
@@ -231,7 +264,7 @@ class _BufferedMailboxChannel(ReadableEventChannel):
 
 
 class KafkaChannel(_BufferedMailboxChannel):
-    """Kafka mailbox consumer.  ``aiokafka`` is imported only when started."""
+    """Kafka mailbox consumer. ``aiokafka`` is imported only when started."""
 
     def __init__(
         self,
@@ -273,25 +306,24 @@ class KafkaChannel(_BufferedMailboxChannel):
         )
 
     async def _consume(self) -> None:
-        try:
-            async for record in self._consumer:
-                await self._enqueue(record.value)
-        except asyncio.CancelledError:
-            raise
+        async for record in self._consumer:
+            await self._enqueue(record.value)
 
     async def close(self) -> None:
-        if self._consumer_task is not None:
-            self._consumer_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._consumer_task
-            self._consumer_task = None
-        if self._consumer is not None:
-            await self._consumer.stop()
-            self._consumer = None
+        consumer_task = self._consumer_task
+        self._consumer_task = None
+
+        await self._close_consumer_task(consumer_task)
+
+        consumer = self._consumer
+        self._consumer = None
+
+        if consumer is not None:
+            await consumer.stop()
 
 
 class RabbitMQChannel(_BufferedMailboxChannel):
-    """RabbitMQ mailbox consumer.  ``aio-pika`` is imported when started."""
+    """RabbitMQ mailbox consumer. ``aio-pika`` is imported when started."""
 
     def __init__(
         self,
@@ -348,18 +380,24 @@ class RabbitMQChannel(_BufferedMailboxChannel):
                     await self._enqueue(message.body)
 
     async def close(self) -> None:
-        if self._consumer_task is not None:
-            self._consumer_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._consumer_task
-            self._consumer_task = None
-        if self._broker_channel is not None:
-            await self._broker_channel.close()
-            self._broker_channel = None
-        if self._connection is not None:
-            await self._connection.close()
-            self._connection = None
+        consumer_task = self._consumer_task
+        self._consumer_task = None
+
+        await self._close_consumer_task(consumer_task)
+
+        broker_channel = self._broker_channel
+        connection = self._connection
+
         self._broker_queue = None
+        self._broker_channel = None
+        self._connection = None
+
+        try:
+            if broker_channel is not None:
+                await broker_channel.close()
+        finally:
+            if connection is not None:
+                await connection.close()
 
 
 class UnavailableMailboxChannel(_BufferedMailboxChannel):
@@ -477,7 +515,10 @@ class GatewayChannel(WritableEventChannel):
     async def fetch_nodes(self) -> dict[str, dict[str, Any]]:
         response = await self._request(
             "GET",
-            params={"action": "nodes", "node_id": self.node_id},
+            params={
+                "action": "nodes",
+                "node_id": self.node_id,
+            },
         )
         try:
             data = response.json()
@@ -507,8 +548,16 @@ class GatewayChannel(WritableEventChannel):
 
 
 __all__ = [
-    "BaseEventChannel", "ReadableEventChannel", "WritableEventChannel",
-    "ReadWriteEventChannel", "BuiltinChannel", "GatewayChannel", "KafkaChannel",
-    "RabbitMQChannel", "UnavailableMailboxChannel", "event_to_json",
-    "event_from_json", "encode_event",
+    "BaseEventChannel",
+    "ReadableEventChannel",
+    "WritableEventChannel",
+    "ReadWriteEventChannel",
+    "BuiltinChannel",
+    "GatewayChannel",
+    "KafkaChannel",
+    "RabbitMQChannel",
+    "UnavailableMailboxChannel",
+    "event_to_json",
+    "event_from_json",
+    "encode_event",
 ]
