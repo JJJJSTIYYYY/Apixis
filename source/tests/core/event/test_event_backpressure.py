@@ -4,13 +4,10 @@ import asyncio
 
 import pytest
 
-from apixis.core.event import get_event_registry
-
 from apixis.core.event import ApixEvent, EventType, subscribe, unsubscribe
-from apixis.core.event import event_loop, event_pipe
+from apixis.core.event import event_loop, event_pipe, factory
 from apixis.core.event.factory import get_handler_registry
 from apixis.core.graph import START, END, GraphManager
-from apixis.core.graph import node_graph
 
 
 MIN_BACKPRESSURE = 128
@@ -24,14 +21,14 @@ async def runtime(monkeypatch, request):
     monkeypatch.setattr(event_loop, "EVENT_LOOP_BACKPRESSURE", getattr(request, "param", 2))
     monkeypatch.setattr(event_loop, "BACKGROUND_HANDLER_BACKPRESSURE", 1)
     monkeypatch.setattr(event_loop, "SHOW_EVENT_DISPATCH", False)
+    # Inject one complete core so sync and async getters share the test runtime.
+    registry = factory.ApixEventRegistry()
     pipe = event_pipe.ApixEventPipe(remote_enabled=False)
-    loop = event_loop.ApixEventLoop(get_handler_registry(), pipe, get_event_registry())
-    async def start_runtime():
-        await pipe.start()
-        await loop.start()
-
-    monkeypatch.setattr(node_graph, "get_event_pipe", lambda: pipe)
-    await start_runtime()
+    handlers = factory.ApixHandlerRegistry(registry)
+    loop = event_loop.ApixEventLoop(handlers, pipe, registry)
+    core = factory.EventCore(registry, pipe, handlers, loop)
+    monkeypatch.setattr(factory, "_core", core)
+    await factory.start_core(core)
     try:
         yield pipe, loop
     finally:
@@ -41,8 +38,9 @@ async def runtime(monkeypatch, request):
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await pipe.clear()
-        for name in tuple(get_handler_registry().registry):
-            unsubscribe(name)
+        await pipe.stop()
+        for name in tuple(handlers.registry):
+            handlers.unregister_handler(name)
 
 
 @pytest.mark.parametrize("publication", ["post_event", "put", "put_nowait"])

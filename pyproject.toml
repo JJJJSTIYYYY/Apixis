@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apixis"
+dynamic = ["version"]
+description = "An event-driven graph orchestration core for asyncio applications."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0 AND MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+keywords = ["asyncio", "events", "graph", "workflow", "orchestration"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "aio-pika>=9.5.8",
+    "aiokafka>=0.12.0",
+    "httpx[socks]>=0.28.1",
+    "pyyaml>=6.0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.0.0",
+    "build>=1.2.2",
+    "twine>=6.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["source"]
+include = ["apixis", "apixis.*"]
+namespaces = false
+
+[tool.setuptools.dynamic]
+version = {attr = "apixis._version.__version__"}
+
+[tool.setuptools.package-data]
+apixis = ["py.typed"]
+"apixis.core.utils.snow" = ["README.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["source/tests"]
+addopts = "--import-mode=importlib"
+# Process-global runtime queues share one asyncio loop across tests.
+asyncio_mode = "auto"
+asyncio_default_test_loop_scope = "session"
+asyncio_default_fixture_loop_scope = "session"

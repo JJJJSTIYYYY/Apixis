@@ -2,9 +2,9 @@
 
 from apixis.core import *
 from apixis.core import __all__ as _core_exports
+from apixis._version import __version__
 
 
-# Global configuration settings for Apixis.
-VERSION = "0.0.1"
+VERSION = __version__
 
-__all__ = [*_core_exports, "VERSION"]
+__all__ = [*_core_exports, "VERSION", "__version__"]

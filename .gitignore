@@ -12,9 +12,13 @@ __pycache__/
 *.pyo
 *.pyd
 *.so
+*.egg-info/
+.coverage
+htmlcov/
 
 # virtual env
 .venv/
+.package-venv/
 venv/
 env/
 
@@ -48,6 +52,7 @@ pnpm-debug.log*
 # Runtime / Data
 .apix_data
 source/config.yaml
+config.yaml
 
 # logs
 logs/

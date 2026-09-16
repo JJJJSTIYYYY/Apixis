@@ -9,7 +9,7 @@ from apixis.core.event import get_handler, subscribe, unsubscribe
 from apixis.core.graph import END, GLOBALNS, START, GraphManager
 from apixis.core.graph.interrupter import interrupt, interrupted_hook
 from apixis.core.graph.utils.namespace import get_graph_interrupted_name
-from apixis.core.utils import BlockHookNotRegisteredError
+from apixis.core.utils import BlockHookNotRegisteredError, BlockNotResolvedError
 from apixis.core.utils.exception import GraphNodeError
 
 
@@ -46,11 +46,14 @@ async def test_missing_hook_fails_without_waiting_for_timeout(mode, namespace, t
 
 
 @pytest.mark.parametrize("registration", ["owned", "standalone_before", "standalone_after"])
-async def test_default_allows_hook_to_defer_response_until_external_resolution(registration):
+@pytest.mark.parametrize("accepted", [True, False])
+async def test_deferred_hook_must_accept_its_block(registration, accepted):
     blocks = asyncio.Queue()
     namespace = "deferred-review"
 
     async def capture(block):
+        if accepted:
+            block.accept()
         await blocks.put(block)
 
     async def review(state):
@@ -72,10 +75,17 @@ async def test_default_allows_hook_to_defer_response_until_external_resolution(r
             block = await blocks.get()
             # Allow the default handler to run after capture() has returned.
             await asyncio.sleep(0)
-            assert not block.done
-            assert not task.done()
-            block.resolve("approved")
-            assert await task == {"answer": "approved"}
+            assert block.accepted is accepted
+            if accepted:
+                assert not block.done
+                assert not task.done()
+                block.resolve("approved")
+                assert await task == {"answer": "approved"}
+            else:
+                with pytest.raises(BlockNotResolvedError, match=namespace):
+                    await task
+                assert block.done
+                assert context.status == "failed"
             await get_event_pipe().join()
         unsubscribe(capture.__name__)
         async with asyncio.timeout(1):
@@ -92,8 +102,9 @@ async def test_default_allows_hook_to_defer_response_until_external_resolution(r
 
 @pytest.mark.parametrize("subscription", ["exact", "wildcard"])
 @pytest.mark.parametrize("unregister_after_entry", [False, True])
-async def test_plain_observer_entry_allows_deferred_resolution(subscription, unregister_after_entry):
-    """Seen records actual core entry even when that subscriber later unregisters."""
+@pytest.mark.parametrize("accepted", [True, False])
+async def test_plain_observer_must_accept_block_for_deferred_resolution(subscription, unregister_after_entry, accepted):
+    """An observer must accept its block even when it unregisters after entry."""
     events = asyncio.Queue()
 
     async def review(state):
@@ -106,6 +117,8 @@ async def test_plain_observer_entry_allows_deferred_resolution(subscription, unr
 
     @subscribe(pattern, priority=10)
     async def observe(event):
+        if accepted:
+            event.context.accept()
         await events.put(event)
         if unregister_after_entry:
             unsubscribe(observe.__name__)
@@ -117,10 +130,16 @@ async def test_plain_observer_entry_allows_deferred_resolution(subscription, unr
             # Interruption dispatch finishes while the graph still awaits its Block.
             await asyncio.sleep(0)
             assert event.seen == [observe.__name__, event_name]
-            assert not event.context.done
-            assert not task.done()
-            event.context.resolve("approved")
-            assert await task == {"answer": "approved"}
+            assert event.context.accepted is accepted
+            if accepted:
+                assert not event.context.done
+                assert not task.done()
+                event.context.resolve("approved")
+                assert await task == {"answer": "approved"}
+            else:
+                with pytest.raises(BlockNotResolvedError, match=graph.namespace):
+                    await task
+                assert event.context.done
             await get_event_pipe().join()
     finally:
         if not task.done():

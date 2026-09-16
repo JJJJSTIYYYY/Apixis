@@ -12,6 +12,8 @@ pip install apixis
 - 异步运行时：`asyncio`
 - 推荐直接从 `apixis` 导入稳定公共接口。
 
+从源码开发、构建发行包和上传 PyPI 请参阅[打包与发布](./releasing.md)。
+
 ## API 导航
 
 | 模块 | 用途 |

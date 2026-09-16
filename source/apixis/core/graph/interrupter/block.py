@@ -33,7 +33,7 @@ class Block:
         return self._accepted
 
     def accept(self) -> None:
-        """Mark this interruption as accepted, allowing the graph to continue."""
+        """Claim deferred handling without resolving or resuming this interruption."""
         self._accepted = True
 
     @property

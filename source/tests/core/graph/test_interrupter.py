@@ -137,6 +137,8 @@ async def test_graph_pauses_and_resumes_at_multiple_breakpoints(namespace):
 
     @graph.add_interrupted_hook
     async def capture_review_block(block: Block) -> None:
+        # Claim responsibility before handing the block to an external consumer.
+        block.accept()
         await blocks.put(block)
 
     context = graph.create_context({})
@@ -223,6 +225,8 @@ async def test_external_block_cancel_aborts_graph_at_saved_snapshot():
 
     @graph.add_interrupted_hook
     async def capture_cancelled_block(block: Block) -> None:
+        # Claim responsibility before handing the block to an external consumer.
+        block.accept()
         await blocks.put(block)
 
     context = graph.create_context({"initial": True})
@@ -260,6 +264,8 @@ async def test_interrupt_timeout_resumes_graph_and_cancels_block():
 
     @graph.add_interrupted_hook
     async def capture_timed_block(block: Block) -> None:
+        # Claim responsibility before handing the block to an external consumer.
+        block.accept()
         await blocks.put(block)
 
     invocation = asyncio.create_task(graph.invoke({}))
@@ -287,6 +293,8 @@ async def test_node_timeout_is_not_swallowed_by_interrupt_cancellation():
 
     @graph.add_interrupted_hook
     async def capture_node_timeout_block(block: Block) -> None:
+        # Claim responsibility before handing the block to an external consumer.
+        block.accept()
         await blocks.put(block)
 
     invocation = asyncio.create_task(graph.invoke({}))

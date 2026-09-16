@@ -19,6 +19,22 @@ APIXIS provides two composable runtimes:
 pip install apixis
 ```
 
+To install a local checkout, run from the repository root:
+
+```bash
+python -m pip install .
+```
+
+For development and release tools:
+
+```bash
+python -m pip install -e ".[dev]"
+python -m pytest
+```
+
+With uv, use `uv sync --extra dev --locked` and `uv run --extra dev pytest`.
+See [the release guide](./docs/releasing.md) for building and publishing to PyPI.
+
 ## Quick start
 
 ```python
@@ -59,4 +75,5 @@ asyncio.run(main())
 
 ## License
 
-This project is intended to be distributed under the Apache License. Add the repository's license file to release artifacts before publishing.
+Licensed under the Apache License 2.0. See [LICENSE](./LICENSE).
+The bundled IdGenerator component is MIT licensed; see [third-party notices](./THIRD_PARTY_NOTICES.md).

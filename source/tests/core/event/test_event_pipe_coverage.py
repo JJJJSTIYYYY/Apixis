@@ -530,7 +530,9 @@ class TestApixEventPipeRemainingBranches:
         pipe._started = True
         with pytest.raises(RuntimeError, match="offline broadcast failed"):
             await pipe.stop()
-        assert pipe._started is True
+        assert pipe._started is False
+        # Cleanup completed despite the failed offline notification.
+        await pipe.stop()
 
     @pytest.mark.asyncio
     async def test_stop_raises_close_error(self):

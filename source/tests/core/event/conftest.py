@@ -1,25 +1,10 @@
-"""
-Shared fixtures and test utilities for event module tests.
+"""Shared fixtures and event test utilities for Python 3.12+."""
 
-NOTE: The project requires Python >= 3.12, but the sandbox has 3.10.
-This conftest patches typing.NotRequired for compatibility.
-"""
-
-import sys
-import typing
 from uuid import uuid4
 
 from apixis.core.event.base import ApixEvent, EventType, ApixEventHandler
 from apixis.core.event.factory import get_event_registry
 
-try:
-    from typing import NotRequired
-except ImportError:
-    from typing_extensions import NotRequired
-    typing.NotRequired = NotRequired
-    sys.modules["typing"].NotRequired = NotRequired
-
-# ---- Now safe to import apixis modules ----
 import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock

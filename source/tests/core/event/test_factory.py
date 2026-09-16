@@ -272,8 +272,8 @@ async def test_graph_invocation_starts_core_through_getters(fresh_core):
         graph.decompose()
 
 
-async def test_explicit_start_waits_for_in_progress_pipe_restart(fresh_core, monkeypatch):
-    """A running dispatcher does not make a partially reopened pipe ready."""
+async def test_explicit_start_returns_when_restart_has_signalled_started(fresh_core, monkeypatch):
+    """Startup is a signal, not a barrier for every ongoing startup task."""
     await start_core()
     core = factory._core
     await core.event_pipe.stop()
@@ -291,10 +291,12 @@ async def test_explicit_start_waits_for_in_progress_pipe_restart(fresh_core, mon
         get_event_pipe()
         await asyncio.wait_for(entered.wait(), 1)
         waiter = asyncio.create_task(start_core())
-        await asyncio.sleep(0)
-        assert not waiter.done()
-        release.set()
         await asyncio.wait_for(waiter, 1)
+        # The startup signal is sufficient to use the already-running core.
+        assert not release.is_set()
+        await core.event_pipe.put(event("factory.restart_signalled"))
+        await asyncio.wait_for(core.event_pipe.join(), 1)
+        assert "factory.restart_signalled" in core.event_registry.get_registered_events()
     finally:
         release.set()
         if waiter is not None:

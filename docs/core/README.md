@@ -1,6 +1,6 @@
 # Core API
 
-`apixis.core` 汇总导出 Event、Graph 和 Utils 的公共接口；顶层 `apixis` 再次导出同一组接口，并额外提供 `VERSION`。
+`apixis.core` 汇总导出 Event、Graph 和 Utils 的公共接口；顶层 `apixis` 再次导出同一组接口，并额外提供 `VERSION` 和 `__version__`（两者与发行包版本一致）。
 
 推荐应用代码直接使用：
 

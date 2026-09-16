@@ -1,32 +1,50 @@
-name: Run Tests
+name: Tests and distributions
 
 on:
   push:
-    branches:
-      - 'main'
+    branches: [main, master]
   pull_request:
-    branches:
-      - 'main'
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
-
-    defaults:
-      run:
-        working-directory: source
-
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13', '3.14']
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
+      - uses: astral-sh/setup-uv@v5
       - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Run pytest
-        run: uv run pytest
+        run: uv python install '${{ matrix.python-version }}'
+      - name: Install development dependencies
+        run: uv sync --extra dev --locked --python '${{ matrix.python-version }}'
+      - name: Run tests
+        run: uv run --no-sync pytest
+      - name: Build wheel and source distribution
+        run: uv run --no-sync python -m build
+      - name: Check distribution metadata
+        run: uv run --no-sync python -m twine check --strict dist/*
+      - name: Test installed wheel outside the checkout
+        shell: bash
+        run: |
+          uv venv --python '${{ matrix.python-version }}' .package-venv
+          wheels=(dist/*.whl)
+          uv pip install --python .package-venv/bin/python "${wheels[0]}[dev]"
+          .package-venv/bin/python -I scripts/smoke_test.py
+          .package-venv/bin/python -I -m pytest
+      - name: Test installation from the source distribution
+        shell: bash
+        run: |
+          uv pip install --python .package-venv/bin/python --reinstall-package apixis dist/*.tar.gz
+          .package-venv/bin/python -I scripts/smoke_test.py
+      - uses: actions/upload-artifact@v4
+        if: matrix.python-version == '3.12'
+        with:
+          name: distributions
+          path: dist/*

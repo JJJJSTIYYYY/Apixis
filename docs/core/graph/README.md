@@ -163,7 +163,7 @@ async def on_interrupted(block):
 ```
 
 如果图发送了 `Block` 但没有可执行的 interruption hook，默认 handler 会抛出 `BlockHookNotRegisteredError`，避免 invocation 永久挂起。
-同时若 interruption hook 执行异常且没有使用 block.accept() 接口标记 block 已被处理，默认 handler 会抛出 `BlockNotResolvedError`。
+如果 hook 正常返回后，`Block` 仍未完成且没有调用 `block.accept()`，默认 handler 会抛出 `BlockNotResolvedError`。需要暂存 Block、稍后由外部响应时，必须在 hook 返回前调用 `block.accept()`；它只声明接管，不会恢复图执行，仍需稍后调用 `resolve()`、`fail()` 或 `cancel()`。hook 自身抛出的异常会传播到等待中断的节点。
 
 `Block` 常用接口：
 
