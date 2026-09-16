@@ -162,19 +162,6 @@ unsubscribe("observe_job")
 - `is_registered(name)`：检查是否注册；
 - `get_unmatched_subscriptions(name)`：返回当前尚未观察到匹配事件名的订阅模式。
 
-## 等待某个事件
-
-```python
-from apixis import (
-    await_event
-)
-
-await await_event(event_name, point)
-```
-
-event_name 支持 glob 风格模式匹配，收到此事件后，会返回 event 对象的拷贝。
-point 是返回时间点，`on_received` 和 `on_processed` 分别表示事件开始被 handler 处理前和事件被所有 handler 处理完成后。
-
 ## Event registry
 
 `ApixEventRegistry` 只记录本地运行时实际观察到的精确事件名，不持有事件对象，也不参与 dispatch。
@@ -187,4 +174,4 @@ registry.clear()
 
 ## 死锁风险
 
-若一个事件 handler 依赖后续事件的上下文或处理结果，不推荐使用在前置事件的 handler 中等待一个 future，在后续事件的 handler 中 set_result，在并发量达到背压阈值时，容易由于前置事件 handler 被挂起、后续事件无法被处理而出现死锁。如有等待后续事件的需求，应使用 `await_event`。
+若一个事件 handler 依赖后续事件的上下文或处理结果，不推荐使用在前置事件的 handler 中等待一个 future，在后续事件的 handler 中 set_result，在并发量达到背压阈值时，容易由于前置事件 handler 被挂起、后续事件无法被处理而出现死锁。

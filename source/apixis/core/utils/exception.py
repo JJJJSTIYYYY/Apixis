@@ -46,6 +46,10 @@ class EventChannelUnavailableError(EventChannelError):
 
 class BlockHookNotRegisteredError(RuntimeError):
     """Raised when a graph emits a Block without a registered interruption hook."""
+
+
+class BlockNotResolvedError(RuntimeError):
+    """Raised when a graph emits a Block and not be resolved by any registered interruption hook."""
     
 
 class GraphNodeError(Exception):

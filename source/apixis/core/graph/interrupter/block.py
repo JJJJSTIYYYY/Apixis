@@ -3,13 +3,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class Block:
     run_id: str
     block_id: str
     namespace: str
     with_data: Any
 
+    _accepted: bool = field(default=False, init=False)
     _future: Future[Any] = field(repr=False)
     graph_id: str | None = None
 
@@ -25,6 +26,15 @@ class Block:
     def done(self) -> bool:
         """Return whether this interruption has already been completed."""
         return self._future.done()
+
+    @property
+    def accepted(self) -> bool:
+        """Return whether this interruption has already been accepted."""
+        return self._accepted
+
+    def accept(self) -> None:
+        """Mark this interruption as accepted, allowing the graph to continue."""
+        self._accepted = True
 
     @property
     def cancelled(self) -> bool:

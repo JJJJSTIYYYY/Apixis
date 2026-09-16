@@ -2,6 +2,7 @@
 
 from apixis.core.utils.exception import (
     BlockHookNotRegisteredError,
+    BlockNotResolvedError,
     EventChannelError,
     EventChannelPermissionError,
     EventChannelUnavailableError,
@@ -15,13 +16,10 @@ from apixis.core.utils.logger import (
     Logger,
     logger,
 )
-from apixis.core.utils.lifespan import (
-    auto_init,
-    resource_cleaner,
-)
 
 __all__ = [
     "BlockHookNotRegisteredError",
+    "BlockNotResolvedError",
     "EventChannelError",
     "EventChannelPermissionError",
     "EventChannelUnavailableError",
@@ -32,6 +30,4 @@ __all__ = [
     "InvalidNodeReturnsError",
     "Logger",
     "logger",
-    "auto_init",
-    "resource_cleaner",
 ]

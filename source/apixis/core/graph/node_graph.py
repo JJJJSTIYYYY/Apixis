@@ -20,6 +20,7 @@ from apixis.core.event import (
 )
 from apixis.core.utils.exception import (
     BlockHookNotRegisteredError,
+    BlockNotResolvedError,
     GraphNodeError,
     InvalidContextError,
 )
@@ -220,14 +221,19 @@ class NodeGraph:
             return
 
         async def require_interrupted_hook(event: ApixEvent) -> None:
-            block = event.context
+            block: Block = event.context
             if not self._is_active_block(block):
                 return
-            if not event.seen or event.seen == [event_name] or event.has_error:
+            if not event.seen or event.seen == [event_name]:
                 raise BlockHookNotRegisteredError(
                     f"Graph namespace `{self.namespace}` emitted a Block without a "
-                    "registered interruption hook or hooks failed. Register graph.add_interrupted_hook() "
+                    "registered interruption hook. Register graph.add_interrupted_hook() "
                     "or interrupted_hook(namespace=...) before calling interrupt()."
+                )
+            if not block.accepted and not block.done:
+                raise BlockNotResolvedError(
+                    f"Graph namespace `{self.namespace}` emitted a Block and not be resolved by any "
+                    "registered interruption hook."
                 )
 
         temp_hook.__name__ = event_name
