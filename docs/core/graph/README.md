@@ -1,517 +1,194 @@
-# Graph Runtime
+# Graph API
 
-`apixis.core.graph` 用事件系统驱动有向状态图。用户通过 `GraphManager` 声明节点和转移，编译得到 `NodeGraph`，再使用 `invoke()` 或 `stream()` 执行。
+Graph API 的主要入口是 `GraphManager`。它负责声明节点与边，`compile_graph()` 返回可执行的 `NodeGraph`。
 
-## 模块导入
-
-常用图类型、上下文访问函数和中断接口可以统一从 `apixis.core.graph` 导入；这些公开接口也由 `apixis.core` 和 `apixis` 导出。
+## 构建图
 
 ```python
-from apixis.core.graph import (
-    GraphManager,
-    GraphContextSnapshot,
-    get_graph_dispatch_name,
-    get_stream_writer,
-    interrupt,
-    interrupted_hook,
-)
-```
-
-`base.py` 保留基础类型、常量与注册表。拆出的工具函数可从 `apixis.core.graph.utils` 或 `apixis.core.graph` 导入：
-
-| 定义模块 | 函数 |
-| --- | --- |
-| `utils.namespace` | `acquire_namespace`、`release_namespace`、`validate_namespace`、`get_graph_namespace`、`get_graph_dispatch_name`、`get_graph_interrupted_name` |
-| `utils.state` | `copy_state`、`parse_state_schema` |
-| `utils.validate` | `validate_graph_definition` |
-
-模块内部直接从定义模块导入依赖；仅用于类型注解的 `NodeGraph` 导入放在 `TYPE_CHECKING` 分支中，避免工具模块反向加载图运行时。
-
-## 核心类型
-
-| 类型 | 用途 |
-| --- | --- |
-| `GraphManager` | 构建节点、边、条件与路由 |
-| `NodeGraph` | 编译后的可执行图 |
-| `Node` | 将普通同步或异步函数包装为节点 |
-| `ParallelNode` | 并发执行多个分支，并按声明顺序汇聚命令 |
-| `BaseNode` | 自定义节点基类，允许返回多个 `Command` |
-| `Command` | 提交状态更新并可选择一个或多个下一节点 |
-| `AutoMerge` | 标记字段使用 `__add__` 合并更新 |
-| `Reset` | 为单次更新绕过 `AutoMerge`，直接替换字段 |
-| `KeepRef` | 节点执行前复制状态时保留字段引用 |
-| `GraphContext` | 一次调用尝试的状态、生命周期和快照 |
-| `START` / `END` | 图的预定义入口与出口 |
-
-公开类型别名中，`NodeResult` 表示普通节点可返回的 `dict | Command`，`NodeFunction` 表示接收 state 并同步或异步返回 `NodeResult` 的 callable。专用 `BaseNode.execute()` 还可以返回 `list[Command]`。
-
-## 构建线性图
-
-```python
-from typing import TypedDict
-
-from apixis.core.graph import END, GraphManager, START
+from apixis import END, START, GraphManager
 
 
-class State(TypedDict, total=False):
-    value: int
-    result: int
-
-
-def double(state: State) -> dict:
-    return {"result": state["value"] * 2}
+def step(state: dict) -> dict:
+    return {"count": state.get("count", 0) + 1}
 
 
 graph = (
-    GraphManager(State)
-    .add_node(double)
-    .add_edge(START, "double")
-    .add_edge("double", END)
-    .compile_graph(using_namespace="double-flow")
-)
-
-result = await graph.invoke({"value": 21})
-assert result == {"value": 21, "result": 42}
-```
-
-从 `START` 出发的转移是必需的。普通节点若没有显式出边，会默认进入 `END`，因此上例最后一条 `add_edge()` 可以省略。
-
-## GraphManager
-
-### 创建 manager
-
-```python
-manager = GraphManager(state_schema=State)
-```
-
-`state_schema` 可选。编译时统一解析一次 `Annotated` 中的 `AutoMerge` 和 `KeepRef` 元数据，保存不可变规则供所有 context 使用；它不对字典执行运行时字段校验。context 不再单独配置 schema。
-
-### 添加节点
-
-```python
-manager.add_node(node_func, node_name=None, timeout=None)
-manager.add_nodes([first, second, third])
-```
-
-- `node_func` 可以是同步函数、异步函数或 `BaseNode` 实例。
-- 普通函数的默认节点名为 `func.__name__`。
-- `START` 和 `END` 是保留名称。
-- 同一 manager 中节点名必须唯一。
-- 新建普通节点时，`timeout=None` 或非正数表示不限制；数值须为有限的 int/float，bool 被拒绝。
-- 传入 `BaseNode` 时使用该对象自身的 `name`，忽略 `node_name`；`timeout=None` 保留对象原超时，显式非正数才清除限制。
-
-```python
-async def fetch(state: State) -> dict:
-    ...
-
-
-manager.add_node(fetch, timeout=10)
-manager.add_node(lambda state: {"ready": True}, "prepare")
-```
-
-### 添加直接边
-
-```python
-manager.add_edge("prepare", "fetch")
-```
-
-每个 source 只能由 manager 定义一条默认出边。需要多路选择时使用 router，或让节点返回 `goto=[...]` 的 `Command`。
-
-### 添加条件边
-
-```python
-def has_work(state: State) -> bool:
-    return bool(state.get("items"))
-
-
-manager.add_edge("prepare", "process", condition=has_work)
-```
-
-运行时会在 `prepare` 后插入一个内部条件节点：
-
-- 返回 `True`：进入 `process`。
-- 返回 `False`：直接进入 `END`。
-- 返回非 `bool`：调用失败并向 `invoke()` 或 `stream()` 传播 `TypeError`。
-- 条件函数可以是同步或异步函数。
-
-条件节点只是路由，不提交业务状态更新。
-
-### 添加 router
-
-```python
-def select_route(state: State) -> str | list[str]:
-    if state["priority"] > 5:
-        return ["fast", "audit"]
-    return "normal"
-
-
-manager.add_router(
-    "prepare",
-    ["fast", "normal", "audit", END],
-    select_route,
-)
-```
-
-router 可以返回：
-
-- 声明在 `r_nodes` 中的字符串或字符串列表；
-- `Command(goto="...")` 或 `Command(goto=[...])`；
-- `{"goto": "..."}` 或 `{"goto": [...]}`。
-
-每个返回目标都必须已经列入 `r_nodes`。空列表表示不调度后续节点并结束图。没有显式 `goto` 的 `Command`、不含 `goto` 的 mapping，或未知目标都会导致 `ValueError`。
-
-router 自身生成一个内部节点。内部条件和 router 节点也会占用一次执行 step。
-
-router 返回的 `Command.update` 或 mapping 中除 `goto` 外的字段会被忽略，路由节点生成的 Command 不携带业务更新。`add_edge(..., condition=..., timeout=...)` 和 `add_router(..., timeout=...)` 的 timeout 用于生成的内部节点；无 condition 的直接边不执行函数，也不使用 timeout。
-
-## 节点返回值
-
-普通函数节点必须返回以下之一：
-
-```python
-{"key": "value"}
-
-Command(update={"key": "value"})
-
-Command(update={"key": "value"}, goto="next_node")
-
-Command(goto=["fetch_profile", "fetch_memory"])
-
-Command(goto=[])  # Do not schedule another node; finish the graph
-
-Command(goto=END)  # Explicitly route to END
-```
-
-空字典是有效更新。普通 `Node` 不接受 `None` 或 `list[Command]`。
-
-一个容易混淆的规则是：普通节点返回的 mapping 永远被当作状态更新，即使它含有名为 `goto` 的 key：
-
-```python
-def node(state: dict) -> dict:
-    return {"goto": "this_is_state_data"}
-```
-
-只有真正的 `Command` 可以从普通节点选择下一节点。mapping 形式的 `{"goto": ...}` 仅由 `add_router()` 的 router 函数特殊识别。
-
-### 默认路由与显式路由
-
-- `goto=None`（默认值）：使用 manager 为当前节点定义的默认出边；若没有则进入 `END`。
-- `goto=END`：显式进入 `END`。
-- `goto="node"`：覆盖默认边。
-- `goto=["a", "b"]`：按列表顺序启动一个图级并发批次。
-- `goto=[]`：不进入任何后续节点，直接结束。
-- 未知节点名：运行失败并传播 `ValueError`。
-
-## 图级并发调度
-
-`Command.goto` 或 router 返回字符串列表时，列表中的节点属于同一个调度批次：
-
-```python
-def fan_out(state: State) -> Command:
-    return Command(goto=["load_profile", "load_memory", "load_policy"])
-```
-
-图级批次遵循以下规则：
-
-1. 节点按 `goto` 列表顺序创建 task，并发执行。
-2. 每个节点接收当前 state 的独立 `copy_state` 副本；普通字段的修改不影响同批其他节点，`KeepRef` 字段仍共享引用。
-3. 所有节点共享同一个 `GraphContext`。context 在节点执行期间按约定只读，可通过 `get_graph_context()` 获取。
-4. 结果按节点启动顺序收集，与完成顺序无关。节点返回 `list[Command]` 时会在其原位置展平。
-5. 所有节点都成功完成后，运行时按节点顺序、再按节点内部 Command 顺序直接更新 `GraphContext.state`。
-6. 同批不同节点更新同一个普通字段会失败；`AutoMerge` 字段则按上述确定顺序调用 `__add__`。
-7. 任一节点失败或超时，尚未完成的同批 task 会被取消并等待回收，且本批所有 Command 都不会应用。
-
-路由也按相同的 Command 顺序收集。每条 `goto=None` 独立解析为其来源节点的默认边，嵌套的路由列表会被展平，重复目标采用稳定去重。只要仍有普通目标，`END` 就会被过滤；没有普通目标时进入 `END`。
-
-每批执行前只拍摄一次快照，`target_node_name` 保存有序目标列表。一批成功提交后 `steps` 加一。应用 Command 时不创建临时 state：如果后续 Command 因普通键冲突或合并错误而失败，失败 context 的 live state 可能包含较早 Command 的更新；恢复会从批次前快照重新执行整批，因此不会继承这些部分更新。
-
-## 并行分支与确定性汇聚
-
-`ParallelNode` 将多个普通节点函数作为同一个图节点的并行分支：
-
-```python
-from typing import Annotated, Any, TypedDict
-
-from apixis.core.graph import (
-    AutoMerge,
-    GraphManager,
-    ParallelNode,
-    START,
-)
-
-
-class AgentState(TypedDict):
-    user_id: str
-    context: Annotated[list[Any], AutoMerge()]
-
-
-async def load_profile(state: AgentState) -> dict:
-    profile = await fetch_profile(state["user_id"])
-    return {"context": [profile]}
-
-
-async def load_memory(state: AgentState) -> dict:
-    memory = await fetch_memory(state["user_id"])
-    return {"context": [memory]}
-
-
-prepare_context = ParallelNode(
-    [load_profile, load_memory],
-    name="prepare_context",
-)
-
-graph = (
-    GraphManager(AgentState)
-    .add_node(prepare_context)
-    .add_edge(START, prepare_context.name)
+    GraphManager()
+    .add_node(step)
+    .add_edge(START, "step")
+    .add_edge("step", END)
     .compile_graph()
 )
 ```
 
-执行与汇聚语义：
+### `GraphManager(state_schema=None)`
 
-1. 所有分支被创建为独立 asyncio task，并发执行。
-2. 每个分支必须返回一个 mapping 或 `Command`，不能返回嵌套的 `list[Command]`。
-3. 所有分支完成后，结果始终按分支声明顺序组成 `list[Command]`，与完成先后无关。
-4. `NodeGraph` 按该顺序逐个提交 command，因此 `AutoMerge` 的累积顺序和普通字段的覆盖结果是确定的。
-5. 每个分支的 route 都会按声明顺序收集并展平；未指定时使用 `ParallelNode` 自身的默认边。
-6. 任一分支失败，尚未完成的兄弟任务会被取消并等待回收，然后原始异常传播给图调用方。
-7. 节点 timeout 或外部任务取消同样会清理所有未完成分支。
+可选 `state_schema` 用于声明 `AutoMerge` / `KeepRef` 等 state 策略。
 
-所有分支接收同一份节点级 state 快照，而不是各自的 deepcopy。分支应把 state 当作只读输入，并通过返回值提交更新。直接并发修改普通嵌套对象会造成分支间干扰；并发修改 `KeepRef` 对象还可能影响调用方持有的共享资源，因此必须由资源自身提供并发控制。
+### `add_node(node_func, node_name=None, *, timeout=None)`
 
-`ParallelNode` 表达的是“一个图节点内部的 fan-out/fan-in”：分支具有并发执行和统一汇聚，但没有各自独立的图边或快照。分支可各自调用 `interrupt()` 创建不同 Block，它们共享图 context、run id、namespace 和批次快照。图级并发则把多个已注册节点组成批次，每个节点都有独立 state 副本和自己的默认边。
+注册同步/异步函数或 `BaseNode`。普通函数默认使用 `__name__` 作为节点名。
 
-二者可以组合：`goto=["prepare_context", "audit"]` 可以让一个 `ParallelNode` 与普通节点并发。此时 `ParallelNode` 整体接收一个独立于 `audit` 的 state 副本，而它的内部所有分支仍共享该副本。冲突检测以图节点为边界：同一个 `ParallelNode` 返回的多条 Command 可以依次覆盖普通键；若它和同批 `audit` 都更新同一个普通键，则批次失败。
+### `add_nodes(node_list)`
 
-## 自定义 BaseNode
+批量注册节点。
 
-普通 `Node` 一次只返回一个 `Command`。除通用的 `ParallelNode` 外，工具节点等需要自行生成多份命令的组件也可以继承 `BaseNode`：
+### `add_edge(l_node, r_node, condition=None, *, timeout=None)`
 
-```python
-from apixis.core.graph import BaseNode, Command
+添加直接边。传入 `condition` 时，会插入一个条件节点；条件函数必须返回 `bool`，`True` 路由至 `r_node`，`False` 路由至 `END`。
 
+### `add_router(l_node, r_nodes, router, *, timeout=None)`
 
-class BatchNode(BaseNode):
-    def __init__(self, name: str = "batch") -> None:
-        self.name = name
+添加路由节点。router 可返回单个目标名、目标名列表、`Command(goto=...)`，或包含 `goto` 的 mapping。目标必须来自 `r_nodes`。
 
-    async def execute(self, state: dict) -> list[Command]:
-        return [
-            Command(update={"first": True}),
-            Command(update={"second": True}, goto="done"),
-        ]
-```
+### `compile_graph(using_namespace=None, exist_ok=False)`
 
-命令按原顺序逐个提交；后一条命令看到前一条已经提交的状态。每条命令的 route 都会按顺序进入下一批路由集合。空列表等价于一个空 `Command`。
+编译为 `NodeGraph`。图必须存在 `START` 的出边。
 
-## 编译与命名空间
+- `using_namespace=None` 或 `""`：自动生成 namespace；
+- `GLOBALNS`：显式使用全局命名域；
+- `exist_ok=False`：namespace 已占用时抛异常；
+- `exist_ok=True`：释放旧图并由新图接管。
+
+## 执行
+
+### `await graph.invoke(state=None, graph_context=None)`
+
+两种调用方式二选一：
 
 ```python
-graph = manager.compile_graph(
-    using_namespace="agent-runtime",
-    exist_ok=False,
-)
+result = await graph.invoke({"value": 1})
 ```
 
-命名空间用于定位当前编译图和隔离事件路由；运行上下文归属于具体图实例：
-
-- `None` 或空字符串会使用共享雪花生成器的 `next_id()` 生成字符串命名空间，调用方无需手动命名。当前 `id_generator.py` 固定使用 worker_id=23，因此不能仅凭这一配置保证多个独立进程之间的唯一性。
-- 需要使用全局命名域时，显式传入模块导出的 `GLOBALNS` 常量。
-- 图命名空间不能包含 glob 字符 `*`、`?`、`[`、`]`，获取命名空间时会抛出 `ValueError`。
-- 同一时刻一个命名空间只能由一个已编译图占用。
-- `exist_ok=False` 时发生冲突会抛出 `ValueError`。
-- `exist_ok=True` 会先通过 namespace 获取接口分解旧图并接管 namespace，再注册新 dispatch handler。监听器注册失败时释放新图资源并抛出原始异常，不恢复已分解的旧图。
-- 旧图有活跃调用时，获取 namespace 的同步过程中会通过 `decompose(force=True)` 中止旧图 context 并注销旧监听器，然后才注册新监听器。
-
-图的内部调度事件会使用 `using_namespace` 限定作用域。每个 `NodeGraph` 注册一个通用 dispatch handler，其处理器名和订阅事件名均为 `graph.dispatch_name`。路由时，运行时先把目标节点写入 `GraphContext.target_node_name`，再发布 namespace 隔离后的 `GRAPH_DISPATCH` 事件；通用 handler 根据 `target_node_name` 执行对应节点。不同 namespace 因此拥有不同的 dispatch 事件处理链，事件消费同时检查 context.graph_id 是否为当前图 ID，以及 context 是否由当前图管理，因此 namespace 重用不会转移旧 context。
-
-图还默认注册 `get_graph_interrupted_name(graph.namespace)` 对应的中断处理器，优先级为 `0`：当本次 `event.seen` 只有默认处理器自身时，以 `BlockHookNotRegisteredError` 结束等待。判断依据是核心函数的实际执行记录，普通订阅者执行过也算；仅注册但尚未执行的 hook 不算。默认处理器始终提供错误、accepted 和取消收尾。用户通常通过 `graph.add_interrupted_hook()` 或 `@interrupted_hook(...)` 注册处理钩子；详见 [图中断与恢复](interrupter/README.md)。
-
-模块导出的 `namespace_set` 可用于只读诊断当前被占用的 namespace。不要直接增删其中的值；正常释放必须经过 `graph.decompose()`，以同时清理图索引和事件处理器。
-
-`namespace_set` 是底层字典的动态 keys 视图，已取得的视图也会反映后续注册和释放。
-
-### 直接构造与自动快照
-
-`NodeGraph(nodes, default_gotos, *, max_steps=1024, state_schema=None, using_namespace=None, no_snapshot=False, exist_ok=False)` 是底层构造接口。`nodes` 的键定义图内名称，值须为 `BaseNode`，键可以不同于对象自身的 `name`。默认边必须包含 START 的出边；不能以 START 为目标或以 END 为来源，其他端点须已定义。允许环及没有出边的普通节点。
-
-`validate_graph_definition(nodes, gotos)` 可单独执行上述定义校验。编译会复制节点映射和边映射，但复用其中的节点对象；之后修改某个节点对象的 timeout 等属性可能影响复用它的图。
-
-`no_snapshot=True` 只关闭自动快照。此时 abort 没有历史可用时返回当前 live state 的复制结果，也无法凭空恢复历史；手动快照仍可创建。`GraphManager.compile_graph()` 当前不提供 no_snapshot 参数，需要时直接构造 NodeGraph。
-
-## invoke()
+或：
 
 ```python
-result = await graph.invoke(initial_state, graph_context=None)
+context = graph.create_context({"value": 1})
+result = await graph.invoke(graph_context=context)
 ```
 
-行为：
+不能同时传 `state` 和 `graph_context`。
 
-- `initial_state` 必须是 `dict`。
-- 初始状态在创建 context 时复制，普通嵌套值不会修改调用方输入。
-- 返回最终已提交状态的副本。
-- 节点异常、超时、非法返回或非法路由会由 await 抛给调用方。
-- 保留 context 时先调用 `graph.create_context(initial_state)`，再调用 `graph.invoke(graph_context=context)`；此时不再传 state。
-- `graph.restore_context(snapshot, version=-1)` 只恢复本图实例的快照，详见 [context 文档](./context/README.md)。
-
-同一个 `NodeGraph` 可以并发 `invoke()`；每次调用使用独立 `GraphContext`、run id 和完成 Future。一次调用的并发节点共享该调用的 context，但不会看到其他调用的 context 或普通 state。
-
-## stream()
+## Stream
 
 ```python
-async for chunk in graph.stream(initial_state, graph_context=None):
-    print(chunk)
+async for chunk in graph.stream({"value": 1}):
+    ...
 ```
 
-节点使用 `get_stream_writer()` 发出自定义对象：
+节点内部可通过：
 
 ```python
-from apixis.core.graph.context import get_stream_writer
+from apixis import get_stream_writer
 
-
-async def generate(state: dict) -> dict:
-    writer = get_stream_writer()
-    writer({"type": "start"})
-    writer.write({"type": "token", "text": "Hello"})
-    return {"done": True}
+writer = get_stream_writer()
+writer.write({"progress": 0.5})
 ```
 
-流按写入顺序产生任意 Python 值。图失败时，已经排队的 chunk 会先被消费，然后原始异常由 async iterator 抛出。
+向图外实时发送数据。
 
-关闭 stream 异步生成器时，清理逻辑会取消尚未完成的图执行等待任务并移除 context。单独 `break` 不保证立即关闭生成器；需要及时清理时使用 `aclosing`：
+## `GraphContext`
+
+推荐通过图创建，而不是直接实例化：
 
 ```python
-from contextlib import aclosing
-
-async with aclosing(graph.stream(initial_state)) as chunks:
-    async for chunk in chunks:
-        print(chunk)
-        break
+context = graph.create_context(initial_state)
 ```
 
-事件分发中的节点可能继续运行，但在 context 不再 active 后，其 Command 不会提交，也不会发布下一跳。这与节点自身的超时取消不同。
+常用属性：
 
-## 最大步数
+- `graph_id`
+- `status`: `pending | running | failed | aborted | finished`
+- `state`
+- `target_node_name`
+- `steps`
+- `is_consumed`
+- `is_bound`
+- `is_active`
 
-默认最大步数为 1024：
+### 快照
 
 ```python
-graph.set_max_steps(100)
+context.take_a_snapshot()
+latest = context.get_snapshot()
+all_snapshots = context.get_all_snapshots()
 ```
 
-每个普通、内部或图级并发批次成功提交命令后，step 加一；一个批次无论包含多少节点都只增加一次。达到上限后，仍可通过 `END` 或空目标列表正常结束；若继续路由到普通节点或并发批次，则在发布下一跳事件前抛出 `RecursionError`，后续节点不会执行。该限制用于阻止未受控循环，恢复快照后也会继续使用已记录的步数。
-
-`set_max_steps()` 返回图自身，可链式调用；当前仅保存传入值，不做类型或正数校验，调用方应传入正整数。
-
-## 超时
+恢复由图负责：
 
 ```python
-manager.add_node(slow_node, timeout=2.5)
+restored = graph.restore_context(context)
+restored = graph.restore_context(snapshot)
+restored = graph.restore_context(snapshot_list, version=-1)
 ```
 
-- 超时只包围节点 `execute()`。
-- 运行时会取消节点协程，并抛出包含节点名和秒数的 `TimeoutError`。
-- 节点自身主动抛出的 `TimeoutError` 不会被错误标记为运行时 deadline。
-- `None`、`0` 和负数表示不限制。
+恢复结果属于同一个 `NodeGraph`，不能跨图使用。
 
-普通同步函数直接在事件循环线程内调用，没有自动转移到线程池；其阻塞代码会阻塞事件循环，协作式 asyncio 超时无法在阻塞期间强行中断它。`Node.execute()` / `ParallelNode.execute()` 的直接调用也不会自行应用节点 timeout，该限时由 NodeGraph 执行层施加。
-
-## 插件观察图调度事件
-
-`graph.dispatch_name` 是图的统一调度名称，同时用作事件名和图处理器 handler 名。插件可以直接用它订阅事件，也可以在 `between_handlers` 中用它指定相对执行位置，无需查询注册表或拼接名称。
+## Abort
 
 ```python
-from apixis.core.event import ApixEvent, subscribe
-
-
-@subscribe(
-    graph.dispatch_name,
-    between_handlers=(None, graph.dispatch_name),
-)
-async def before_graph_dispatch(event: ApixEvent) -> None:
-    print("Before graph dispatch", event.context.state)
-
-
-@subscribe(
-    graph.dispatch_name,
-    between_handlers=(graph.dispatch_name, None),
-)
-async def after_graph_dispatch(event: ApixEvent) -> None:
-    print("After graph dispatch", event.context.state)
+await graph.abort(context)
+# or
+context.abort()
 ```
 
-这些插件会在每次图调度时执行，不是整次 `invoke()` 的开始和结束回调。相对定位需要先编译图，让对应的图处理器完成注册。插件仍由事件系统管理，使用后可通过 `unsubscribe(插件函数.__name__)` 清理。
+abort 使用最近一次 checkpoint 作为返回边界。已经开始执行的节点可能继续完成自身协程，但其结果不会再提交到已中止 invocation。
 
-如果插件只有 namespace，可以用同一个公开函数得到调度名称，也可在编译图之前按优先级订阅：
+## Interrupt / Block
+
+节点内：
 
 ```python
-from apixis.core.graph import get_graph_dispatch_name
+from apixis import interrupt
 
-
-dispatch_name = get_graph_dispatch_name("agent-runtime")
-
-
-@subscribe(dispatch_name, priority=20)
-async def observe_graph_dispatch(event: ApixEvent) -> None:
-    print(event.context.state)
+answer = await interrupt(data={"question": "continue?"})
 ```
 
-- `get_graph_dispatch_name()`、传入 `None`、`""` 或 `"<global>"` 均选择全局图。
-- `GLOBALNS` 是全局命名域的公开常量；编译全局图时应传入 `compile_graph(using_namespace=GLOBALNS)`。
-- `compile_graph()` 中的空命名空间与这里的语义不同：前者生成唯一 namespace，后者仍用空值表示全局命名域。
-- `get_graph_dispatch_name(graph)` 接受图实例，返回与 `graph.dispatch_name` 相同的名称；也支持 `namespace_or_graph=graph` 关键字形式。
-- `get_graph_dispatch_name("*")` 返回匹配所有图（包括全局图）的订阅模式；该模式不能作为 `between_handlers` 的具体处理器名（因为其要求精确 handler 名）。
-- `missing_ok=False` 要求具体 namespace 已被编译图占用；默认允许提前生成名称。
-- 图自身的 handler 使用默认优先级 `1`，更高优先级的前台插件会先执行。
-- `GRAPH_DISPATCH` 是统一名称的基础常量；插件通常只需使用图属性或上述函数。
+为图注册处理器：
 
-图内置 dispatch handler 注册了错误、accepted 与取消通知：
+```python
+@graph.add_interrupted_hook
+async def on_interrupted(block):
+    block.resolve("yes")
+```
 
-- 前置前台插件抛出未捕获异常或超时：本次调用进入 `failed`，`invoke()` / `stream()` 抛出 `GraphNodeError`，其 `errors` 为前置 handler 的错误记录。
-- 前置插件调用 `event.accept()`：本次调用进入 `aborted`，按现有中止规则使用最新已保存快照结束；stream 会先产出已排队的 chunk。
-- 两种状态同时存在时，错误优先，已失败的 context 不会再次中止。
-- 后台插件的未捕获异常只写日志，不影响图的核心分发。
-- 图分发函数或 accepted 通知自身异常由 `on_error` 以原始异常结束调用，不依赖 `on_has_error`。
-- 前台插件、节点或图分发传播 `CancelledError` 时，事件处理器先记录取消错误并重新抛出，再通过事件循环的 `on_cancelled` 通知结束仍活跃的调用。context 状态进入 `aborted`，completion 被取消，`invoke()` / `stream()` 向调用方抛出 `CancelledError`；stream 先产出已排队的 chunk。已完成、失败或中止的结果不会被后续取消通知覆盖。
-- 后台插件取消仅执行该插件自身的取消清理，不会取消图调用。`abort()` 和 `Block.cancel()` 仍按既有语义正常返回快照，不等同于运行时取消。
+也可以按 namespace 注册：
 
-这里需要注意：
+```python
+from apixis import interrupted_hook
 
-- `event.event_name` 表示 namespace 隔离后的**通用调度事件名**，不再表示具体节点。
-- `event.context.target_node_name` 表示本次 dispatch 要执行的目标，可以是 `START`、`END`、普通节点名或有序节点名列表。
-- 如果插件只关心某些节点，应订阅一次 dispatch 事件，再根据 `target_node_name` 过滤，而不是为节点名注册事件订阅。
+@interrupted_hook(graph.namespace)
+async def on_interrupted(block):
+    block.resolve("yes")
+```
 
-这种结构将“事件隔离”和“节点路由”拆开：namespace 负责隔离不同图的 dispatch handler，`target_node_name` 负责描述图内部的执行目标。
+如果图发送了 `Block` 但没有可执行的 interruption hook，默认 handler 会抛出 `BlockHookNotRegisteredError`，避免 invocation 永久挂起。
+同时若 interruption hook 执行异常且没有使用 block.accept() 接口标记 block 已被处理，默认 handler 会抛出 `BlockNotResolvedError`。
 
-## 分解图
+`Block` 常用接口：
+
+```python
+block.resolve(value) # 向图内 interrupt 中断处回传结果
+block.fail(error) # 向图内 interrupt 中断处回传 error 并中断图的后续调度
+block.cancel() # 仅中断图的后续调度
+block.accept() # 标记 block 已被处理，可用于 block 暂存后的异步处理逻辑
+```
+
+## 生命周期
+
+编译后的图持有 namespace 和 event handler 注册。使用结束后调用：
 
 ```python
 graph.decompose()
 ```
 
-分解会：
+`decompose(force=True)` 会中止未完成 context 并释放 handler / namespace；`force=False` 在仍有未完成 context 时抛异常。
 
-- 注销图的通用 dispatch listener；
-- 注销图默认注册的中断处理器；
-- 注销通过 `graph.add_interrupted_hook` 注册的钩子；
-- 释放命名空间；
-- 使图拒绝新的 `invoke()`、`stream()`、`abort()` 等业务操作。
-
-`decompose(force=True)` 默认强制中止 pending/running context 后释放注册；`force=False` 在存在未结束 context 时拒绝且保持原状。两种模式均幂等。
-
-## 使用上下文管理协议自动管理图的生命周期
+### 使用上下文管理器自动管理生命周期
 
 ```python
 with graph:
-    pass
+    await graph.invoke({...})
 ```
 
-上下文管理器退出后，graph会自动执行清理，适用于graph被一次性调用的场景。
-上下文管理器退出使用强制分解，会中止尚未结束的 context。希望等待调用自然结束时，应先 await 它们，再退出图的作用域。
-
-## 继续阅读
-
-- [状态模型、Command 与复制语义](./state.md)
-- [GraphContext、快照、恢复与流式上下文](./context/README.md)
-- [图中断与恢复控制](./interrupter/README.md)
+上下文管理器退出时自动分解图。

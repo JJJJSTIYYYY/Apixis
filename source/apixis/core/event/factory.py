@@ -51,7 +51,9 @@ def _get_core() -> EventCore:
 
 
 async def start_core(core: EventCore | None = None) -> None:
-    """Construct once and ensure both services have started before returning.
+    """Construct once but not ensure both services have started before returning.
+    This method only publishes the start signal. The upper-layer interface is
+    unaffected by whether the core's consumers have started.
 
     Concurrent calls share the same startup lock. Failed or cancelled startup
     propagates to the caller; a later call retries using the same components.

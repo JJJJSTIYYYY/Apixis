@@ -380,7 +380,6 @@ class ApixEventPipe:
 
         errors.extend(await self._close_channels())
         if errors:
-            self._started = True
             raise errors[0]
 
 

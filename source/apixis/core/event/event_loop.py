@@ -68,7 +68,6 @@ class ApixEventLoop:
             self._started = True
             logger.info("Worker started.")
         except Exception:
-            self._started = False
             raise
 
     async def stop(self) -> None:
