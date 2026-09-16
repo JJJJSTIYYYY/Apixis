@@ -11,6 +11,12 @@ requires-python = ">=3.12"
 license = "Apache-2.0 AND MIT"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 keywords = ["asyncio", "events", "graph", "workflow", "orchestration"]
+authors = [
+    { name = "JJJJSTIYYYY", email = "wavejustiy@gmail.com" },
+]
+maintainers = [
+    { name = "JJJJSTIYYYY", email = "wavejustiy@gmail.com" },
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",
@@ -37,6 +43,14 @@ dev = [
     "build>=1.2.2",
     "twine>=6.1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/JJJJSTIYYYY/Apixis"
+Repository = "https://github.com/JJJJSTIYYYY/Apixis.git"
+Source = "https://github.com/JJJJSTIYYYY/Apixis"
+Documentation = "https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/README.md"
+Issues = "https://github.com/JJJJSTIYYYY/Apixis/issues"
+Changelog = "https://github.com/JJJJSTIYYYY/Apixis/releases"
 
 [tool.setuptools.packages.find]
 where = ["source"]
