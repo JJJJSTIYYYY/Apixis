@@ -569,8 +569,8 @@ class NodeGraph:
                 return
 
             next_node = self.apply_command(
-                results[0] if isinstance(node_name, str) else results,
-                node_name,
+                results,
+                normalized_node_names,
                 context,
             )
 
@@ -588,6 +588,9 @@ class NodeGraph:
     ) -> str | list[str]:
         """Apply a completed batch in order and collect its ordered routes.
 
+        A string node name takes one Command or list[Command]. A list of node
+        names takes one such result per node, even for a singleton batch.
+
         The checkpoint taken before node execution is the rollback boundary.
         Commands therefore update the live context state directly. If applying
         a later command fails, recovery starts from that checkpoint rather than
@@ -603,8 +606,10 @@ class NodeGraph:
                 "GraphContext belongs to a different graph or is not managed by this graph."
             )
         normalized_node_names = self._normalise_targets(node_name)
+        # Adapt single-node calls once; internally every batch has one result
+        # per source node, independently of the number of nodes or commands.
         command_groups = self._normalise_command_groups(
-            command,
+            [command] if isinstance(node_name, str) else command,
             normalized_node_names,
         )
 
@@ -666,23 +671,14 @@ class NodeGraph:
 
     @staticmethod
     def _normalise_command_groups(
-        command: Command | list[Command] | list[Command | list[Command]],
+        results: object,
         normalized_node_names: list[str],
     ) -> list[list[Command]]:
-        """Normalise results without losing their source-node boundaries."""
-        if len(normalized_node_names) == 1:
-            if isinstance(command, Command):
-                return [[command]]
-            if isinstance(command, list) and all(
-                isinstance(item, Command) for item in command
-            ):
-                return [command or [Command()]]
-            raise TypeError("Node.execute must return a Command or list[Command].")
-
-        if not isinstance(command, list) or len(command) != len(normalized_node_names):
+        """Validate one result per source node and normalise each command group."""
+        if not isinstance(results, list) or len(results) != len(normalized_node_names):
             raise TypeError("A concurrent batch must return one result per node.")
         groups: list[list[Command]] = []
-        for result in command:
+        for result in results:
             if isinstance(result, Command):
                 groups.append([result])
             elif isinstance(result, list) and all(

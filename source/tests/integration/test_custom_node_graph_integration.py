@@ -11,6 +11,7 @@ from apixis.core.graph import (
     BaseNode,
     Command,
     GraphManager,
+    Node,
     NodeGraph,
     ParallelNode,
 )
@@ -37,6 +38,50 @@ class CommandBatchNode(BaseNode):
 
     async def execute(self, state: dict) -> list[Command]:
         return self.commands
+
+
+@pytest.mark.parametrize("list_target", [False, True], ids=["string", "singleton-list"])
+@pytest.mark.parametrize("node_kind", ["ordinary", "parallel", "batch", "empty-batch"])
+async def test_explicit_context_target_preserves_node_result_groups(list_target, node_kind):
+    """Explicit singleton batches preserve commands, defaults, and update order."""
+    commands = [
+        Command(update={"audit": ["first"], "winner": "first"}),
+        Command(update={"audit": ["second"], "winner": "second"}),
+    ]
+    if node_kind == "ordinary":
+        node = Node(lambda state: commands[0], name="work")
+        expected_audit, expected_winner = ["first"], "first"
+    elif node_kind == "parallel":
+        node = ParallelNode(
+            [lambda state: commands[0], lambda state: commands[1]], name="work"
+        )
+        expected_audit, expected_winner = ["first", "second"], "second"
+    else:
+        node = CommandBatchNode(commands if node_kind == "batch" else [], name="work")
+        expected_audit = ["first", "second"] if node_kind == "batch" else []
+        expected_winner = "second" if node_kind == "batch" else "initial"
+
+    def observe(state: dict) -> dict:
+        return {"observed": {"audit": state["audit"], "winner": state["winner"]}}
+
+    graph = (
+        GraphManager(WorkflowState)
+        .add_nodes([node, observe])
+        .add_edge(START, "work")
+        .add_edge("work", "observe")
+        .compile_graph()
+    )
+    context = graph.create_context({"audit": [], "winner": "initial"})
+    context.target_node_name = ["work"] if list_target else "work"
+
+    result = await asyncio.wait_for(graph.invoke(graph_context=context), timeout=1)
+
+    assert result == {
+        "audit": expected_audit,
+        "winner": expected_winner,
+        "observed": {"audit": expected_audit, "winner": expected_winner},
+    }
+    assert context.steps == 2
 
 
 async def test_concurrent_branches_are_applied_in_declaration_order():

@@ -255,6 +255,57 @@ def test_apply_command_treats_empty_command_list_as_empty_command():
     assert next_node == END
 
 
+@pytest.mark.parametrize(
+    "result",
+    [
+        Command(update={"total": 3}),
+        [Command(update={"total": 1}), Command(update={"total": 2})],
+    ],
+    ids=["command", "command-list"],
+)
+def test_apply_command_singleton_batch_keeps_one_node_result(result):
+    """A list target takes one result per node, including a multi-command result."""
+    graph = NodeGraph({}, {START: END}, state_schema=AutoMergeState)
+    context = graph.create_context({"total": 0})
+
+    assert graph.apply_command([result], [START], context) == END
+    assert context.state == {"total": 3}
+
+
+def test_apply_command_singleton_empty_result_uses_default_edge():
+    """An empty result still belongs to its source node and follows its edge."""
+    graph = NodeGraph({"after": Node(lambda state: {})}, {START: "after"})
+    context = graph.create_context({"value": 1})
+
+    assert graph.apply_command([[]], [START], context) == "after"
+    assert context.state == {"value": 1}
+
+
+@pytest.mark.parametrize("results", [Command(), [], [Command(), Command()]])
+def test_apply_command_rejects_singleton_batch_result_count_mismatch(results):
+    """A singleton batch requires exactly one result before any state is applied."""
+    graph = NodeGraph({}, {START: END})
+    context = graph.create_context({})
+
+    with pytest.raises(TypeError, match="one result per node"):
+        graph.apply_command(results, [START], context)
+    assert context.state == {}
+
+
+@pytest.mark.parametrize("node_name", [START, [START]])
+def test_apply_command_rejects_nested_node_result(node_name):
+    """Batch grouping must not make nested lists legal inside a node result."""
+    graph = NodeGraph({}, {START: END})
+    context = graph.create_context({})
+    result = [[Command(update={"value": 1})]]
+
+    with pytest.raises(TypeError, match="must return a Command"):
+        graph.apply_command(
+            [result] if isinstance(node_name, list) else result, node_name, context
+        )
+    assert context.state == {}
+
+
 def test_auto_increase_requires_callable_add_method():
     """A marked current value must expose a callable addition protocol."""
     graph = NodeGraph(

@@ -200,6 +200,10 @@ return [
 
 空列表按一个空 `Command` 处理。
 
+显式设置 `context.target_node_name = ["parallel"]` 与设置为 `"parallel"` 使用相同的节点返回值规则；单元素批次也支持专用节点返回多条 Command 或空列表。
+
+直接调用 `graph.apply_command(command, node_name, context)` 时，字符串 `node_name` 对应一份 `Command` 或 `list[Command]`；列表 `node_name` 对应按节点顺序排列的结果列表，每个节点占一项，即使列表只有一个节点也不省略外层列表。例如，单节点多命令使用 `apply_command([cmd1, cmd2], "parallel", context)`，对应的单元素批次使用 `apply_command([[cmd1, cmd2]], ["parallel"], context)`。`apply_command([[]], ["parallel"], context)` 表示该节点返回空列表，仍沿其默认边继续。
+
 `goto=[]` 只表示该条 Command 不贡献下一目标；若同批其他 Command 仍产生普通目标，图会继续执行这些目标，不会由一个空 goto 终止整批路由。
 
 ## 图级并发更新
