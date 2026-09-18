@@ -78,7 +78,7 @@ def test_factory_reuses_registry_but_constructor_is_independent():
     assert ApixHandlerRegistry(get_event_registry()) is not get_handler_registry()
 
 
-async def test_instance_registration_routes_patterns_and_unregisters_all_subscriptions(runtime):
+async def test_instance_registration_routes_patterns_and_unregisters_all_subscriptions(runtime, wait_for_dispatch):
     """Instance methods participate in the same public event dispatch lifecycle."""
     pipe, loop = runtime
     core = AsyncMock()
@@ -89,14 +89,14 @@ async def test_instance_registration_routes_patterns_and_unregisters_all_subscri
 
     for name in ("Build.done", "ready", "Build.private.done", "build.done"):
         await pipe.post_event(event_type=EventType.INFO, event_name=name)
-    await asyncio.wait_for(pipe.join(), 1)
+    await wait_for_dispatch(loop)
     assert sorted(call.args[0].event_name for call in core.await_args_list) == ["Build.done", "ready"]
 
     assert handler.unregister() is None
     assert get_handler_registry().get_handler(handler.name) is None
     for name in ("Build.done", "ready"):
         await pipe.post_event(event_type=EventType.INFO, event_name=name)
-    await asyncio.wait_for(pipe.join(), 1)
+    await wait_for_dispatch(loop)
     assert core.await_count == 2
     handler.unregister()
     with pytest.raises(EventHandlerNotRegisteredError):
@@ -694,7 +694,7 @@ async def runtime(monkeypatch):
 
 @pytest.mark.parametrize("publish", ["post", "put", "nowait"])
 @pytest.mark.parametrize("cached", [False, True])
-async def test_publish_does_not_resolve_but_dequeue_uses_latest_registration(runtime, publish, cached):
+async def test_publish_does_not_resolve_but_dequeue_uses_latest_registration(runtime, publish, cached, wait_for_dispatch):
     pipe, loop = runtime
     registry = get_handler_registry()
     calls = []
@@ -706,8 +706,6 @@ async def test_publish_does_not_resolve_but_dequeue_uses_latest_registration(run
         # Expire an existing populated cache before publishing.
         subscribe("event.*", priority=1)(first)
     await loop.stop()
-    loop._dispatch_semaphore = asyncio.Semaphore(0)
-    await loop.start()
     with patch.object(registry, "get_handlers_chain_for_event",
                       wraps=registry.get_handlers_chain_for_event) as resolve:
         event = ApixEvent("id", EventType.INFO, "event.one", None, 0)
@@ -717,19 +715,18 @@ async def test_publish_does_not_resolve_but_dequeue_uses_latest_registration(run
             await pipe.put(event)
         else:
             pipe.put_nowait(event)
-        assert loop._started
         resolve.assert_not_called()
         @subscribe("event.*", priority=10)
         async def late(event):
             calls.append("late")
-        loop._dispatch_semaphore.release()
-        await asyncio.wait_for(pipe.join(), 1)
+        await loop.start()
+        await wait_for_dispatch(loop)
         resolve.assert_called_once_with("event.one")
     assert calls == ["late", "first"]
     assert registry.cached_chain["event.one"] == ["late", "first"]
 
 
-async def test_dequeue_resolves_chain_before_dispatch_task_starts(runtime, monkeypatch):
+async def test_dequeue_resolves_chain_before_dispatch_task_starts(runtime, monkeypatch, wait_for_dispatch):
     pipe, loop = runtime
     registry = get_handler_registry()
     called = []
@@ -750,10 +747,10 @@ async def test_dequeue_resolves_chain_before_dispatch_task_starts(runtime, monke
     async def late(event):
         called.append("late")
     release.set()
-    await asyncio.wait_for(pipe.join(), 1)
+    await wait_for_dispatch(loop)
     assert called == ["first"]
     await pipe.post_event(event_type=EventType.INFO, event_name="event.one")
-    await asyncio.wait_for(pipe.join(), 1)
+    await wait_for_dispatch(loop)
     assert called == ["first", "late", "first"]
 
 
@@ -764,7 +761,7 @@ async def test_dequeue_resolves_chain_before_dispatch_task_starts(runtime, monke
     (["Event.*"], [], False),
     (["event.?ne"], ["event.two"], True),
 ])
-async def test_foreground_dispatch_resolves_current_target_after_await(runtime, change, patterns, filters, matches):
+async def test_foreground_dispatch_resolves_current_target_after_await(runtime, change, patterns, filters, matches, wait_for_dispatch):
     pipe, loop = runtime
     entered, release = asyncio.Event(), asyncio.Event()
     calls = []
@@ -788,20 +785,8 @@ async def test_foreground_dispatch_resolves_current_target_after_await(runtime, 
         subscribe(*patterns, filter_event=filters, priority=100)(replacement)
     unsubscribe("first")
     release.set()
-    await asyncio.wait_for(pipe.join(), 1)
+    await wait_for_dispatch(loop)
     assert calls == (["first-done", "new"] if change != "remove" and matches else ["first-done"])
-
-
-class NotifyingSemaphore(asyncio.BoundedSemaphore):
-    """Expose when task creation reaches its capacity wait."""
-
-    def __init__(self, value):
-        super().__init__(value)
-        self.waiting = asyncio.Event()
-
-    async def acquire(self):
-        self.waiting.set()
-        return await super().acquire()
 
 
 @pytest.mark.parametrize("change", ["remove", "replace"])
@@ -811,19 +796,17 @@ class NotifyingSemaphore(asyncio.BoundedSemaphore):
     (["Event.*"], [], False),
     (["event.?ne"], ["event.two"], True),
 ])
-async def test_background_resolves_current_target_after_capacity_wait(runtime, change, patterns, filters, matches):
+async def test_background_resolves_current_target_when_task_starts(runtime, change, patterns, filters, matches):
+    """Registration changes before the new task runs affect its current target."""
     pipe, loop = runtime
-    capacity = NotifyingSemaphore(1)
-    await capacity.acquire()
-    capacity.waiting.clear()
-    loop._background_handler_semaphore = capacity
     old, new = AsyncMock(), AsyncMock()
     entry = ApixEventHandler(old, background=True)
     entry.name = "target"
     subscribe("event.*")(entry)
-    await pipe.post_event(event_type=EventType.INFO, event_name="event.one")
-    await asyncio.wait_for(capacity.waiting.wait(), 1)
-    assert not loop._background_handler_tasks
+    event = ApixEvent("id", EventType.INFO, "event.one", None, 0)
+    # Creation is synchronous; mutate registration before yielding to the task.
+    loop._create_background_handler_task("target", event)
+    tasks = tuple(loop._background_handler_tasks)
     old.assert_not_awaited()
     if change == "remove":
         unsubscribe("target")
@@ -831,15 +814,13 @@ async def test_background_resolves_current_target_after_capacity_wait(runtime, c
         replacement = ApixEventHandler(new, background=True)
         replacement.name = "target"
         subscribe(*patterns, filter_event=filters)(replacement)
-    capacity.release()
-    await asyncio.wait_for(pipe.join(), 1)
-    await asyncio.wait_for(asyncio.gather(*loop._background_handler_tasks), 1)
+    await asyncio.wait_for(asyncio.gather(*tasks), 1)
     old.assert_not_awaited()
     assert new.await_count == (1 if change == "replace" and matches else 0)
 
 
 @pytest.mark.parametrize("background", [False, True])
-async def test_stop_preserves_started_calls_and_explicit_start_resumes(runtime, background):
+async def test_stop_preserves_started_calls_and_explicit_start_resumes(runtime, background, wait_for_dispatch):
     pipe, loop = runtime
     entered, release = asyncio.Event(), asyncio.Event()
     completed = []
@@ -869,7 +850,7 @@ async def test_stop_preserves_started_calls_and_explicit_start_resumes(runtime, 
     assert not loop._started
     await loop.start()
     assert loop._started
-    await asyncio.wait_for(pipe.join(), 1)
+    await wait_for_dispatch(loop)
     assert completed == ["event.one", "event.two", "event.three"]
 
 
@@ -897,7 +878,7 @@ async def test_explicit_start_consumes_existing_ready_events(runtime):
     assert loop._started
 
 
-async def test_reordering_existing_name_only_changes_subsequent_dequeued_order(runtime):
+async def test_reordering_existing_name_only_changes_subsequent_dequeued_order(runtime, wait_for_dispatch):
     pipe, loop = runtime
     entered, release = asyncio.Event(), asyncio.Event()
     calls = []
@@ -916,26 +897,26 @@ async def test_reordering_existing_name_only_changes_subsequent_dequeued_order(r
     await asyncio.wait_for(entered.wait(), 1)
     subscribe("event.*", priority=20)(third)
     release.set()
-    await asyncio.wait_for(pipe.join(), 1)
+    await wait_for_dispatch(loop)
     assert calls == ["first", "second", "third"]
     calls.clear()
     await pipe.post_event(event_type=EventType.INFO, event_name="event.one")
-    await asyncio.wait_for(pipe.join(), 1)
+    await wait_for_dispatch(loop)
     assert calls == ["third", "first", "second"]
 
 
-async def test_chain_resolution_failure_acknowledges_event_and_keeps_consuming(runtime):
+async def test_chain_resolution_failure_acknowledges_event_and_keeps_consuming(runtime, wait_for_dispatch):
     pipe, loop = runtime
     with patch.object(get_handler_registry(), "get_handlers_chain_for_event",
                       side_effect=[RuntimeError("resolution failed"), []]) as resolve:
         with patch("apixis.core.event.event_loop.logger") as logger:
             await pipe.post_event(event_type=EventType.INFO, event_name="event.one")
             await pipe.post_event(event_type=EventType.INFO, event_name="event.two")
-            await asyncio.wait_for(pipe.join(), 1)
+            await wait_for_dispatch(loop)
             assert resolve.call_count == 2
             logger.error.assert_called_once()
     await loop.stop()
-    assert loop._dispatch_semaphore._value == EVENT_LOOP_BACKPRESSURE
+    assert loop._event_semaphore._value == EVENT_LOOP_BACKPRESSURE
 
 
 def test_unregister_missing_ok_preserves_existing_cache():
@@ -947,7 +928,7 @@ def test_unregister_missing_ok_preserves_existing_cache():
     assert registry.priority_buckets == {1: ["existing"]}
 
 
-async def test_dispatch_cancelled_before_start_releases_ack_and_capacity(runtime):
+async def test_dispatch_cancelled_before_start_releases_ack_and_capacity(runtime, wait_for_dispatch):
     pipe, loop = runtime
     cancelled = []
     class CancelFirstTask(set):
@@ -958,7 +939,7 @@ async def test_dispatch_cancelled_before_start_releases_ack_and_capacity(runtime
                 task.cancel()  # Cancel before create_task can enter the coroutine.
     loop._dispatch_tasks = CancelFirstTask()
     await loop.stop()
-    loop._dispatch_semaphore = asyncio.BoundedSemaphore(1)
+    loop._event_semaphore = asyncio.BoundedSemaphore(1)
     await loop.start()
     calls = []
     @subscribe("event.*")
@@ -967,21 +948,21 @@ async def test_dispatch_cancelled_before_start_releases_ack_and_capacity(runtime
     with patch.object(pipe, "task_done", wraps=pipe.task_done) as acknowledge:
         await pipe.post_event(event_type=EventType.INFO, event_name="event.first")
         await pipe.post_event(event_type=EventType.INFO, event_name="event.second")
-        await asyncio.wait_for(pipe.join(), 1)
+        await wait_for_dispatch(loop)
         await loop.stop()
         assert acknowledge.call_count == 2
     assert cancelled[0].cancelled()
     assert calls == ["event.second"]
     assert not loop._dispatch_tasks
-    assert loop._dispatch_semaphore._value == 1
+    assert loop._event_semaphore._value == 1
 
 
 @pytest.mark.parametrize("outcome", ["return", "raise", "cancel"])
-async def test_started_dispatch_completes_queue_and_capacity_exactly_once(runtime, outcome):
+async def test_started_dispatch_completes_queue_and_capacity_exactly_once(runtime, outcome, wait_for_dispatch):
     pipe, loop = runtime
     entered, release = asyncio.Event(), asyncio.Event()
     await loop.stop()
-    loop._dispatch_semaphore = asyncio.BoundedSemaphore(1)
+    loop._event_semaphore = asyncio.BoundedSemaphore(1)
     await loop.start()
     @subscribe("event.*")
     async def handler(event):
@@ -996,54 +977,35 @@ async def test_started_dispatch_completes_queue_and_capacity_exactly_once(runtim
             next(iter(loop._dispatch_tasks)).cancel()
         else:
             release.set()
-        await asyncio.wait_for(pipe.join(), 1)
+        await wait_for_dispatch(loop)
         await loop.stop()
         acknowledge.assert_called_once_with()
     assert not loop._dispatch_tasks
-    assert loop._dispatch_semaphore._value == 1
+    assert loop._event_semaphore._value == 1
 
 
-@pytest.mark.parametrize("phase", ["before_start", "waiting", "running"])
-async def test_background_cancellation_only_releases_acquired_capacity(runtime, phase):
+@pytest.mark.parametrize("phase", ["before_start", "running"])
+async def test_background_cancellation_removes_task_without_using_event_capacity(runtime, phase):
+    """Cancelling background work preserves event capacity and removes its task."""
     pipe, loop = runtime
     entered = asyncio.Event()
-    capacity = NotifyingSemaphore(1)
-    loop._background_handler_semaphore = capacity
-    cancelled = []
-    class CancelOnAdd(set):
-        def add(self, task):
-            super().add(task)
-            cancelled.append(task)
-            task.cancel()
-    if phase == "before_start":
-        loop._background_handler_tasks = CancelOnAdd()
-    elif phase == "waiting":
-        await capacity.acquire()
-        capacity.waiting.clear()
-    @subscribe("event.*", background=True)
+    cleanup = AsyncMock()
+    event = ApixEvent("id", EventType.INFO, "event.one", None, 0)
+
     async def handler(event):
         entered.set()
         await asyncio.Event().wait()
-    with patch.object(pipe, "task_done", wraps=pipe.task_done) as acknowledge:
-        await pipe.post_event(event_type=EventType.INFO, event_name="event.one")
-        if phase == "waiting":
-            await asyncio.wait_for(capacity.waiting.wait(), 1)
-            assert not loop._background_handler_tasks
-            tasks = list(loop._dispatch_tasks)
-        else:
-            await asyncio.wait_for(pipe.join(), 1)
-            if phase == "running":
-                await asyncio.wait_for(entered.wait(), 1)
-            tasks = cancelled or list(loop._background_handler_tasks)
-        assert len(tasks) == 1
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        await asyncio.wait_for(pipe.join(), 1)
-        acknowledge.assert_called_once_with()
+
+    ApixEventHandler(handler, background=True, on_cancelled=cleanup).register("event.*")
+    initial_capacity = loop._event_semaphore._value
+    loop._create_background_handler_task("handler", event)
+    task, = loop._background_handler_tasks
+    if phase == "running":
+        await asyncio.wait_for(entered.wait(), 1)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert task.cancelled()
     assert entered.is_set() == (phase == "running")
+    assert cleanup.await_count == (1 if phase == "running" else 0)
     assert not loop._background_handler_tasks
-    if phase == "waiting":
-        assert loop._background_handler_semaphore._value == 0
-        loop._background_handler_semaphore.release()
-    assert loop._background_handler_semaphore._value == 1
+    assert loop._event_semaphore._value == initial_capacity

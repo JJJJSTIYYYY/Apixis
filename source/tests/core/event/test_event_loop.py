@@ -13,7 +13,7 @@ import pytest
 
 from apixis.core.event import ApixEventPipe, get_event_registry
 
-from apixis.core.event.base import ApixEvent, EventType, ApixEventHandler
+from apixis.core.event.base import ApixEvent, EventType, ApixEventHandler, _handler_semaphore_context
 from apixis.core.event.handler_registry import ApixHandlerRegistry
 from apixis.core.event.event_loop import ApixEventLoop
 from apixis.core.config.core_config import EVENT_LOOP_BACKPRESSURE
@@ -456,7 +456,7 @@ class TestDispatchEvent:
 
     @pytest.mark.asyncio
     async def test_direct_dispatch_does_not_own_consumer_capacity(self):
-        """Only consumer task completion owns and releases dispatch capacity."""
+        """Direct dispatch must leave all handler permits available."""
         registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
         handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
@@ -475,7 +475,7 @@ class TestDispatchEvent:
                     ["missing"],
                 )
 
-        assert handler._dispatch_semaphore._value == EVENT_LOOP_BACKPRESSURE
+        assert handler._event_semaphore._value == EVENT_LOOP_BACKPRESSURE
 
 
 # ============================
@@ -570,21 +570,20 @@ class TestRunBackgroundHandler:
             mock_logger.error.assert_called()
 
     @pytest.mark.asyncio
-    async def test_background_handler_semaphore_used(self):
-        """Background handler should acquire the semaphore."""
+    async def test_background_execution_does_not_acquire_event_capacity(self):
+        """Background execution remains possible without an available event permit."""
         registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
         handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
-
-        mock_callback = AsyncMock()
-        entry = _make_handler_entry(callback=mock_callback, time_out=None)
+        handler._event_semaphore = asyncio.BoundedSemaphore(0)
+        callback = AsyncMock()
+        entry = _make_handler_entry(callback=callback, background=True, time_out=None)
         registry.register_handler(entry)
         event = _make_event()
 
-        await handler._run_background_handler(entry.name, event)
-
-        await handler._background_handler_semaphore.acquire()
-        handler._background_handler_semaphore.release()
+        await asyncio.wait_for(handler._run_background_handler(entry.name, event), 1)
+        callback.assert_awaited_once_with(event)
+        assert handler._event_semaphore._value == 0
 
 
 # ============================
@@ -602,13 +601,23 @@ class TestCreateBackgroundHandlerTask:
         _reset_registry(registry)
         handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
-        mock_callback = AsyncMock()
-        entry = _make_handler_entry(callback=mock_callback, time_out=None)
+        contexts = []
+
+        async def callback(event):
+            contexts.append(_handler_semaphore_context.get())
+
+        mock_callback = AsyncMock(side_effect=callback)
+        entry = _make_handler_entry(callback=mock_callback, background=True, time_out=None)
         registry.register_handler(entry)
         event = _make_event()
 
         initial_count = len(handler._background_handler_tasks)
-        await handler._create_background_handler_task(entry.name, event)
+        token = _handler_semaphore_context.set(handler._event_semaphore)
+        try:
+            handler._create_background_handler_task(entry.name, event)
+            assert _handler_semaphore_context.get() is handler._event_semaphore
+        finally:
+            _handler_semaphore_context.reset(token)
 
         assert len(handler._background_handler_tasks) == initial_count + 1
 
@@ -618,6 +627,7 @@ class TestCreateBackgroundHandlerTask:
             await asyncio.gather(*pending, return_exceptions=True)
 
         mock_callback.assert_awaited_once_with(event)
+        assert contexts == [None]
 
 
 # ============================
@@ -650,32 +660,29 @@ class TestEventConsumerLoop:
         mock_callback.assert_awaited_once_with(event)
 
     @pytest.mark.asyncio
-    async def test_dispatch_acknowledges_event_even_when_dispatch_fails(self):
+    async def test_dispatch_acknowledges_event_even_when_dispatch_fails(self, wait_for_dispatch):
+        """The real consumer acquires and releases exactly one slot on failure."""
         registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
         handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
+        handler._event_semaphore = asyncio.BoundedSemaphore(1)
         event = _make_event()
 
         with (
-            patch.object(
-                handler,
-                "_dispatch_event",
-                AsyncMock(side_effect=RuntimeError("dispatch failed")),
-            ),
-            patch.object(
-                handler._event_pipe, "task_done"
-            ) as task_done,
+            patch.object(handler, "_dispatch_event", AsyncMock(side_effect=RuntimeError("dispatch failed"))),
+            patch.object(handler._event_pipe, "task_done", wraps=handler._event_pipe.task_done) as task_done,
+            patch("apixis.core.event.event_loop.logger") as logger,
         ):
-            await handler._dispatch_semaphore.acquire()
-            task = asyncio.create_task(handler._dispatch_event(event, []))
-            handler._dispatch_tasks.add(task)
-            task.add_done_callback(handler._on_dispatch_done)
-            results = await asyncio.gather(task, return_exceptions=True)
-            assert isinstance(results[0], RuntimeError)
-            assert handler._dispatch_semaphore._value == EVENT_LOOP_BACKPRESSURE
-            assert not handler._dispatch_tasks
-
-        task_done.assert_called_once_with()
+            await handler.start()
+            try:
+                await handler._event_pipe.put(event)
+                await wait_for_dispatch(handler)
+                assert handler._event_semaphore._value == 1
+                assert not handler._dispatch_tasks
+                task_done.assert_called_once_with()
+                logger.error.assert_called_once()
+            finally:
+                await handler.stop()
 
 
 # ============================

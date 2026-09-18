@@ -134,8 +134,10 @@ async def test_failed_publish_does_not_record_event_name():
     (EventType.INTERNAL, "runtime.internal"),
     (EventType.INFO, ""),
 ])
-async def test_recording_occurs_once_at_processing_dequeue(publication, event_type, name, monkeypatch):
-    """Ready and processing buffers are unobserved until dispatch capacity exists."""
+async def test_recording_occurs_once_after_dispatch_capacity_is_acquired(
+    publication, event_type, name, monkeypatch, wait_for_dispatch,
+):
+    """A pending event is observed only after it can enter dispatch."""
     registry = ApixEventRegistry()
     handlers = ApixHandlerRegistry(registry)
     mailbox = BuiltinChannel()
@@ -147,7 +149,7 @@ async def test_recording_occurs_once_at_processing_dequeue(publication, event_ty
     )
     loop = ApixEventLoop(handlers, pipe, registry)
     capacity = asyncio.Semaphore(0)
-    loop._dispatch_semaphore = capacity
+    loop._event_semaphore = capacity
     record = Mock(wraps=registry.record_event)
     monkeypatch.setattr(registry, "record_event", record)
     observed_in_handler = []
@@ -177,14 +179,15 @@ async def test_recording_occurs_once_at_processing_dequeue(publication, event_ty
         assert registry.get_registered_events() == frozenset()
         record.assert_not_called()
         await loop.start()
-        # Let admission finish while dispatch remains blocked by capacity.
+        # The consumer may dequeue one event before dispatch capacity is available.
         await asyncio.sleep(0)
         assert pipe.empty()
-        assert loop._processing_queue.qsize() == 1
-        record.assert_not_called()
-        capacity.release()
-        await asyncio.wait_for(pipe.join(), 1)
         expected = frozenset({name}) if name and event_type != EventType.INTERNAL else frozenset()
+        assert registry.get_registered_events() == frozenset()
+        record.assert_not_called()
+        assert observed_in_handler == []
+        capacity.release()
+        await wait_for_dispatch(loop)
         assert registry.get_registered_events() == expected
         assert record.call_count == (1 if name else 0)
         assert observed_in_handler == ([expected] if name else [])

@@ -97,7 +97,8 @@ class TestBuiltinChannel:
 
         assert isinstance(get_event_pipe(), ApixEventPipe)
         assert get_event_pipe() is second_import()
-        assert get_event_pipe().maxsize == 0
+        from apixis.core.config.core_config import EVENT_PIPE_MAX_LEN
+        assert get_event_pipe().maxsize == EVENT_PIPE_MAX_LEN
 
         while not get_event_pipe().empty():
             get_event_pipe().get_nowait()
@@ -108,10 +109,10 @@ class TestBuiltinChannel:
 
 
 class TestApixEventPipeEvents:
-    def test_bounded_builtin_is_rejected(self):
-        """Custom local channels must not reintroduce publication deadlocks."""
-        with pytest.raises(ValueError, match="ready channel must be unbounded"):
-            ApixEventPipe(builtin=BuiltinChannel(maxsize=1), remote_enabled=False)
+    def test_unbounded_builtin_is_rejected(self):
+        """Custom local channels must preserve bounded admission."""
+        with pytest.raises(ValueError, match="builtin channel must be bounded"):
+            ApixEventPipe(builtin=BuiltinChannel(maxsize=0), remote_enabled=False)
 
     @pytest.mark.asyncio
     async def test_post_event_builds_event_with_current_timestamp(self):

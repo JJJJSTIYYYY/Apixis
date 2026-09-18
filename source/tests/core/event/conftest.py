@@ -20,6 +20,28 @@ def reset_event_registry():
     get_event_registry().clear()
 
 
+@pytest.fixture
+def wait_for_dispatch():
+    """Wait for foreground work explicitly; pipe.join() only acknowledges dispatch.
+
+    Keep task inspection in this test helper instead of changing the public
+    join contract or relying on arbitrary delays in individual assertions.
+    Background handlers are deliberately excluded and need their own signals.
+    """
+    async def wait(event_loop):
+        async with asyncio.timeout(2):
+            while True:
+                await event_loop._event_pipe.join()
+                tasks = tuple(event_loop._dispatch_tasks)
+                if not tasks:
+                    return
+                await asyncio.gather(*tasks, return_exceptions=True)
+                # Finished tasks may still have queued capacity-release callbacks.
+                await asyncio.sleep(0)
+
+    return wait
+
+
 # ============================
 # Fixtures: Event & Handler
 # ============================

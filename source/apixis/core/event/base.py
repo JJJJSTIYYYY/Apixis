@@ -1,5 +1,6 @@
 import asyncio
 import traceback
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -7,6 +8,11 @@ from typing import Any, Awaitable, Callable, Literal, Self
 from uuid import uuid4
 
 from apixis.core.utils.logger import logger
+
+
+_handler_semaphore_context: ContextVar[asyncio.Semaphore | None] = ContextVar(
+    "apixis_handler_semaphore", default=None,
+)
 
 
 class EventType(str, Enum):
@@ -254,7 +260,7 @@ class ApixEventHandler:
             raise ValueError("on_error already set.")
         self.on_error = callback
 
-    async def notify_cancelled(self, event: ApixEvent) -> None:
+    async def notify_cancelled(self, event: ApixEvent, time_out: float = None) -> None:
         """Run cancellation cleanup without interrupting other notifications.
 
         The event loop calls this outside normal execution, then re-raises the
@@ -264,8 +270,10 @@ class ApixEventHandler:
         """
         if self.on_cancelled is None:
             return
+        if time_out is not None and time_out <= 0:
+            time_out = None
         try:
-            async with asyncio.timeout(self.time_out):
+            async with asyncio.timeout(self.time_out if time_out is None else time_out):
                 await self.on_cancelled(event)
         except (Exception, asyncio.CancelledError) as exc:
             logger.error(

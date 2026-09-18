@@ -161,7 +161,7 @@ class ReadWriteEventChannel(ReadableEventChannel, WritableEventChannel):
 class BuiltinChannel(ReadWriteEventChannel):
     """In-process event channel backed by :class:`asyncio.Queue`."""
 
-    def __init__(self, maxsize: int = 0) -> None:
+    def __init__(self, maxsize: int = EVENT_PIPE_MAX_LEN) -> None:
         self._queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=maxsize)
 
     @property

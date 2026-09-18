@@ -1,6 +1,6 @@
 """Node-side event pipe with isolated transport channels.
 
-``ApixEventPipe`` accepts local events into an unbounded ready queue while
+``ApixEventPipe`` accepts local events into a bounded queue while
 isolating all external transport details behind mailbox and mailtruck
 channels.  The event loop therefore only consumes the builtin channel and
 does not need to know whether an event originated locally, from Kafka, or from
@@ -18,6 +18,7 @@ from uuid import uuid4
 from apixis.core.config.core_config import (
     EVENT_CHANNEL_CONFIG,
     EVENT_CHANNEL_TYPE,
+    EVENT_PIPE_MAX_LEN,
     GATEWAY_MAX_RETRY,
     GATEWAY_RETRY_INITIAL_DELAY,
     GATEWAY_TIMEOUT,
@@ -34,7 +35,9 @@ from apixis.core.config.core_config import (
     REMOTE_GATEWAY_ENABLE,
     REMOTE_GATEWAY_PIPE_ENDPOINT,
 )
-from apixis.core.event.base import ApixEvent, ChannelType, EventType
+from apixis.core.event.base import (
+    ApixEvent, ChannelType, EventType, _handler_semaphore_context,
+)
 from apixis.core.event.pipe_channel import (
     BuiltinChannel,
     GatewayChannel,
@@ -58,11 +61,10 @@ class _EventChannels(TypedDict):
 
 
 class ApixEventPipe:
-    """Node-side event pipe with an unbounded builtin ready channel.
+    """Node-side event pipe with a bounded builtin channel.
 
-    Local publication never waits for dispatch capacity. The event loop owns
-    processing backpressure, so handlers can safely publish follow-up events.
-    Custom builtin channels must also provide unbounded buffering.
+    Publication waits when the queue is full. post_event() temporarily returns
+    the current handler's permit so follow-up events can continue to drain.
     """
 
     def __init__(
@@ -76,14 +78,18 @@ class ApixEventPipe:
         node_name: str = NODE_NAME,
         channel_type: str = EVENT_CHANNEL_TYPE,
     ) -> None:
-        if builtin is not None and builtin.maxsize != 0:
-            raise ValueError("The builtin ready channel must be unbounded (maxsize=0).")
+        if builtin is None:
+            if EVENT_PIPE_MAX_LEN <= 0:
+                raise ValueError("EVENT_PIPE_MAX_LEN must be positive.")
+            builtin = BuiltinChannel(maxsize=EVENT_PIPE_MAX_LEN)
+        elif builtin.maxsize <= 0:
+            raise ValueError("The builtin channel must be bounded (maxsize > 0).")
         self.remote_enabled = remote_enabled
         self.mq_id = mq_id
         self.node_name = node_name
         self.channel_type = channel_type
         self._event_pipe: _EventChannels = {
-            "builtin": builtin if builtin is not None else BuiltinChannel(),
+            "builtin": builtin,
             "mailbox": mailbox or self._build_mailbox(channel_type),
             "mailtruck": mailtruck or GatewayChannel(
                 base_url=REMOTE_GATEWAY_BASE_URL,
@@ -192,8 +198,9 @@ class ApixEventPipe:
     ) -> None:
         """Create and post an event to the selected channel.
 
-        Local events enter the unbounded ready queue; this does not wait for
-        processing capacity or handler completion.
+        Local publication waits for queue capacity, not event completion.
+        Within a managed handler, return its permit during publication and
+        reacquire it before continuing, including after errors or cancellation.
 
         Args:
             event_type: Event category used by handlers and transports.
@@ -210,11 +217,18 @@ class ApixEventPipe:
             timestamp=time.time(),
             accepted=False,
         )
-        await self.put(event, channel, recipient=recipient)
+        semaphore = _handler_semaphore_context.get()
+        if semaphore is not None:
+            semaphore.release()
+        try:
+            await self.put(event, channel, recipient=recipient)
+        finally:
+            if semaphore is not None:
+                await semaphore.acquire()
 
     def put_nowait(
         self,
-        event: Any,
+        event: ApixEvent,
         channel: ChannelType = "builtin",
     ) -> None:
         if channel == "mailbox":

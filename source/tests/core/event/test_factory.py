@@ -79,7 +79,7 @@ async def test_construction_order_and_no_recursive_getters(fresh_core, monkeypat
     assert get_event_loop()._started
 
 
-async def test_repeated_create_preserves_components_subscriptions_and_pending_events(fresh_core):
+async def test_repeated_create_preserves_components_subscriptions_and_pending_events(fresh_core, wait_for_dispatch):
     first = components()
     calls = []
 
@@ -90,17 +90,17 @@ async def test_repeated_create_preserves_components_subscriptions_and_pending_ev
     try:
         get_event_pipe().put_nowait(event("factory.before_start"))
         await start_core()
-        workers = (get_event_loop()._event_consumer_task, get_event_loop()._event_dispatcher_task)
+        workers = get_event_loop()._event_consumer_task
         await start_core()
-        assert workers == (get_event_loop()._event_consumer_task, get_event_loop()._event_dispatcher_task)
-        await asyncio.wait_for(get_event_pipe().join(), 1)
+        assert workers == get_event_loop()._event_consumer_task
+        await wait_for_dispatch(get_event_loop())
         registry, pipe, handlers, loop = first
         await loop.stop()
         await pipe.stop()
         await pipe.put(event("factory.after_stop"))
         assert not loop._started
         await start_core()
-        await asyncio.wait_for(get_event_pipe().join(), 1)
+        await wait_for_dispatch(get_event_loop())
         assert all(a is b for a, b in zip(first, components()))
         assert calls == ["factory.before_start", "factory.after_stop"]
         assert get_event_registry().get_registered_events() == frozenset(calls)
@@ -108,7 +108,7 @@ async def test_repeated_create_preserves_components_subscriptions_and_pending_ev
         unsubscribe(receive.__name__)
 
 
-async def test_concurrent_create_starts_remote_channels_once(fresh_core, monkeypatch):
+async def test_concurrent_create_starts_remote_channels_once(fresh_core, monkeypatch, wait_for_dispatch):
     entered, release = asyncio.Event(), asyncio.Event()
     starts = []
 
@@ -147,7 +147,7 @@ async def test_concurrent_create_starts_remote_channels_once(fresh_core, monkeyp
         try:
             await mailbox.put(event("factory.remote"))
             await asyncio.wait_for(mailbox.join(), 1)
-            await asyncio.wait_for(get_event_pipe().join(), 1)
+            await wait_for_dispatch(get_event_loop())
             assert observed == ["factory.remote"]
         finally:
             unsubscribe(receive.__name__)
@@ -180,7 +180,7 @@ async def test_failed_start_can_retry_with_the_same_components(fresh_core, monke
     assert get_event_loop()._started
 
 
-async def test_independent_components_keep_dispatch_and_observations_isolated():
+async def test_independent_components_keep_dispatch_and_observations_isolated(wait_for_dispatch):
     cores = []
     observed = [[], []]
     for index in range(2):
@@ -203,7 +203,7 @@ async def test_independent_components_keep_dispatch_and_observations_isolated():
             await loop.start()
             await pipe.put(event(f"isolated.{index}"))
         for index, (registry, pipe, handlers, loop) in enumerate(cores):
-            await asyncio.wait_for(pipe.join(), 1)
+            await wait_for_dispatch(loop)
             assert registry.get_registered_events() == frozenset({f"isolated.{index}"})
             assert handlers.get_unmatched_subscriptions("receive") == []
         assert observed == [["isolated.0"], ["isolated.1"]]
@@ -216,7 +216,7 @@ async def test_independent_components_keep_dispatch_and_observations_isolated():
 @pytest.mark.parametrize("getter_name", [
     "get_event_registry", "get_event_pipe", "get_handler_registry", "get_event_loop",
 ])
-async def test_each_getter_restarts_the_same_core(getter_name, fresh_core):
+async def test_each_getter_restarts_the_same_core(getter_name, fresh_core, wait_for_dispatch):
     """One synchronous getter is sufficient to resume queued local events."""
     await start_core()
     registry, pipe, handlers, loop = components()
@@ -224,12 +224,12 @@ async def test_each_getter_restarts_the_same_core(getter_name, fresh_core):
     await pipe.stop()
     await pipe.put(event("factory.automatic"))
     component = getattr(factory, getter_name)()
-    await asyncio.wait_for(pipe.join(), 1)
+    await wait_for_dispatch(loop)
     assert registry.get_registered_events() == frozenset({"factory.automatic"})
     assert getattr(factory, getter_name)() is component
 
 
-async def test_getters_share_one_startup_attempt(fresh_core, monkeypatch):
+async def test_getters_share_one_startup_attempt(fresh_core, monkeypatch, wait_for_dispatch):
     """Repeated getters do not open a second transport during slow startup."""
     core = factory._get_core()
     entered, release = asyncio.Event(), asyncio.Event()
@@ -251,7 +251,7 @@ async def test_getters_share_one_startup_attempt(fresh_core, monkeypatch):
             components()
         release.set()
         await core.event_pipe.put(event("factory.shared_start"))
-        await asyncio.wait_for(core.event_pipe.join(), 1)
+        await wait_for_dispatch(core.event_loop)
         assert attempts == 1
     finally:
         release.set()
@@ -272,7 +272,7 @@ async def test_graph_invocation_starts_core_through_getters(fresh_core):
         graph.decompose()
 
 
-async def test_explicit_start_returns_when_restart_has_signalled_started(fresh_core, monkeypatch):
+async def test_explicit_start_returns_when_restart_has_signalled_started(fresh_core, monkeypatch, wait_for_dispatch):
     """Startup is a signal, not a barrier for every ongoing startup task."""
     await start_core()
     core = factory._core
@@ -295,7 +295,7 @@ async def test_explicit_start_returns_when_restart_has_signalled_started(fresh_c
         # The startup signal is sufficient to use the already-running core.
         assert not release.is_set()
         await core.event_pipe.put(event("factory.restart_signalled"))
-        await asyncio.wait_for(core.event_pipe.join(), 1)
+        await wait_for_dispatch(core.event_loop)
         assert "factory.restart_signalled" in core.event_registry.get_registered_events()
     finally:
         release.set()

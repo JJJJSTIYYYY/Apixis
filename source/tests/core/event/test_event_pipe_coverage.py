@@ -562,33 +562,45 @@ class TestEventLoopRemainingBranches:
             handler._event_pipe, "get", get_event
         )
         monkeypatch.setattr(handler, "_dispatch_event", dispatch)
-        acknowledge = MagicMock()
+        acknowledged = asyncio.Event()
+        acknowledge = MagicMock(side_effect=acknowledged.set)
         monkeypatch.setattr(handler._event_pipe, "task_done", acknowledge)
 
+        completed = asyncio.Event()
+        on_done = handler._on_dispatch_done
+
+        def record_completion(task):
+            on_done(task)
+            completed.set()
+
+        monkeypatch.setattr(handler, "_on_dispatch_done", record_completion)
         await handler.start()
         await handler._event_consumer_task
         await handler.stop()
-        await asyncio.gather(*handler._dispatch_tasks)
-        dispatch.assert_awaited_once_with(event, [])
+        # Task completion and execution of its done callbacks are separate steps.
+        await asyncio.wait_for(completed.wait(), 1)
+        await asyncio.wait_for(acknowledged.wait(), 1)
+        assert dispatch.await_count == 1
+        assert dispatch.await_args.args[:2] == (event, [])
         acknowledge.assert_called_once_with()
-        assert handler._dispatch_semaphore._value == EVENT_LOOP_BACKPRESSURE
+        assert handler._event_semaphore._value == EVENT_LOOP_BACKPRESSURE
 
     @pytest.mark.asyncio
-    async def test_dispatcher_releases_semaphore_when_get_fails(self, monkeypatch):
+    async def test_consumer_does_not_hold_capacity_when_get_fails(self, monkeypatch):
         registry = ApixHandlerRegistry(get_event_registry())
         registry.registry.clear()
         registry.priority_buckets.clear()
         registry.cached_chain.clear()
         handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
-        initial_value = handler._dispatch_semaphore._value
+        initial_value = handler._event_semaphore._value
         monkeypatch.setattr(
-            handler._processing_queue,
+            handler._event_pipe,
             "get",
             AsyncMock(side_effect=RuntimeError("get failed")),
         )
         with pytest.raises(RuntimeError, match="get failed"):
-            await handler._event_dispatcher_loop()
-        assert handler._dispatch_semaphore._value == initial_value
+            await handler._event_consumer_loop()
+        assert handler._event_semaphore._value == initial_value
 
     @pytest.mark.asyncio
     async def test_dispatch_without_timeout(self):

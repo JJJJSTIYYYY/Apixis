@@ -26,7 +26,7 @@ class ApixEventRegistry:
     def record_event(self, event: ApixEvent) -> None:
         """Record the exact name of one observed event.
 
-        The event loop records events after processing dequeue. Repeated
+        The event loop records events after local dequeue. Repeated
         observations of the same event name have no additional effect.
 
         Args:
