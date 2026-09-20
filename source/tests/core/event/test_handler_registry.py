@@ -126,14 +126,39 @@ def test_instance_reregistration_replaces_patterns_filters_and_ordering():
     (("new.*",), {"exist_ok": False}, EventHandlerAlreadyRegisteredError),
 ])
 def test_failed_instance_registration_preserves_existing_settings(patterns, options, error):
-    handler = make_entry("instance").register("old.*", priority=10)
+    handler = ApixEventHandler(
+        AsyncMock(),
+        name="instance",
+        time_out=5,
+    ).register("old.*", priority=10)
     with pytest.raises(error):
-        handler.register(*patterns, background=True, **options)
+        handler.register(*patterns, **options)
     assert get_handler_registry().get_handler(handler.name) is handler
     assert handler.subscribe == ["old.*"]
     assert (handler.priority, handler.time_out, handler.background) == (10, 5, False)
     assert get_handler_registry().get_handlers_chain_for_event("old.one") == ["instance"]
     assert get_handler_registry().get_handlers_chain_for_event("new.one") == []
+
+
+def test_instance_reregistration_preserves_execution_options():
+    """register() changes subscription metadata, not execution behaviour."""
+    handler = ApixEventHandler(
+        AsyncMock(),
+        name="instance",
+        stop_when_error=False,
+        time_out=2,
+        background=True,
+    )
+
+    handler.register("old.*", priority=10)
+    handler.register("new.*", filter_event=["new.skip"])
+
+    assert handler.stop_when_error is False
+    assert handler.time_out == 2
+    assert handler.background is True
+    assert handler.subscribe == ["new.*"]
+    assert handler.filter_event == ["new.skip"]
+    assert handler.priority == 1
 
 
 def test_instance_replacement_and_unregistration_use_handler_name():
