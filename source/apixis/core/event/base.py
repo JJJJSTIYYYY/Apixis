@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 import traceback
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -10,9 +11,42 @@ from uuid import uuid4
 from apixis.core.utils.logger import logger
 
 
-_handler_semaphore_context: ContextVar[asyncio.Semaphore | None] = ContextVar(
+handler_semaphore_context: ContextVar[asyncio.Semaphore | None] = ContextVar(
     "apixis_handler_semaphore", default=None,
 )
+
+@asynccontextmanager
+async def suspend_process():
+    """Suspend the current event process chain (handler chain).
+
+    While the ``async with`` block is running, the current handler chain
+    is paused so that other chains can proceed. The chain is resumed
+    when the block exits.
+
+    Yields:
+        None
+
+    Example:
+        ```python
+        async with suspend_process():
+            await do_something()
+        ```
+    """
+    sp = handler_semaphore_context.get()
+    released = False
+
+    if sp is not None:
+        try:
+            sp.release()
+            released = True
+        except ValueError:
+            pass
+
+    try:
+        yield
+    finally:
+        if released:
+            await sp.acquire()
 
 
 class EventType(str, Enum):
@@ -297,9 +331,6 @@ class ApixEventHandler:
         priority: float | None = None,
         between_handlers: tuple[str | None, str | None] | None = None,
         filter_event: list[str] | None = None,
-        stop_when_error: bool | None = None,
-        time_out: float | None = None,
-        background: bool | None = None,
     ) -> Self:
         """Register this instance globally with the same options as subscribe().
 
@@ -330,9 +361,9 @@ class ApixEventHandler:
             priority=priority,
             between_handlers=between_handlers,
             filter_event=filter_event,
-            stop_when_error=stop_when_error,
-            time_out=time_out,
-            background=background,
+            stop_when_error=self.stop_when_error,
+            time_out=self.time_out,
+            background=self.background,
         )(self)
 
     def unregister(self, *, missing_ok: bool = True) -> None:

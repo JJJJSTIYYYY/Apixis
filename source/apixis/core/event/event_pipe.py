@@ -36,7 +36,7 @@ from apixis.core.config.core_config import (
     REMOTE_GATEWAY_PIPE_ENDPOINT,
 )
 from apixis.core.event.base import (
-    ApixEvent, ChannelType, EventType, _handler_semaphore_context,
+    ApixEvent, ChannelType, EventType, handler_semaphore_context, suspend_process,
 )
 from apixis.core.event.pipe_channel import (
     BuiltinChannel,
@@ -217,14 +217,8 @@ class ApixEventPipe:
             timestamp=time.time(),
             accepted=False,
         )
-        semaphore = _handler_semaphore_context.get()
-        if semaphore is not None:
-            semaphore.release()
-        try:
+        async with suspend_process():
             await self.put(event, channel, recipient=recipient)
-        finally:
-            if semaphore is not None:
-                await semaphore.acquire()
 
     def put_nowait(
         self,

@@ -6,7 +6,7 @@ from apixis.core.config.core_config import (
     EVENT_LOOP_BACKPRESSURE,
     SHOW_EVENT_DISPATCH,
 )
-from apixis.core.event.base import ApixEvent, _handler_semaphore_context
+from apixis.core.event.base import ApixEvent, handler_semaphore_context
 from apixis.core.event.handler_registry import ApixHandlerRegistry
 from apixis.core.event.event_pipe import ApixEventPipe
 from apixis.core.event.event_registry import ApixEventRegistry
@@ -166,7 +166,7 @@ class ApixEventLoop:
             f"to {len(handler_chain)} handlers."
         )
 
-        token = _handler_semaphore_context.set(self._event_semaphore)
+        token = handler_semaphore_context.set(self._event_semaphore)
 
         try:
             if not event.event_name:
@@ -233,7 +233,7 @@ class ApixEventLoop:
             )
 
         finally:
-            _handler_semaphore_context.reset(token)
+            handler_semaphore_context.reset(token)
 
     def _on_dispatch_done(self, task: asyncio.Task) -> None:
         """Release one foreground event slot when dispatch completes."""
@@ -291,7 +291,7 @@ class ApixEventLoop:
         # Background handlers do not own foreground event capacity. Clearing
         # the context also prevents their event publishing from releasing or
         # reacquiring a foreground event slot.
-        token = _handler_semaphore_context.set(None)
+        token = handler_semaphore_context.set(None)
 
         try:
             task = asyncio.create_task(coroutine)
@@ -299,7 +299,7 @@ class ApixEventLoop:
             coroutine.close()
             raise
         finally:
-            _handler_semaphore_context.reset(token)
+            handler_semaphore_context.reset(token)
 
         self._background_handler_tasks.add(task)
         task.add_done_callback(self._on_background_handler_done)

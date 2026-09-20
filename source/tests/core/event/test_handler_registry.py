@@ -103,20 +103,6 @@ async def test_instance_registration_routes_patterns_and_unregisters_all_subscri
         handler.unregister(missing_ok=False)
 
 
-@pytest.mark.parametrize("options, expected", [
-    ({}, (False, 5, True)),
-    ({"stop_when_error": True, "time_out": 2, "background": False}, (True, 2, False)),
-    ({"time_out": 0}, (False, None, True)),
-])
-def test_instance_registration_preserves_callbacks_and_applies_execution_options(options, expected):
-    callbacks = [AsyncMock() for _ in range(5)]
-    handler = ApixEventHandler(*callbacks, stop_when_error=False, time_out=5, background=True)
-    handler.register("event.*", **options)
-    assert (handler.stop_when_error, handler.time_out, handler.background) == expected
-    assert [handler.core_func, handler.on_accepted, handler.on_has_error,
-            handler.on_error, handler.on_cancelled] == callbacks
-
-
 def test_instance_reregistration_replaces_patterns_filters_and_ordering():
     first = make_entry("first").register("event.*", priority=10)
     last = make_entry("last").register("event.*", priority=1)
@@ -140,7 +126,7 @@ def test_instance_reregistration_replaces_patterns_filters_and_ordering():
     (("new.*",), {"exist_ok": False}, EventHandlerAlreadyRegisteredError),
 ])
 def test_failed_instance_registration_preserves_existing_settings(patterns, options, error):
-    handler = make_entry("instance").register("old.*", priority=10, time_out=5)
+    handler = make_entry("instance").register("old.*", priority=10)
     with pytest.raises(error):
         handler.register(*patterns, background=True, **options)
     assert get_handler_registry().get_handler(handler.name) is handler

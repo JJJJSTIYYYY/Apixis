@@ -1,9 +1,12 @@
 """Subscription conveniences backed by the factory-managed handler registry."""
 
+import asyncio
 from copy import copy
+from typing import Literal
+from uuid import uuid4
 
-from apixis.core.event.base import ApixEventHandler, EventHandlerFunc
-from apixis.core.event.factory import get_handler_registry
+from apixis.core.event.base import ApixEvent, ApixEventHandler, EventHandlerFunc, suspend_process
+from apixis.core.event.factory import aget_handler_registry, get_handler_registry
 
 
 def subscribe(
@@ -230,6 +233,8 @@ def subscribe(
             If ``exist_ok`` is ``False`` and the function name already exists
             in the handler registry.
     """
+    if priority is not None and (priority > 9999 or priority < -9999):
+        raise ValueError(f"priority must be in the range [-9999, 9999], got {priority}")
     def decorator[HandlerT: EventHandlerFunc | ApixEventHandler](
         func: HandlerT,
     ) -> HandlerT:
@@ -296,6 +301,64 @@ def get_handler_meta(
         'time_out': handler.time_out,
         'background': handler.background,
     }
+
+
+async def await_for(
+    event_name: str, 
+    *, 
+    point: Literal['received', 'processed'] = 'received', 
+    filter: str | None = None,
+    time_out: float | None = None
+) -> dict:
+    """Wait a event, and return the event data when event is processing.
+    
+    Args:
+        event_name:
+            The event name to wait for. Glob-style patterns are supported.
+        point:
+            The point of the event to wait for. 
+            If 'received', wait for the event to be received and return the raw event data.
+            If 'processed', wait for the event to be processed by all foreground handlers and return the processed event data.
+        filter:
+            The event name to filter. Glob-style patterns are supported.
+            This method will not return when a filtered event is received or processed.
+        time_out:
+            The maximum time to wait for the event. If None, wait indefinitely.
+    """
+    future = asyncio.get_running_loop().create_future()
+
+    async def resolve_future(event: ApixEvent) -> None:
+        """Resolve the future."""
+        if future.done():
+            return
+        return future.set_result(event)
+
+    handler = ApixEventHandler(
+        core_func=resolve_future,
+        on_accepted=resolve_future,
+        on_cancelled=resolve_future,
+        on_has_error=resolve_future,
+        on_error=resolve_future,
+        stop_when_error=False,
+        name='resolve_future-'+uuid4().hex
+    )
+
+    handler.subscribe = [event_name]
+    handler.priority = 10000 if point == 'received' else -10000
+    handler.filter_event = filter
+    registry = await aget_handler_registry()
+    registry.register_handler(handler, exist_ok=True)
+
+    try:
+        async with suspend_process():
+            if time_out is not None:
+                result = await asyncio.wait_for(future, timeout=time_out)
+            else:
+                result = await future
+    finally:
+        handler.unregister(missing_ok=True)
+    return result
+
 
 
 def is_registered(
