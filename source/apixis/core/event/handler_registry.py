@@ -180,7 +180,8 @@ class ApixHandlerRegistry:
         if left_position is not None:
             return left_position[0]
 
-        assert right_position is not None
+        if right_position is None:
+            raise ValueError("right_position can not be None.")
         return right_position[0]
 
     def _invalidate_matching_chains(self, handler: ApixEventHandler) -> None:

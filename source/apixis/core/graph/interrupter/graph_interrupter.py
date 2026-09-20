@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from typing import Any, Callable
 
+from apixis.core.event.base import suspend_process
 from apixis.core.graph.context.manager import get_graph_context
 from apixis.core.graph.base import GLOBALNS
 from apixis.core.graph.context.graph_context import GraphContext
@@ -64,7 +65,6 @@ async def interrupt(
     run_id = context.run_id
     namespace = get_graph_namespace(context.graph_id)
     assert run_id is not None
-    assert namespace is not None
 
     loop = asyncio.get_running_loop()
     future = loop.create_future()
@@ -78,7 +78,8 @@ async def interrupt(
         graph_id=context.graph_id,
     )
     completion = context.completion
-    assert completion is not None
+    if completion is None:
+        raise RuntimeError("Completion in GraphContext could not be None.")
 
     def close_block(_):
         """A waiting interruption cannot outlive its invocation."""
@@ -91,18 +92,19 @@ async def interrupt(
             event_name=get_graph_interrupted_name(namespace, missing_ok=True),
             context=block,
         )
-        if timeout is None:
-            return await block
-        timeout_scope = asyncio.timeout(timeout)
-        try:
-            async with timeout_scope:
+        async with suspend_process():
+            if timeout is None:
                 return await block
-        except TimeoutError:
-            # A hook may fail the block with TimeoutError itself. Only this
-            # interruption's own deadline is converted into a None result.
-            if not timeout_scope.expired():
-                raise
-            return None
+            timeout_scope = asyncio.timeout(timeout)
+            try:
+                async with timeout_scope:
+                    return await block
+            except TimeoutError:
+                # A hook may fail the block with TimeoutError itself. Only this
+                # interruption's own deadline is converted into a None result.
+                if not timeout_scope.expired():
+                    raise
+                return None
     except asyncio.CancelledError:
         # External ``Block.cancel()`` aborts the owning graph attempt at its
         # last committed snapshot. The CancelledError is then re-raised to
