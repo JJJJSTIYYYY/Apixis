@@ -11,9 +11,25 @@ from uuid import uuid4
 from apixis.core.utils.logger import logger
 
 
-handler_semaphore_context: ContextVar[asyncio.Semaphore | None] = ContextVar(
-    "apixis_handler_semaphore", default=None,
+@dataclass(slots=True)
+class HandlerChainToken:
+    """Shared ownership markers for one foreground handler chain.
+
+    The consumer creates this token after acquiring a permit. Suspension and
+    dispatch completion update it; the token itself never operates on the
+    semaphore. Child tasks share the token and serialize permit reacquisition.
+    """
+
+    semaphore: asyncio.BoundedSemaphore
+    held: bool = True
+    closed: bool = False
+    resume_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+handler_chain_context: ContextVar[HandlerChainToken | None] = ContextVar(
+    "apixis_handler_chain", default=None,
 )
+
 
 @asynccontextmanager
 async def suspend_process():
@@ -22,6 +38,10 @@ async def suspend_process():
     While the ``async with`` block is running, the current handler chain
     is paused so that other chains can proceed. The chain is resumed
     when the block exits.
+
+    Nested calls share the outer suspension, including child tasks created
+    inside it. Independently suspended branches share one permit: the first
+    branch to resume reacquires it. Background handlers have no chain token.
 
     Yields:
         None
@@ -32,21 +52,32 @@ async def suspend_process():
             await do_something()
         ```
     """
-    sp = handler_semaphore_context.get()
-    released = False
+    chain = handler_chain_context.get()
 
-    if sp is not None:
-        try:
-            sp.release()
-            released = True
-        except ValueError:
-            pass
-
-    try:
+    if chain is None or chain.closed:
         yield
+        return
+
+    token = handler_chain_context.set(None)
+    try:
+        if chain.held:
+            chain.semaphore.release()
+            chain.held = False
+        try:
+            yield
+        finally:
+            # Sibling tasks may exit their suspension concurrently. Only one
+            # may reacquire the chain's permit; cancellation leaves it unheld.
+            async with chain.resume_lock:
+                if not chain.closed and not chain.held:
+                    await chain.semaphore.acquire()
+                    if chain.closed:
+                        # Dispatch may finish while a detached child waits.
+                        chain.semaphore.release()
+                    else:
+                        chain.held = True
     finally:
-        if released:
-            await sp.acquire()
+        handler_chain_context.reset(token)
 
 
 class EventType(str, Enum):

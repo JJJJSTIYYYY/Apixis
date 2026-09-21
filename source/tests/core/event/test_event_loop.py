@@ -13,7 +13,7 @@ import pytest
 
 from apixis.core.event import ApixEventPipe, get_event_registry
 
-from apixis.core.event.base import ApixEvent, EventType, ApixEventHandler, handler_semaphore_context
+from apixis.core.event.base import ApixEvent, EventType, ApixEventHandler
 from apixis.core.event.handler_registry import ApixHandlerRegistry
 from apixis.core.event.event_loop import ApixEventLoop
 from apixis.core.config.core_config import EVENT_LOOP_BACKPRESSURE
@@ -601,23 +601,13 @@ class TestCreateBackgroundHandlerTask:
         _reset_registry(registry)
         handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
-        contexts = []
-
-        async def callback(event):
-            contexts.append(handler_semaphore_context.get())
-
-        mock_callback = AsyncMock(side_effect=callback)
+        mock_callback = AsyncMock()
         entry = _make_handler_entry(callback=mock_callback, background=True, time_out=None)
         registry.register_handler(entry)
         event = _make_event()
 
         initial_count = len(handler._background_handler_tasks)
-        token = handler_semaphore_context.set(handler._event_semaphore)
-        try:
-            handler._create_background_handler_task(entry.name, event)
-            assert handler_semaphore_context.get() is handler._event_semaphore
-        finally:
-            handler_semaphore_context.reset(token)
+        handler._create_background_handler_task(entry.name, event)
 
         assert len(handler._background_handler_tasks) == initial_count + 1
 
@@ -627,7 +617,6 @@ class TestCreateBackgroundHandlerTask:
             await asyncio.gather(*pending, return_exceptions=True)
 
         mock_callback.assert_awaited_once_with(event)
-        assert contexts == [None]
 
 
 # ============================

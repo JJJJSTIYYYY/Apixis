@@ -569,8 +569,8 @@ class TestEventLoopRemainingBranches:
         completed = asyncio.Event()
         on_done = handler._on_dispatch_done
 
-        def record_completion(task):
-            on_done(task)
+        def record_completion(task, **kwargs):
+            on_done(task, **kwargs)
             completed.set()
 
         monkeypatch.setattr(handler, "_on_dispatch_done", record_completion)

@@ -7,7 +7,6 @@ import pytest
 from apixis.core.event.base import (
     ApixEvent,
     EventType,
-    handler_semaphore_context,
     suspend_process,
 )
 from apixis.core.event.factory import (
@@ -40,51 +39,6 @@ async def wait_until_registered(previous_names: set[str]) -> None:
 async def test_suspend_process_without_handler_context_is_a_noop():
     async with suspend_process():
         await asyncio.sleep(0)
-
-
-async def test_suspend_process_releases_and_restores_handler_capacity():
-    semaphore = asyncio.BoundedSemaphore(1)
-    await semaphore.acquire()
-    token = handler_semaphore_context.set(semaphore)
-    try:
-        assert semaphore.locked()
-        async with suspend_process():
-            assert not semaphore.locked()
-        assert semaphore.locked()
-    finally:
-        handler_semaphore_context.reset(token)
-        semaphore.release()
-
-
-async def test_suspend_process_restores_capacity_after_body_failure():
-    semaphore = asyncio.BoundedSemaphore(1)
-    await semaphore.acquire()
-    token = handler_semaphore_context.set(semaphore)
-    try:
-        with pytest.raises(RuntimeError, match="failed while suspended"):
-            async with suspend_process():
-                assert not semaphore.locked()
-                raise RuntimeError("failed while suspended")
-        assert semaphore.locked()
-    finally:
-        handler_semaphore_context.reset(token)
-        semaphore.release()
-
-
-async def test_nested_suspend_process_releases_capacity_only_once():
-    semaphore = asyncio.BoundedSemaphore(1)
-    await semaphore.acquire()
-    token = handler_semaphore_context.set(semaphore)
-    try:
-        async with suspend_process():
-            assert not semaphore.locked()
-            async with suspend_process():
-                assert not semaphore.locked()
-            assert not semaphore.locked()
-        assert semaphore.locked()
-    finally:
-        handler_semaphore_context.reset(token)
-        semaphore.release()
 
 
 async def test_await_for_received_resolves_before_foreground_processing(

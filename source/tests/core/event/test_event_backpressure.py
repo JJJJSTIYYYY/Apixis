@@ -7,7 +7,9 @@ import pytest
 from apixis.core.event import ApixEvent, EventType, subscribe, unsubscribe
 from apixis.core.event import event_loop, event_pipe, factory
 from apixis.core.event.factory import get_handler_registry
-from apixis.core.graph import START, END, GraphManager
+from apixis.core.event.base import suspend_process
+from apixis.core.graph import START, END, Command, GraphManager
+from apixis.core.graph.interrupter import interrupt
 
 
 EVENT_CAPACITY = 2
@@ -29,6 +31,10 @@ async def runtime(monkeypatch, request):
     core = factory.EventCore(registry, pipe, handlers, loop)
     monkeypatch.setattr(factory, "_core", core)
     await factory.start_core(core)
+    running_loop = asyncio.get_running_loop()
+    previous_handler = running_loop.get_exception_handler()
+    callback_errors = []
+    running_loop.set_exception_handler(lambda _, context: callback_errors.append(context))
     try:
         yield pipe, loop
     finally:
@@ -41,6 +47,8 @@ async def runtime(monkeypatch, request):
         await pipe.stop()
         for name in tuple(handlers.registry):
             handlers.unregister_handler(name)
+        running_loop.set_exception_handler(previous_handler)
+        assert not callback_errors, callback_errors
 
 
 async def test_saturated_handlers_can_publish_follow_up_events(runtime, wait_for_dispatch):
@@ -484,3 +492,274 @@ async def test_stop_and_restart_preserve_queued_events(runtime, wait_for_dispatc
     await loop.start()
     await wait_for_dispatch(loop)
     assert completed == [f"queued.{index}" for index in range(pipe.maxsize)]
+
+
+@pytest.mark.parametrize("runtime", [1], indirect=True)
+@pytest.mark.parametrize("mode", ["single", "nested", "parallel", "outer_parallel"])
+@pytest.mark.parametrize("fail", [False, True])
+async def test_suspended_chain_shares_capacity_and_resumes_before_continuing(
+    runtime, wait_for_dispatch, mode, fail,
+):
+    """Nested waits and sibling waits lend one slot and restore it before return."""
+    pipe, loop = runtime
+    entered, leaving = asyncio.Queue(), asyncio.Queue()
+    finish_wait, finish_probes = asyncio.Event(), asyncio.Event()
+    probe_entered, parent_done = asyncio.Event(), asyncio.Event()
+    active = peak = 0
+    branches = 2 if "parallel" in mode else 1
+
+    async def wait():
+        entered.put_nowait(True)
+        await finish_wait.wait()
+        leaving.put_nowait(True)
+
+    async def branch():
+        async with suspend_process():
+            if mode == "nested":
+                async with suspend_process():
+                    await wait()
+            else:
+                await wait()
+            if fail:
+                raise ValueError("suspended operation failed")
+
+    @subscribe("suspend.parent")
+    async def parent(event):
+        try:
+            if mode == "outer_parallel":
+                async with suspend_process():
+                    await asyncio.gather(*(branch() for _ in range(branches)))
+            else:
+                await asyncio.gather(*(branch() for _ in range(branches)))
+        except ValueError:
+            pass
+        parent_done.set()
+
+    @subscribe("suspend.probe")
+    async def probe(event):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        probe_entered.set()
+        try:
+            await finish_probes.wait()
+            await asyncio.sleep(0)
+        finally:
+            active -= 1
+
+    try:
+        await pipe.post_event(event_type=EventType.INFO, event_name="suspend.parent")
+        for _ in range(branches):
+            await asyncio.wait_for(entered.get(), 1)
+        for _ in range(2):
+            await pipe.post_event(event_type=EventType.INFO, event_name="suspend.probe")
+        await asyncio.wait_for(probe_entered.wait(), 1)
+        finish_wait.set()
+        for _ in range(branches):
+            await asyncio.wait_for(leaving.get(), 1)
+        # Yield to both resumptions and already scheduled probe handlers.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert peak == 1
+        assert not parent_done.is_set()
+        finish_probes.set()
+        await wait_for_dispatch(loop)
+        assert parent_done.is_set()
+        assert peak == 1
+    finally:
+        finish_wait.set()
+        finish_probes.set()
+
+
+@pytest.mark.parametrize("runtime", [1], indirect=True)
+@pytest.mark.parametrize("cancel_at", ["body", "resume", "body_and_resume"])
+async def test_cancellation_does_not_expand_dispatch_capacity(
+    runtime, wait_for_dispatch, cancel_at,
+):
+    """Cancellation during reacquisition cannot let two other events overlap."""
+    pipe, loop = runtime
+    entered, leaving = asyncio.Event(), asyncio.Event()
+    finish_wait, finish_probes = asyncio.Event(), asyncio.Event()
+    probe_entered = asyncio.Event()
+    parent_task = None
+    active = peak = 0
+
+    @subscribe("cancel.parent")
+    async def parent(event):
+        nonlocal parent_task
+        parent_task = asyncio.current_task()
+        async with suspend_process():
+            entered.set()
+            try:
+                await finish_wait.wait()
+            finally:
+                leaving.set()
+
+    @subscribe("cancel.probe")
+    async def probe(event):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        probe_entered.set()
+        try:
+            await finish_probes.wait()
+            await asyncio.sleep(0)
+        finally:
+            active -= 1
+
+    try:
+        await pipe.post_event(event_type=EventType.INFO, event_name="cancel.parent")
+        await asyncio.wait_for(entered.wait(), 1)
+        await pipe.post_event(event_type=EventType.INFO, event_name="cancel.probe")
+        await asyncio.wait_for(probe_entered.wait(), 1)
+        if cancel_at == "resume":
+            finish_wait.set()
+        else:
+            parent_task.cancel()
+        await asyncio.wait_for(leaving.wait(), 1)
+        if cancel_at != "body":
+            parent_task.cancel()
+            await asyncio.gather(parent_task, return_exceptions=True)
+        for _ in range(2):
+            await pipe.post_event(event_type=EventType.INFO, event_name="cancel.probe")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert peak == 1
+        finish_probes.set()
+        await wait_for_dispatch(loop)
+        assert parent_task.cancelled()
+        # Exercise later traffic as well as the cancellation window itself.
+        for _ in range(6):
+            await pipe.post_event(event_type=EventType.INFO, event_name="cancel.probe")
+        await wait_for_dispatch(loop)
+        assert peak == 1
+    finally:
+        finish_wait.set()
+        finish_probes.set()
+
+
+@pytest.mark.parametrize("runtime", [1], indirect=True)
+async def test_background_suspension_cannot_lend_foreground_capacity(runtime, wait_for_dispatch):
+    """A background wait neither releases nor reacquires its launching event's slot."""
+    pipe, loop = runtime
+    foreground_entered, background_entered = asyncio.Event(), asyncio.Event()
+    finish_foreground, finish_background = asyncio.Event(), asyncio.Event()
+    background_done, probe_entered = asyncio.Event(), asyncio.Event()
+
+    @subscribe("background.start", background=True, priority=2)
+    async def background(event):
+        async with suspend_process():
+            background_entered.set()
+            await finish_background.wait()
+        background_done.set()
+
+    @subscribe("background.start", priority=1)
+    async def foreground(event):
+        foreground_entered.set()
+        await finish_foreground.wait()
+
+    @subscribe("background.probe")
+    async def probe(event):
+        probe_entered.set()
+
+    try:
+        await pipe.post_event(event_type=EventType.INFO, event_name="background.start")
+        await asyncio.wait_for(foreground_entered.wait(), 1)
+        await asyncio.wait_for(background_entered.wait(), 1)
+        await pipe.post_event(event_type=EventType.INFO, event_name="background.probe")
+        finish_background.set()
+        await asyncio.wait_for(background_done.wait(), 1)
+        assert not probe_entered.is_set()
+        finish_foreground.set()
+        await wait_for_dispatch(loop)
+        assert probe_entered.is_set()
+    finally:
+        finish_foreground.set()
+        finish_background.set()
+
+
+@pytest.mark.parametrize("runtime", [1], indirect=True)
+@pytest.mark.parametrize("timeout", [None, 1])
+async def test_parallel_graph_interruptions_share_one_event_slot(runtime, timeout):
+    """Parallel nodes can both interrupt and resume with only one event slot."""
+    async def route(state):
+        return Command(goto=["first", "second"])
+
+    async def first(state):
+        return {"first": await interrupt(data="first", timeout=timeout)}
+
+    async def second(state):
+        return {"second": await interrupt(data="second", timeout=timeout)}
+
+    graph = (
+        GraphManager().add_node(route).add_node(first).add_node(second)
+        .add_edge(START, "route").compile_graph()
+    )
+    received = []
+
+    @graph.add_interrupted_hook
+    async def resume(block):
+        received.append(block.with_data)
+        block.resolve(f"{block.with_data}-resolved")
+
+    try:
+        assert await asyncio.wait_for(graph.invoke({}), 1) == {
+            "first": "first-resolved", "second": "second-resolved",
+        }
+        assert sorted(received) == ["first", "second"]
+    finally:
+        graph.decompose(force=True)
+
+
+@pytest.mark.parametrize("runtime", [1], indirect=True)
+async def test_child_outliving_dispatch_cannot_reclaim_its_slot(runtime, wait_for_dispatch):
+    """A late child cannot acquire or lend capacity after its chain has ended."""
+    pipe, loop = runtime
+    entered, finish_wait, finish_probes = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    probe_entered = asyncio.Event()
+    child_task = None
+    active = peak = 0
+
+    async def child():
+        async with suspend_process():
+            entered.set()
+            await finish_wait.wait()
+        # The inherited context still refers to the completed chain.
+        async with suspend_process():
+            await asyncio.sleep(0)
+
+    @subscribe("late.parent", time_out=None)
+    async def parent(event):
+        nonlocal child_task
+        child_task = asyncio.create_task(child())
+        await entered.wait()
+
+    @subscribe("late.probe", time_out=None)
+    async def probe(event):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        probe_entered.set()
+        try:
+            await finish_probes.wait()
+        finally:
+            active -= 1
+
+    try:
+        await pipe.post_event(event_type=EventType.INFO, event_name="late.parent")
+        await wait_for_dispatch(loop)
+        await pipe.post_event(event_type=EventType.INFO, event_name="late.probe")
+        await asyncio.wait_for(probe_entered.wait(), 1)
+        await pipe.post_event(event_type=EventType.INFO, event_name="late.probe")
+        finish_wait.set()
+        await asyncio.wait_for(child_task, 1)
+        assert peak == 1
+        finish_probes.set()
+        await wait_for_dispatch(loop)
+        assert peak == 1
+    finally:
+        finish_wait.set()
+        finish_probes.set()
+        if child_task is not None:
+            child_task.cancel()
+            await asyncio.gather(child_task, return_exceptions=True)

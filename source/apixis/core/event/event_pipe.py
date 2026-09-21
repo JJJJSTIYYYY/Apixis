@@ -36,7 +36,7 @@ from apixis.core.config.core_config import (
     REMOTE_GATEWAY_PIPE_ENDPOINT,
 )
 from apixis.core.event.base import (
-    ApixEvent, ChannelType, EventType, handler_semaphore_context, suspend_process,
+    ApixEvent, ChannelType, EventType, suspend_process,
 )
 from apixis.core.event.pipe_channel import (
     BuiltinChannel,

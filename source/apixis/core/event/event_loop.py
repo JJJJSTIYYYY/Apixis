@@ -1,12 +1,13 @@
 import asyncio
 from datetime import datetime
+from functools import partial
 import traceback
 
 from apixis.core.config.core_config import (
     EVENT_LOOP_BACKPRESSURE,
     SHOW_EVENT_DISPATCH,
 )
-from apixis.core.event.base import ApixEvent, handler_semaphore_context
+from apixis.core.event.base import ApixEvent, HandlerChainToken, handler_chain_context
 from apixis.core.event.handler_registry import ApixHandlerRegistry
 from apixis.core.event.event_pipe import ApixEventPipe
 from apixis.core.event.event_registry import ApixEventRegistry
@@ -29,7 +30,7 @@ class ApixEventLoop:
         self._event_pipe = event_pipe
         self._event_registry = event_registry
 
-        self._event_semaphore = asyncio.Semaphore(EVENT_LOOP_BACKPRESSURE)
+        self._event_semaphore = asyncio.BoundedSemaphore(EVENT_LOOP_BACKPRESSURE)
 
         self._event_consumer_task: asyncio.Task | None = None
         self._dispatch_tasks: set[asyncio.Task] = set()
@@ -103,6 +104,7 @@ class ApixEventLoop:
                     self._event_semaphore.release()
                     continue
 
+                chain = HandlerChainToken(self._event_semaphore)
                 try:
                     if event.event_name:
                         self._event_registry.record_event(event)
@@ -128,14 +130,20 @@ class ApixEventLoop:
                         )
 
                     coroutine = self._dispatch_event(event, handler_chain)
+                    token = handler_chain_context.set(chain)
                     try:
                         task = asyncio.create_task(coroutine)
                     except BaseException:
                         coroutine.close()
                         raise
+                    finally:
+                        handler_chain_context.reset(token)
 
                 except BaseException as exc:
-                    self._event_semaphore.release()
+                    chain.closed = True
+                    if chain.held:
+                        self._event_semaphore.release()
+                        chain.held = False
                     self._event_pipe.task_done()
 
                     if not isinstance(exc, Exception):
@@ -149,7 +157,7 @@ class ApixEventLoop:
 
                 else:
                     self._dispatch_tasks.add(task)
-                    task.add_done_callback(self._on_dispatch_done)
+                    task.add_done_callback(partial(self._on_dispatch_done, chain=chain))
                     self._event_pipe.task_done()
 
         except asyncio.CancelledError:
@@ -165,8 +173,6 @@ class ApixEventLoop:
             f"Dispatching event `{event.event_name}` "
             f"to {len(handler_chain)} handlers."
         )
-
-        token = handler_semaphore_context.set(self._event_semaphore)
 
         try:
             if not event.event_name:
@@ -202,9 +208,7 @@ class ApixEventLoop:
             return event
 
         except asyncio.CancelledError:
-            # Cancellation notifications must remain serial. A foreground
-            # handler may release and reacquire the event semaphore, so these
-            # operations must never overlap across handlers.
+            # Keep cancellation cleanup ordered within the same handler chain.
             for handler_name in handler_chain:
                 handler = self._registry.get_handler(handler_name)
 
@@ -232,11 +236,12 @@ class ApixEventLoop:
                 f"{exc}\n{traceback.format_exc()}"
             )
 
-        finally:
-            handler_semaphore_context.reset(token)
-
-    def _on_dispatch_done(self, task: asyncio.Task) -> None:
-        """Release one foreground event slot when dispatch completes."""
+    def _on_dispatch_done(self, task: asyncio.Task, *, chain: HandlerChainToken) -> None:
+        """Close the chain and release its permit only if it still owns one."""
+        chain.closed = True
+        if chain.held:
+            self._event_semaphore.release()
+            chain.held = False
         self._dispatch_tasks.discard(task)
 
         if not task.cancelled():
@@ -246,8 +251,6 @@ class ApixEventLoop:
                     f"Dispatch task failed: "
                     f"{type(error).__name__}: {error}"
                 )
-
-        self._event_semaphore.release()
 
     async def _execute_handler(
         self,
@@ -291,7 +294,7 @@ class ApixEventLoop:
         # Background handlers do not own foreground event capacity. Clearing
         # the context also prevents their event publishing from releasing or
         # reacquiring a foreground event slot.
-        token = handler_semaphore_context.set(None)
+        token = handler_chain_context.set(None)
 
         try:
             task = asyncio.create_task(coroutine)
@@ -299,7 +302,7 @@ class ApixEventLoop:
             coroutine.close()
             raise
         finally:
-            handler_semaphore_context.reset(token)
+            handler_chain_context.reset(token)
 
         self._background_handler_tasks.add(task)
         task.add_done_callback(self._on_background_handler_done)
