@@ -52,8 +52,21 @@ class ApixEventLoop:
             self._event_consumer_loop(),
             name="pipe-event-consumer",
         )
+        self._event_consumer_task.add_done_callback(self._on_consumer_done)
         self._started = True
         logger.info("Worker started.")
+
+    def _on_consumer_done(self, task: asyncio.Task) -> None:
+        """Reset startup state when the current consumer exits for any reason."""
+        # An old consumer may finish after stop() has started a replacement.
+        # Completion callbacks also cover cancellation before the coroutine runs.
+        if self._event_consumer_task is task:
+            self._event_consumer_task = None
+            self._started = False
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logger.error(f"Event consumer failed: {type(error).__name__}: {error}")
 
     async def stop(self) -> None:
         """Pause consumption, preserving queued and pending events.

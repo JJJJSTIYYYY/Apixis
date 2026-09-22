@@ -48,6 +48,49 @@ def event(name="factory.event"):
     return ApixEvent(name, EventType.INFO, name, None, 0)
 
 
+@pytest.mark.parametrize("exit_mode", ["before_run", "waiting", "failure"])
+@pytest.mark.parametrize("async_getter", [False, True])
+async def test_getters_restart_an_exited_consumer(
+    fresh_core, monkeypatch, exit_mode, async_getter,
+):
+    """Consumer completion clears startup state without an explicit stop call."""
+    await start_core()
+    loop = get_event_loop()
+    pipe = get_event_pipe()
+    consumer = loop._event_consumer_task
+    if exit_mode == "failure":
+        get = pipe.get
+
+        async def fail_once():
+            monkeypatch.setattr(pipe, "get", get)
+            raise RuntimeError("consumer input failed")
+
+        monkeypatch.setattr(pipe, "get", fail_once)
+    else:
+        if exit_mode == "waiting":
+            await asyncio.sleep(0)
+        consumer.cancel()
+    await asyncio.gather(consumer, return_exceptions=True)
+
+    if async_getter:
+        restarted_pipe = await factory.aget_event_pipe()
+    else:
+        restarted_pipe = get_event_pipe()
+    assert restarted_pipe is pipe
+
+    received = asyncio.Event()
+
+    @subscribe("factory.restarted")
+    async def receive(message):
+        received.set()
+
+    try:
+        await pipe.post_event(event_type=EventType.INFO, event_name="factory.restarted")
+        await asyncio.wait_for(received.wait(), 1)
+    finally:
+        unsubscribe(receive.__name__)
+
+
 def test_getters_construct_without_running_asyncio(fresh_core):
     first = components()
     assert all(a is b for a, b in zip(first, components()))

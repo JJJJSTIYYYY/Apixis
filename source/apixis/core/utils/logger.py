@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 import json
 import os
 import sys
@@ -8,7 +9,9 @@ import traceback
 from typing import Any
 import inspect
 
-from apixis.core.config.core_config import BASE_DIR, DEBUG_LEVEL, TRACE, MAX_LOG_FILE_SIZE
+from apixis.core.config.core_config import (
+    BASE_DIR, DEBUG_LEVEL, TRACE, MAX_LOG_FILE_SIZE, LOG_BUFFER_SIZE,
+)
 
 
 LOG_LEVELS = {
@@ -40,7 +43,8 @@ class Logger:
     Apix loggger
     """
 
-    log_cache: dict[str, list] = {}
+    # One shared FIFO bounds pending records even when logger names vary.
+    log_cache: deque[tuple[str, str]] = deque(maxlen=LOG_BUFFER_SIZE)
     log_cache_size: int = 0
     current_log_file_index: dict[str, int] = {}
     current_log_date: dict[str, str] = {}
@@ -199,10 +203,10 @@ class Logger:
         
         formatted_message = self._get_formatted_message(level, message, *args, **kwargs)
 
-        if Logger.log_cache.get(self.name) is None:
-            Logger.log_cache[self.name] = []
-        Logger.log_cache[self.name].append(formatted_message)
-        Logger.log_cache_size = Logger.log_cache_size + len(formatted_message)
+        if len(Logger.log_cache) == Logger.log_cache.maxlen:
+            Logger.log_cache_size -= len(Logger.log_cache[0][1])
+        Logger.log_cache.append((self.name, formatted_message))
+        Logger.log_cache_size += len(formatted_message)
         if Logger.log_cache_size >= Logger.max_cache_size:
             Logger.flush_event.set()
 
@@ -350,7 +354,7 @@ class Logger:
                 return
 
             cache = cls.log_cache
-            cls.log_cache = {}
+            cls.log_cache = deque(maxlen=LOG_BUFFER_SIZE)
             cls.log_cache_size = 0
 
         await asyncio.to_thread(
@@ -359,11 +363,16 @@ class Logger:
         )
         
     @classmethod
-    def _flush_to_disk(cls, cache: dict[str, list[str]]):
+    def _flush_to_disk(cls, cache: deque[tuple[str, str]]):
         """
         Flush log cache to disk in worker thread.
         """
-        for logger_name, messages in cache.items():
+        # Preserve per-logger output files and record order after FIFO eviction.
+        grouped: dict[str, list[str]] = {}
+        for logger_name, message in cache:
+            grouped.setdefault(logger_name, []).append(message)
+
+        for logger_name, messages in grouped.items():
 
             if not messages:
                 continue

@@ -51,6 +51,65 @@ async def runtime(monkeypatch, request):
         assert not callback_errors, callback_errors
 
 
+@pytest.mark.parametrize("runtime", [1, 2], indirect=True)
+@pytest.mark.parametrize("outcome", ["success", "error", "cancel"])
+async def test_nested_graph_waits_release_saturated_parent_capacity(
+    runtime, request, outcome,
+):
+    """Nested invocations complete even when all slots belong to parent nodes."""
+    capacity = request.node.callspec.params["runtime"]
+    parents_entered = 0
+    all_parents_entered = asyncio.Event()
+    leaf_calls = []
+
+    async def leaf(state):
+        leaf_calls.append(state["value"])
+        if outcome == "error":
+            raise ValueError("child failed")
+        if outcome == "cancel":
+            raise asyncio.CancelledError()
+        return {"value": state["value"] + 1}
+
+    leaf_graph = GraphManager().add_node(leaf).add_edge(START, "leaf").compile_graph()
+
+    async def middle(state):
+        return await leaf_graph.invoke(state)
+
+    middle_graph = (
+        GraphManager().add_node(middle).add_edge(START, "middle").compile_graph()
+    )
+
+    async def parent(state):
+        nonlocal parents_entered
+        parents_entered += 1
+        if parents_entered == capacity:
+            all_parents_entered.set()
+        await all_parents_entered.wait()
+        return await middle_graph.invoke(state)
+
+    parent_graph = (
+        GraphManager().add_node(parent).add_edge(START, "parent").compile_graph()
+    )
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                *(parent_graph.invoke({"value": i}) for i in range(capacity)),
+                return_exceptions=True,
+            ),
+            timeout=2,
+        )
+        assert sorted(leaf_calls) == list(range(capacity))
+        if outcome == "success":
+            assert results == [{"value": i + 1} for i in range(capacity)]
+        else:
+            error_type = ValueError if outcome == "error" else asyncio.CancelledError
+            assert all(isinstance(result, error_type) for result in results)
+    finally:
+        parent_graph.decompose()
+        middle_graph.decompose()
+        leaf_graph.decompose()
+
+
 async def test_saturated_handlers_can_publish_follow_up_events(runtime, wait_for_dispatch):
     """A full queue and all occupied permits must still allow handler posts."""
     pipe, loop = runtime

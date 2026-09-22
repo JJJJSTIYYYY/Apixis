@@ -238,9 +238,9 @@ class GraphManager:
 
         Args:
             using_namespace: Namespace used by the compiled graph's event
-                listeners. ``None`` and an empty string generate a globally
-                unique namespace. Pass ``GLOBALNS`` to explicitly select the
-                global namespace. Glob characters are forbidden.
+                listeners. ``None`` and an empty string generate a namespace
+                unique within the process. Pass ``GLOBALNS`` to explicitly
+                select the global namespace. Glob characters are forbidden.
             exist_ok: If ``False``, compiling into an occupied namespace
                 raises ``ValueError``. If ``True``, the existing graph is
                 retired before the new dispatch listener is registered.

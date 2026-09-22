@@ -10,11 +10,11 @@ APIXIS 在导入 core 配置时从当前工作目录的 `./config.yaml` 读取�
 LOG:
   debug_level: INFO
   show_event_dispatch: false
+  buffer_size: 1024
 
 PIPELINE:
   event_pipe_max_len: 65536
   event_loop_backpressure: 1024
-  background_handler_backpressure: 4096
 
 LIFESPAN:
   resource_clean_interval: 300
@@ -27,9 +27,9 @@ LIFESPAN:
 | `LOG.debug_level` | `DEBUG` | 日志级别 |
 | `LOG.trace` | `true` | trace 开关 |
 | `LOG.show_event_dispatch` | `true` | event dispatch 日志 |
+| `LOG.buffer_size` | `1024` | 日志缓存条数上限，对应 `LOG_BUFFER_SIZE`；必须为正整数，所有 logger 共享 FIFO，满时丢弃最旧记录 |
 | `PIPELINE.event_pipe_max_len` | `65536` | 外部 mailbox 默认缓冲限制 |
 | `PIPELINE.event_loop_backpressure` | `1024` | event dispatch 并发背压；最小值 128 |
-| `PIPELINE.background_handler_backpressure` | `4096` | 后台 handler 并发限制 |
 | `LIFESPAN.resource_clean_interval` | `300` | 资源清理周期 |
 
 远程 gateway、Kafka 和 RabbitMQ 还可通过 `REMOTE_GATEWAY` / `EVENT_CHANNEL` 配置。仅使用本地图和 builtin event channel 时无需配置这些项。

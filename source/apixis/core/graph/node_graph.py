@@ -10,6 +10,7 @@ from functools import wraps
 from typing import Any
 
 from apixis.core.event.factory import aget_event_pipe
+from apixis.core.event.base import suspend_process
 from apixis.core.event import (
     ApixEvent,
     ApixEventHandler,
@@ -84,7 +85,7 @@ class NodeGraph:
                 Fields marked with ``Annotated[..., AutoMerge()]`` are
                 combined through their current value's ``__add__`` method.
             using_namespace: Namespace used by the graph's event listeners.
-                ``None`` and an empty string generate a globally unique
+                ``None`` and an empty string generate a process-local unique
                 namespace. Pass ``GLOBALNS`` to explicitly select the global
                 namespace.
                 Glob characters (``*``, ``?``, ``[``, ``]``) are forbidden.
@@ -501,7 +502,9 @@ class NodeGraph:
         try:
             if self._is_active_context(context):
                 await self._post_next(context.target_node_name, context)
-            result = await completion
+            # A parent handler must lend its permit while child dispatches run.
+            async with suspend_process():
+                result = await completion
             # Checkpoint history must stay isolated even when output contains
             # KeepRef fields. Normal completion follows the graph's copy policy.
             if context.status == "aborted" and context.context_snapshot:

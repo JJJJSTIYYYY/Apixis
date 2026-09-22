@@ -45,7 +45,7 @@ graph = (
 
 编译为 `NodeGraph`。图必须存在 `START` 的出边。
 
-- `using_namespace=None` 或 `""`：自动生成 namespace；
+- `using_namespace=None` 或 `""`：自动生成进程内唯一的 namespace，不承诺跨进程唯一；
 - `GLOBALNS`：显式使用全局命名域；
 - `exist_ok=False`：namespace 已占用时抛异常；
 - `exist_ok=True`：释放旧图并由新图接管。
@@ -68,6 +68,8 @@ result = await graph.invoke(graph_context=context)
 ```
 
 不能同时传 `state` 和 `graph_context`。
+
+在前台事件 handler 或图节点中等待另一个图的 `invoke()` 时，等待完成期间会挂起当前 handler chain、释放其调度容量，并在继续执行前恢复容量。
 
 ## Stream
 

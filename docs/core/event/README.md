@@ -10,6 +10,8 @@
 
 共享 core 只构建一次，后续调用复用同一组 registry、pipe、handler registry 和 event loop。
 
+消费者任务退出（包括被直接取消）后会清除其启动状态，后续 getter 或 `start_core()` 可在同一个 asyncio loop 内重新发起启动。此行为不承诺跨 asyncio loop 复用已有队列或连接。
+
 ```python
 from apixis import start_core
 
