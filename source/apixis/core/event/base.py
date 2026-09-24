@@ -404,7 +404,8 @@ class ApixEventHandler:
         the whole registration, including all subscriptions. Missing names are
         ignored by default; missing_ok=False raises EventHandlerNotRegisteredError.
         Removal is name-based, including when another instance has replaced
-        this handler under the same name. Already running calls continue.
+        this handler under the same name. Already dequeued events retain this
+        handler if it was captured in their chains, even before execution starts.
         """
         # Import at call time because handler_registry imports this class.
         from apixis.core.event.subscription import unsubscribe

@@ -51,6 +51,69 @@ async def runtime(monkeypatch, request):
         assert not callback_errors, callback_errors
 
 
+@pytest.mark.parametrize("runtime", [1], indirect=True)
+@pytest.mark.parametrize("restart", [False, True])
+async def test_dequeued_handlers_stay_frozen_while_waiting_for_capacity(
+    runtime, monkeypatch, wait_for_dispatch, restart,
+):
+    """Capacity waits and consumer restarts must preserve the dequeue snapshot."""
+    pipe, loop = runtime
+    entered, release, dequeued = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    calls = []
+
+    @subscribe("block")
+    async def blocker(event):
+        entered.set()
+        await release.wait()
+
+    @subscribe("work.*", priority=10)
+    async def target(event):
+        calls.append("old")
+
+    @subscribe("work.*", priority=1)
+    async def tail(event):
+        calls.append("tail")
+
+    get = pipe.get
+
+    async def observe_dequeue():
+        event = await get()
+        if event.event_name == "work.pending":
+            dequeued.set()
+        return event
+
+    # Install the observer before the consumer enters its next get().
+    await loop.stop()
+    monkeypatch.setattr(pipe, "get", observe_dequeue)
+    await loop.start()
+    await pipe.post_event(event_type=EventType.INFO, event_name="block")
+    await asyncio.wait_for(entered.wait(), 1)
+    await pipe.post_event(event_type=EventType.INFO, event_name="work.pending")
+    await asyncio.wait_for(dequeued.wait(), 1)
+    if restart:
+        await loop.stop()
+
+    @subscribe("work.*", priority=20)
+    async def target(event):
+        calls.append("new")
+
+    @subscribe("work.*", priority=30)
+    async def late(event):
+        calls.append("late")
+
+    unsubscribe("tail")
+    if restart:
+        await loop.start()
+    assert calls == []
+    release.set()
+    await wait_for_dispatch(loop)
+    assert calls == ["old", "tail"]
+
+    await pipe.post_event(event_type=EventType.INFO, event_name="work.next")
+    await wait_for_dispatch(loop)
+    assert calls == ["old", "tail", "late", "new"]
+
+
 @pytest.mark.parametrize("runtime", [1, 2], indirect=True)
 @pytest.mark.parametrize("outcome", ["success", "error", "cancel"])
 async def test_nested_graph_waits_release_saturated_parent_capacity(
@@ -350,7 +413,7 @@ async def test_event_saturation_applies_backpressure_to_external_producers(runti
         await asyncio.wait_for(entered.wait(), 1)
         # Wait until both the pending slot and the local queue are occupied.
         async with asyncio.timeout(1):
-            while loop._pending_event is None or not pipe.full():
+            while loop._pending_dispatch is None or not pipe.full():
                 await asyncio.sleep(0)
         assert not producer.done()
         assert active == capacity
@@ -511,7 +574,7 @@ async def test_background_handlers_overlap_after_event_capacity_is_available(run
         await asyncio.wait_for(foreground_entered.wait(), 1)
         producer = asyncio.create_task(produce())
         async with asyncio.timeout(1):
-            while loop._pending_event is None or not pipe.full():
+            while loop._pending_dispatch is None or not pipe.full():
                 await asyncio.sleep(0)
         assert active == 0
         assert not producer.done()

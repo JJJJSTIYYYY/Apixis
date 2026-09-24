@@ -21,7 +21,8 @@ class ApixHandlerRegistry:
     ``priority_buckets`` determines dispatch order. Missing cache keys and
     ``None`` require rebuilding; an empty list is a valid cached result.
     Registration changes invalidate affected entries without modifying lists
-    already held by dispatch tasks. The consumer resolves chains at dequeue.
+    already held by dispatch tasks. The consumer captures handler references
+    in this order at dequeue, before waiting for dispatch capacity.
     """
 
     registry: dict[str, ApixEventHandler]
@@ -207,6 +208,13 @@ class ApixHandlerRegistry:
                     chain.append(handler_name)
             self.cached_chain[event_name] = chain
         return chain
+
+    def get_handlers_for_event(self, event_name: str) -> list[ApixEventHandler]:
+        """Capture the current matching handlers in dispatch order."""
+        return [
+            self.registry[name]
+            for name in self.get_handlers_chain_for_event(event_name)
+        ]
 
     def _remove_from_bucket(self, handler_name: str) -> None:
         """Remove a registered name and discard its bucket when empty."""

@@ -278,7 +278,7 @@ async def test_dispatch_notifies_all_later_handlers_after_failure_and_acceptance
     event = make_event()
     await ApixEventLoop(registry, ApixEventPipe(), get_event_registry())._dispatch_event(
         event,
-        registry.get_handlers_chain_for_event(event.event_name),
+        registry.get_handlers_for_event(event.event_name),
     )
     assert calls == ["error", "accepted"] * 3
     assert len(event.error_stack) == 1
@@ -305,7 +305,7 @@ async def test_background_failure_before_next_core_is_still_log_only(registry):
     loop = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
     event = make_event()
     with patch("apixis.core.event.base.logger") as logger:
-        await asyncio.wait_for(loop._dispatch_event(event, loop._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else []), 1)
+        await asyncio.wait_for(loop._dispatch_event(event, loop._registry.get_handlers_for_event(event.event_name) if event.event_name else []), 1)
         await asyncio.gather(*loop._background_handler_tasks)
     assert core_ran.is_set()
     assert not event.has_error
@@ -328,7 +328,7 @@ async def test_background_handler_checks_acceptance_when_it_starts(registry):
     event = make_event()
     await loop._dispatch_event(
         event,
-        loop._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
+        loop._registry.get_handlers_for_event(event.event_name) if event.event_name else [],
     )
     await asyncio.gather(*loop._background_handler_tasks)
     core.assert_not_awaited()
@@ -482,7 +482,7 @@ async def test_subscribe_preserves_on_error_and_later_handler_observes_failure(r
         assert event.error_stack[0].message == "own failure"
 
     subscribe("contract.*")(ApixEventHandler(later_core, on_has_error=upstream_error))
-    await ApixEventLoop(registry, ApixEventPipe(), get_event_registry())._dispatch_event(make_event(), registry.get_handlers_chain_for_event("contract.event"))
+    await ApixEventLoop(registry, ApixEventPipe(), get_event_registry())._dispatch_event(make_event(), registry.get_handlers_for_event("contract.event"))
     assert calls == ["own error", "upstream error"]
 
 
@@ -568,7 +568,7 @@ async def test_set_core_func_preserves_identity_options_and_error_callback(regis
         assert registry.get_handlers_chain_for_event("contract.event") == [handler.name]
         assert registry.get_handlers_chain_for_event("contract.excluded") == []
         assert handler.priority == 8
-        await ApixEventLoop(registry, ApixEventPipe(), get_event_registry())._dispatch_event(event, [handler.name])
+        await ApixEventLoop(registry, ApixEventPipe(), get_event_registry())._dispatch_event(event, [handler])
     else:
         await handler(event)
     original.assert_not_awaited()

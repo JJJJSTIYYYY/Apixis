@@ -197,7 +197,7 @@ class TestDispatchEvent:
         event = _make_event(event_name="")
         result = await handler._dispatch_event(
             event,
-            handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
+            handler._registry.get_handlers_for_event(event.event_name) if event.event_name else [],
         )
         assert result is None
 
@@ -214,7 +214,7 @@ class TestDispatchEvent:
         event = _make_event()
         result = await handler._dispatch_event(
             event,
-            handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
+            handler._registry.get_handlers_for_event(event.event_name) if event.event_name else [],
         )
         assert result is event
         # Dispatch preserves the explicit acceptance state.
@@ -234,7 +234,7 @@ class TestDispatchEvent:
         event = _make_event()
         result = await handler._dispatch_event(
             event,
-            handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
+            handler._registry.get_handlers_for_event(event.event_name) if event.event_name else [],
         )
 
         mock_callback.assert_awaited_once_with(event)
@@ -263,7 +263,7 @@ class TestDispatchEvent:
         event = _make_event()
         await handler._dispatch_event(
             event,
-            handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
+            handler._registry.get_handlers_for_event(event.event_name) if event.event_name else [],
         )
 
         assert call_order == ["h1", "h2"]
@@ -292,7 +292,7 @@ class TestDispatchEvent:
         event = _make_event()
         await handler._dispatch_event(
             event,
-            handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
+            handler._registry.get_handlers_for_event(event.event_name) if event.event_name else [],
         )
 
         assert called == ["h1"]
@@ -311,7 +311,7 @@ class TestDispatchEvent:
         event = _make_event(accepted=True)
         result = await handler._dispatch_event(
             event,
-            handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
+            handler._registry.get_handlers_for_event(event.event_name) if event.event_name else [],
         )
 
         mock_callback.assert_not_awaited()
@@ -335,7 +335,7 @@ class TestDispatchEvent:
         with patch("apixis.core.event.base.logger") as mock_logger:
             result = await handler._dispatch_event(
                 event,
-                handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
+                handler._registry.get_handlers_for_event(event.event_name) if event.event_name else [],
             )
 
             error_calls = [
@@ -363,7 +363,7 @@ class TestDispatchEvent:
         with patch("apixis.core.event.base.logger") as mock_logger:
             result = await handler._dispatch_event(
                 event,
-                handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
+                handler._registry.get_handlers_for_event(event.event_name) if event.event_name else [],
             )
             assert result.accepted is False
             mock_logger.error.assert_called()
@@ -394,7 +394,7 @@ class TestDispatchEvent:
         with patch("apixis.core.event.base.logger"):
             await handler._dispatch_event(
                 event,
-                handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
+                handler._registry.get_handlers_for_event(event.event_name) if event.event_name else [],
             )
 
         assert called == ["h1", "h2"]
@@ -425,7 +425,7 @@ class TestDispatchEvent:
         with patch("apixis.core.event.base.logger"):
             await handler._dispatch_event(
                 event,
-                handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
+                handler._registry.get_handlers_for_event(event.event_name) if event.event_name else [],
             )
 
         assert called == ["h1", "h2"]
@@ -447,7 +447,7 @@ class TestDispatchEvent:
 
         result = await handler._dispatch_event(
             event,
-            handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
+            handler._registry.get_handlers_for_event(event.event_name) if event.event_name else [],
         )
         assert result.accepted is False
 
@@ -455,26 +455,24 @@ class TestDispatchEvent:
         await asyncio.sleep(0.05)
 
     @pytest.mark.asyncio
-    async def test_direct_dispatch_does_not_own_consumer_capacity(self):
-        """Direct dispatch must leave all handler permits available."""
+    async def test_direct_dispatch_uses_captured_handlers_without_registry_lookups(self):
+        """Direct dispatch needs no registry access or consumer capacity."""
         registry = ApixHandlerRegistry(get_event_registry())
         _reset_registry(registry)
         handler = ApixEventLoop(registry, ApixEventPipe(), get_event_registry())
 
-        # Restore the patched registry method when the assertion finishes.
-        mock_get_handlers = MagicMock(side_effect=RuntimeError("fatal error"))
-        with patch.object(
-            registry,
-            "get_handler",
-            mock_get_handlers,
+        core = AsyncMock()
+        entry = ApixEventHandler(core)
+        with (
+            patch.object(registry, "get_handler") as lookup,
+            patch.object(registry, "_matches_handler") as matches,
         ):
             event = _make_event()
-            with patch("apixis.core.event.event_loop.logger"):
-                await handler._dispatch_event(
-                    event,
-                    ["missing"],
-                )
+            await handler._dispatch_event(event, [entry])
+            lookup.assert_not_called()
+            matches.assert_not_called()
 
+        core.assert_awaited_once_with(event)
         assert handler._event_semaphore._value == EVENT_LOOP_BACKPRESSURE
 
 
@@ -498,7 +496,7 @@ class TestRunBackgroundHandler:
         registry.register_handler(entry)
         event = _make_event()
 
-        await handler._run_background_handler(entry.name, event)
+        await handler._run_background_handler(entry, event)
         mock_callback.assert_awaited_once_with(event)
 
     @pytest.mark.asyncio
@@ -513,7 +511,7 @@ class TestRunBackgroundHandler:
         registry.register_handler(entry)
         event = _make_event()
 
-        await handler._run_background_handler(entry.name, event)
+        await handler._run_background_handler(entry, event)
         mock_callback.assert_awaited_once_with(event)
 
     @pytest.mark.asyncio
@@ -531,7 +529,7 @@ class TestRunBackgroundHandler:
         event = _make_event()
 
         with patch("apixis.core.event.base.logger") as mock_logger:
-            await handler._run_background_handler(entry.name, event)
+            await handler._run_background_handler(entry, event)
             mock_logger.error.assert_called()
 
     @pytest.mark.asyncio
@@ -549,7 +547,7 @@ class TestRunBackgroundHandler:
         event = _make_event()
 
         with pytest.raises(asyncio.CancelledError):
-            await handler._run_background_handler(entry.name, event)
+            await handler._run_background_handler(entry, event)
 
     @pytest.mark.asyncio
     async def test_background_handler_exception_logs(self):
@@ -566,7 +564,7 @@ class TestRunBackgroundHandler:
         event = _make_event()
 
         with patch("apixis.core.event.base.logger") as mock_logger:
-            await handler._run_background_handler(entry.name, event)
+            await handler._run_background_handler(entry, event)
             mock_logger.error.assert_called()
 
     @pytest.mark.asyncio
@@ -581,7 +579,7 @@ class TestRunBackgroundHandler:
         registry.register_handler(entry)
         event = _make_event()
 
-        await asyncio.wait_for(handler._run_background_handler(entry.name, event), 1)
+        await asyncio.wait_for(handler._run_background_handler(entry, event), 1)
         callback.assert_awaited_once_with(event)
         assert handler._event_semaphore._value == 0
 
@@ -607,7 +605,7 @@ class TestCreateBackgroundHandlerTask:
         event = _make_event()
 
         initial_count = len(handler._background_handler_tasks)
-        handler._create_background_handler_task(entry.name, event)
+        handler._create_background_handler_task(entry, event)
 
         assert len(handler._background_handler_tasks) == initial_count + 1
 
@@ -641,7 +639,7 @@ class TestEventConsumerLoop:
         event = _make_event()
         result = await handler._dispatch_event(
             event,
-            handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
+            handler._registry.get_handlers_for_event(event.event_name) if event.event_name else [],
         )
 
         assert result is not None

@@ -620,6 +620,6 @@ class TestEventLoopRemainingBranches:
         event = make_event()
         await handler._dispatch_event(
             event,
-            handler._registry.get_handlers_chain_for_event(event.event_name) if event.event_name else [],
+            handler._registry.get_handlers_for_event(event.event_name) if event.event_name else [],
         )
         callback.assert_awaited_once_with(event)

@@ -207,7 +207,11 @@ class Logger:
             Logger.log_cache_size -= len(Logger.log_cache[0][1])
         Logger.log_cache.append((self.name, formatted_message))
         Logger.log_cache_size += len(formatted_message)
-        if Logger.log_cache_size >= Logger.max_cache_size:
+        # Short records may fill the FIFO without reaching the size threshold.
+        if (
+            len(Logger.log_cache) == Logger.log_cache.maxlen
+            or Logger.log_cache_size >= Logger.max_cache_size
+        ):
             Logger.flush_event.set()
 
         colored_message = self._colorize(formatted_message, color_name)

@@ -76,7 +76,7 @@ async def test_cancelled_phase_notifies_entire_foreground_chain(phase, stop_when
              on_cancelled=background_cleanup)
 
     task = asyncio.create_task(runtime._dispatch_event(
-        event, registry.get_handlers_chain_for_event(event.event_name),
+        event, registry.get_handlers_for_event(event.event_name),
     ))
     with pytest.raises(asyncio.CancelledError, match="original cancellation"):
         await asyncio.wait_for(task, 1)
@@ -119,7 +119,7 @@ async def test_cleanup_failure_cannot_hide_cancellation_or_skip_other_subscriber
     tail_cleanup = AsyncMock()
     register(registry, "tail", AsyncMock(), on_cancelled=tail_cleanup)
     with patch("apixis.core.event.base.logger") as logger:
-        task = asyncio.create_task(runtime._dispatch_event(event, ["broken", "tail"]))
+        task = asyncio.create_task(runtime._dispatch_event(event, [registry.registry["broken"], registry.registry["tail"]]))
         with pytest.raises(asyncio.CancelledError, match="original cancellation"):
             # Dispatch overrides the handler timeout with a five-second cleanup limit.
             await asyncio.wait_for(task, 6 if failure == "timeout" else 1)
@@ -158,7 +158,7 @@ async def test_cancel_notifications_run_serially_and_wait_for_every_hook():
                  on_cancelled=cleanup(index), time_out=None)
 
     task = asyncio.create_task(runtime._dispatch_event(
-        event, registry.get_handlers_chain_for_event(event.event_name),
+        event, registry.get_handlers_for_event(event.event_name),
     ))
     try:
         for index in range(3):
@@ -208,7 +208,7 @@ async def test_repeated_dispatch_cancellation_preserves_later_notifications():
     register(registry, "tail", tail_core, on_cancelled=tail_cleanup,
              on_error=on_error, time_out=None)
     with patch("apixis.core.event.base.logger") as logger:
-        task = asyncio.create_task(runtime._dispatch_event(event, ["first", "tail"]))
+        task = asyncio.create_task(runtime._dispatch_event(event, [registry.registry["first"], registry.registry["tail"]]))
         try:
             await asyncio.wait_for(entered[0].wait(), 1)
             assert not entered[1].is_set()
@@ -248,7 +248,7 @@ async def test_external_dispatch_cancellation_notifies_after_core_cleanup():
         calls.append("cancel notification")
 
     register(registry, "waiting", core, on_cancelled=cleanup)
-    task = asyncio.create_task(runtime._dispatch_event(make_event(), ["waiting"]))
+    task = asyncio.create_task(runtime._dispatch_event(make_event(), [registry.registry["waiting"]]))
     await asyncio.wait_for(entered.wait(), 1)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -277,11 +277,11 @@ async def test_cancelling_one_background_task_does_not_cancel_other_handlers():
     foreground_core, foreground_cleanup = AsyncMock(), AsyncMock()
     register(registry, "foreground", foreground_core, on_cancelled=foreground_cleanup)
     event = make_event()
-    runtime._create_background_handler_task("background", event)
+    runtime._create_background_handler_task(runtime._registry.registry["background"], event)
     first_background, = runtime._background_handler_tasks
     try:
         await asyncio.wait_for(entered[0].wait(), 1)
-        await runtime._dispatch_event(event, ["background", "foreground"])
+        await runtime._dispatch_event(event, [registry.registry["background"], registry.registry["foreground"]])
         await asyncio.wait_for(entered[1].wait(), 1)
         foreground_core.assert_awaited_once_with(event)
         second_background, = runtime._background_handler_tasks - {first_background}
@@ -313,7 +313,7 @@ async def test_background_cancellation_only_notifies_its_own_handler(cause):
     register(registry, "background", core, background=True, on_cancelled=background_cleanup)
     register(registry, "foreground", AsyncMock(), on_cancelled=foreground_cleanup)
     event = make_event()
-    task = asyncio.create_task(runtime._run_background_handler("background", event))
+    task = asyncio.create_task(runtime._run_background_handler(runtime._registry.registry["background"], event))
     await asyncio.wait_for(entered.wait(), 1)
     if cause == "external":
         task.cancel()
@@ -339,7 +339,7 @@ async def test_non_cancellation_does_not_notify_cancelled(action):
 
     cleanup = AsyncMock()
     register(registry, "work", core, on_cancelled=cleanup, time_out=0.01)
-    await runtime._dispatch_event(make_event(), ["work"])
+    await runtime._dispatch_event(make_event(), [registry.registry["work"]])
     cleanup.assert_not_awaited()
 
 

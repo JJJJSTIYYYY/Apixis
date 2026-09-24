@@ -178,11 +178,12 @@ def subscribe(
         3. Handlers in one bucket retain their explicit or registration order.
         4. ``between_handlers`` determines placement when supplied and cannot
            be combined with an explicit priority.
-        5. Candidate names and order are fixed when the event is dequeued.
-           Each invocation looks up the current handler and rechecks its
-           subscription and filters, skipping missing or nonmatching entries.
-           Background tasks check again after waiting for capacity. Calls
-           already started continue to completion.
+        5. Matching handler references and their order are captured when the
+           event is dequeued, before waiting for dispatch capacity. Foreground
+           execution, background tasks and cancellation notifications use this
+           list without registry lookups or matching checks. Registration
+           changes affect subsequent dequeues. Captured instances are not copied;
+           changes to their callbacks or execution options remain visible.
         6. Events with different exact names may dispatch concurrently.
         7. Calling :meth:`ApixEvent.accept` skips subsequent core functions,
            while applicable error and acceptance notifications still run.
@@ -273,7 +274,10 @@ def unsubscribe(
     *,
     missing_ok: bool = True,
 ) -> None:
-    """Immediately remove a global handler; optionally reject unknown names."""
+    """Remove a global handler; optionally reject unknown names.
+
+    Already dequeued events retain their captured handler references.
+    """
     get_handler_registry().unregister_handler(handler_name, missing_ok = missing_ok)
 
 

@@ -103,6 +103,10 @@ class ApixEventPipe:
             ),
         }
         self._mailbox_forwarder: asyncio.Task[None] | None = None
+        # A dequeued mailbox event remains owned here until builtin accepts it.
+        # Stopping the forwarder must preserve both the event and its pending ack.
+        self._pending_mailbox_event: ApixEvent | None = None
+        self._lifecycle_lock = asyncio.Lock()
         self._nodes: dict[str, dict[str, Any]] = {}
         self._started = False
 
@@ -317,37 +321,56 @@ class ApixEventPipe:
         mailbox = self.get_channel("mailbox")
         builtin = self.get_channel("builtin")
         while True:
-            event = await mailbox.get()
-            try:
-                await builtin.put(event)
-            finally:
-                mailbox.task_done()
+            if self._pending_mailbox_event is None:
+                self._pending_mailbox_event = await mailbox.get()
+            await builtin.put(self._pending_mailbox_event)
+            # No await separates the successful handoff from acknowledgement.
+            self._pending_mailbox_event = None
+            mailbox.task_done()
 
     async def start(self) -> None:
-        if self._started:
-            return
-        self._started = True
-        try:
-            await self.get_channel("builtin").start()
-            if self.remote_enabled:
-                await self.get_channel("mailtruck").start()
-                await self.get_channel("mailbox").start()
-                self._mailbox_forwarder = asyncio.create_task(
-                    self._forward_mailbox(),
-                    name=f"mailbox-forwarder-{self.mq_id}",
-                )
-                await self.broadcast(self._lifecycle_event(online=True))
-                mailtruck = self.get_channel("mailtruck")
-                if hasattr(mailtruck, "fetch_nodes"):
-                    self._update_nodes(
-                        await mailtruck.fetch_nodes()  # type: ignore[attr-defined]
+        """Start channels once, waiting for any previous shutdown to finish."""
+        async with self._lifecycle_lock:
+            if self._started:
+                return
+            try:
+                await self.get_channel("builtin").start()
+                if self.remote_enabled:
+                    await self.get_channel("mailtruck").start()
+                    await self.get_channel("mailbox").start()
+                    self._mailbox_forwarder = asyncio.create_task(
+                        self._forward_mailbox(),
+                        name=f"mailbox-forwarder-{self.mq_id}",
                     )
-        except BaseException:
-            await self._close_channels()
-            self._started = False
-            raise
+                    await self.broadcast(self._lifecycle_event(online=True))
+                    mailtruck = self.get_channel("mailtruck")
+                    if hasattr(mailtruck, "fetch_nodes"):
+                        self._update_nodes(
+                            await mailtruck.fetch_nodes()  # type: ignore[attr-defined]
+                        )
+            except BaseException:
+                await self._close_channels()
+                raise
+            self._started = True
 
     async def _close_channels(self) -> list[BaseException]:
+        """Finish cleanup before propagating cancellation, including repeat cancels."""
+        cleanup = asyncio.create_task(
+            self._close_resources(), name=f"pipe-cleanup-{self.mq_id}",
+        )
+        cancellation: asyncio.CancelledError | None = None
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+        errors = cleanup.result()
+        if cancellation is not None:
+            raise cancellation
+        return errors
+
+    async def _close_resources(self) -> list[BaseException]:
+        """Stop forwarding and close every channel, collecting individual failures."""
         errors: list[BaseException] = []
         if self._mailbox_forwarder is not None:
             self._mailbox_forwarder.cancel()
@@ -376,19 +399,26 @@ class ApixEventPipe:
         return errors
 
     async def stop(self) -> None:
-        if not self._started:
-            return
-        self._started = False
-        errors: list[BaseException] = []
-        if self.remote_enabled:
-            try:
-                await self.broadcast(self._lifecycle_event(online=False))
-            except Exception as exc:
-                errors.append(exc)
+        """Close transports while preserving queued and pending mailbox events.
 
-        errors.extend(await self._close_channels())
-        if errors:
-            raise errors[0]
+        Cancellation is propagated after cleanup finishes. Concurrent start()
+        and stop() calls wait for that cleanup rather than reopening resources.
+        """
+        async with self._lifecycle_lock:
+            if not self._started:
+                return
+            self._started = False
+            errors: list[BaseException] = []
+            try:
+                if self.remote_enabled:
+                    try:
+                        await self.broadcast(self._lifecycle_event(online=False))
+                    except Exception as exc:
+                        errors.append(exc)
+            finally:
+                errors.extend(await self._close_channels())
+            if errors:
+                raise errors[0]
 
 
 __all__ = ["ApixEventPipe"]

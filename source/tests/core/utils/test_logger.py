@@ -10,8 +10,8 @@ from apixis import Logger
 
 
 @pytest.fixture
-def log_output(monkeypatch, tmp_path):
-    """Use a small shared buffer and real files without starting a flush task."""
+async def log_output(monkeypatch, tmp_path):
+    """Use a small shared buffer and real files with isolated flush state."""
     module = importlib.import_module("apixis.core.utils.logger")
     monkeypatch.setattr(module, "LOG_BUFFER_SIZE", 3)
     monkeypatch.setattr(module, "BASE_DIR", str(tmp_path))
@@ -19,9 +19,13 @@ def log_output(monkeypatch, tmp_path):
     monkeypatch.setattr(Logger, "log_cache", deque(maxlen=3))
     monkeypatch.setattr(Logger, "log_cache_size", 0)
     monkeypatch.setattr(Logger, "flush_event", asyncio.Event())
+    monkeypatch.setattr(Logger, "flush_task", None)
+    monkeypatch.setattr(Logger, "running", False)
+    monkeypatch.setattr(Logger, "cache_lock", asyncio.Lock())
     monkeypatch.setattr(Logger, "current_log_file_index", {})
     monkeypatch.setattr(Logger, "current_log_date", {})
-    return tmp_path
+    yield tmp_path
+    await Logger.stop()
 
 
 async def test_fifo_is_shared_across_logger_names_and_flush_preserves_order(log_output):
@@ -59,7 +63,7 @@ async def test_fifo_stays_bounded_after_flush_and_does_not_repeat_records(log_ou
     ]
 
 
-def test_evicted_records_do_not_keep_triggering_size_based_flush(log_output, monkeypatch):
+def test_fifo_eviction_keeps_size_bounded_and_requests_flush(log_output, monkeypatch):
     monkeypatch.setattr(Logger, "max_cache_size", 512)
     logger = Logger("bounded")
     logger.info("x" * 1024)
@@ -68,4 +72,39 @@ def test_evicted_records_do_not_keep_triggering_size_based_flush(log_output, mon
         logger.info("short")
     Logger.flush_event.clear()
     logger.info("latest")
-    assert not Logger.flush_event.is_set()
+    assert Logger.log_cache_size < Logger.max_cache_size
+    assert Logger.flush_event.is_set()
+
+
+@pytest.mark.parametrize("trigger", ["record_count", "record_size"])
+async def test_background_flush_writes_each_batch_before_stop(log_output, monkeypatch, trigger):
+    """Both thresholds wake the worker, including after a previous flush."""
+    if trigger == "record_size":
+        monkeypatch.setattr(Logger, "max_cache_size", 512)
+    logger = Logger("background")
+    written = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    write = Logger._flush_to_disk
+
+    def write_and_signal(cache):
+        write(cache)
+        loop.call_soon_threadsafe(written.set)
+
+    monkeypatch.setattr(Logger, "_flush_to_disk", staticmethod(write_and_signal))
+    await Logger.start()
+    expected = []
+    for batch in range(2):
+        written.clear()
+        messages = (
+            [f"batch-{batch}-short-{index}" for index in range(3)]
+            if trigger == "record_count"
+            else [f"batch-{batch}-" + "x" * 1024]
+        )
+        for message in messages:
+            logger.info(message)
+        expected.extend(messages)
+        await asyncio.wait_for(written.wait(), 2)
+
+        text = next((log_output / "background").glob("*.log")).read_text()
+        assert [line.rsplit(": ", 1)[-1] for line in text.splitlines()] == expected
+        assert Logger.running

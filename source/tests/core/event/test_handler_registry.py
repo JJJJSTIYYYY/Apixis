@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from apixis.core.event.base import ApixEvent, ApixEventHandler, EventType
+from apixis.core.event.base import (
+    ApixEvent, ApixEventHandler, EventType, handler_chain_context,
+)
 from apixis.core.event.factory import get_event_registry
 from apixis.core.event.event_loop import ApixEventLoop
 from apixis.core.event.event_pipe import ApixEventPipe
@@ -583,9 +585,10 @@ def test_builtin_put_nowait_does_not_resolve_chain():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_skips_name_missing_from_registry():
-    get_handler_registry().register_handler(make_entry("handler"))
-    chain = get_handler_registry().get_handlers_chain_for_event("event.one")
+async def test_dispatch_keeps_captured_handler_after_unsubscribe():
+    callback = AsyncMock()
+    get_handler_registry().register_handler(make_entry("handler", callback=callback))
+    chain = get_handler_registry().get_handlers_for_event("event.one")
     unsubscribe("handler")
     event = ApixEvent("event-id", EventType.WORKFLOW, "event.one", None, 0)
     event_loop = ApixEventLoop(get_handler_registry(), ApixEventPipe(), get_event_registry())
@@ -595,6 +598,7 @@ async def test_dispatch_skips_name_missing_from_registry():
             chain,
         )
     assert result is event
+    callback.assert_awaited_once_with(event)
     assert not event.has_error
     logger.warning.assert_not_called()
     logger.error.assert_not_called()
@@ -747,7 +751,8 @@ async def test_dequeue_resolves_chain_before_dispatch_task_starts(runtime, monke
     dispatch_started, release = asyncio.Event(), asyncio.Event()
     dispatch = loop._dispatch_event
     async def delayed_dispatch(event, chain):
-        assert registry.cached_chain[event.event_name] is chain
+        assert [handler.name for handler in chain] == registry.cached_chain[event.event_name]
+        assert all(handler is registry.registry[handler.name] for handler in chain)
         dispatch_started.set()
         await release.wait()
         return await dispatch(event, chain)
@@ -772,7 +777,7 @@ async def test_dequeue_resolves_chain_before_dispatch_task_starts(runtime, monke
     (["Event.*"], [], False),
     (["event.?ne"], ["event.two"], True),
 ])
-async def test_foreground_dispatch_resolves_current_target_after_await(runtime, change, patterns, filters, matches, wait_for_dispatch):
+async def test_foreground_dispatch_keeps_captured_target_after_await(runtime, change, patterns, filters, matches, wait_for_dispatch):
     pipe, loop = runtime
     entered, release = asyncio.Event(), asyncio.Event()
     calls = []
@@ -792,12 +797,15 @@ async def test_foreground_dispatch_resolves_current_target_after_await(runtime, 
         async def replacement(event):
             calls.append("new")
         replacement.__name__ = "target"
-        # Candidate order is fixed, but current matching is checked on invocation.
+        # Registration changes only affect events dequeued after this point.
         subscribe(*patterns, filter_event=filters, priority=100)(replacement)
     unsubscribe("first")
     release.set()
     await wait_for_dispatch(loop)
-    assert calls == (["first-done", "new"] if change != "remove" and matches else ["first-done"])
+    assert calls == ["first-done", "old"]
+    await pipe.post_event(event_type=EventType.INFO, event_name="event.one")
+    await wait_for_dispatch(loop)
+    assert calls == ["first-done", "old"] + (["new"] if change != "remove" and matches else [])
 
 
 @pytest.mark.parametrize("change", ["remove", "replace"])
@@ -807,8 +815,8 @@ async def test_foreground_dispatch_resolves_current_target_after_await(runtime, 
     (["Event.*"], [], False),
     (["event.?ne"], ["event.two"], True),
 ])
-async def test_background_resolves_current_target_when_task_starts(runtime, change, patterns, filters, matches):
-    """Registration changes before the new task runs affect its current target."""
+async def test_background_keeps_captured_target_when_task_starts(runtime, change, patterns, filters, matches, wait_for_dispatch):
+    """Registration changes before the new task runs leave its target intact."""
     pipe, loop = runtime
     old, new = AsyncMock(), AsyncMock()
     entry = ApixEventHandler(old, background=True)
@@ -816,7 +824,7 @@ async def test_background_resolves_current_target_when_task_starts(runtime, chan
     subscribe("event.*")(entry)
     event = ApixEvent("id", EventType.INFO, "event.one", None, 0)
     # Creation is synchronous; mutate registration before yielding to the task.
-    loop._create_background_handler_task("target", event)
+    loop._create_background_handler_task(entry, event)
     tasks = tuple(loop._background_handler_tasks)
     old.assert_not_awaited()
     if change == "remove":
@@ -826,8 +834,76 @@ async def test_background_resolves_current_target_when_task_starts(runtime, chan
         replacement.name = "target"
         subscribe(*patterns, filter_event=filters)(replacement)
     await asyncio.wait_for(asyncio.gather(*tasks), 1)
-    old.assert_not_awaited()
+    old.assert_awaited_once_with(event)
+    new.assert_not_awaited()
+    await pipe.post_event(event_type=EventType.INFO, event_name="event.one")
+    await wait_for_dispatch(loop)
+    await asyncio.wait_for(asyncio.gather(*loop._background_handler_tasks), 1)
+    old.assert_awaited_once_with(event)
     assert new.await_count == (1 if change == "replace" and matches else 0)
+
+
+@pytest.mark.parametrize("background", [False, True])
+async def test_replacing_handler_execution_mode_only_affects_later_events(
+    runtime, wait_for_dispatch, background,
+):
+    """A queued background task must not resolve a new foreground replacement."""
+    pipe, loop = runtime
+    calls = []
+
+    async def old(event):
+        calls.append((event.event_name, "old", handler_chain_context.get() is None))
+
+    async def new(event):
+        calls.append((event.event_name, "new", handler_chain_context.get() is None))
+
+    ApixEventHandler(old, name="target", background=background).register("event.*", priority=10)
+
+    # Replace after scheduling background work, or before calling foreground work.
+    @subscribe("event.first", priority=5 if background else 20)
+    async def replace(event):
+        ApixEventHandler(new, name="target", background=not background).register("event.*", priority=10)
+
+    await pipe.post_event(event_type=EventType.INFO, event_name="event.first")
+    await wait_for_dispatch(loop)
+    await asyncio.wait_for(asyncio.gather(*loop._background_handler_tasks), 1)
+    assert calls == [("event.first", "old", background)]
+
+    await pipe.post_event(event_type=EventType.INFO, event_name="event.next")
+    await wait_for_dispatch(loop)
+    await asyncio.wait_for(asyncio.gather(*loop._background_handler_tasks), 1)
+    assert calls == [("event.first", "old", background), ("event.next", "new", not background)]
+
+
+@pytest.mark.parametrize("change", ["remove", "replace"])
+async def test_cancellation_notifies_captured_handlers_after_registration_changes(runtime, change):
+    """Cancellation cleanup belongs to the original chain, including its tail."""
+    pipe, loop = runtime
+    entered = asyncio.Event()
+    old_cleanup, new_cleanup = AsyncMock(), AsyncMock()
+    old_core, new_core = AsyncMock(), AsyncMock()
+
+    @subscribe("event.*", priority=10)
+    async def blocker(event):
+        entered.set()
+        await asyncio.Event().wait()
+
+    ApixEventHandler(old_core, name="target", on_cancelled=old_cleanup).register("event.*")
+    await pipe.post_event(event_type=EventType.INFO, event_name="event.one")
+    await asyncio.wait_for(entered.wait(), 1)
+    if change == "remove":
+        unsubscribe("target")
+    else:
+        ApixEventHandler(new_core, name="target", on_cancelled=new_cleanup).register("event.*")
+
+    task, = loop._dispatch_tasks
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 1)
+    old_cleanup.assert_awaited_once()
+    new_cleanup.assert_not_awaited()
+    old_core.assert_not_awaited()
+    new_core.assert_not_awaited()
 
 
 @pytest.mark.parametrize("background", [False, True])
@@ -1009,7 +1085,7 @@ async def test_background_cancellation_removes_task_without_using_event_capacity
 
     ApixEventHandler(handler, background=True, on_cancelled=cleanup).register("event.*")
     initial_capacity = loop._event_semaphore._value
-    loop._create_background_handler_task("handler", event)
+    loop._create_background_handler_task(loop._registry.registry["handler"], event)
     task, = loop._background_handler_tasks
     if phase == "running":
         await asyncio.wait_for(entered.wait(), 1)

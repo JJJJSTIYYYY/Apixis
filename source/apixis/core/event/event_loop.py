@@ -7,7 +7,9 @@ from apixis.core.config.core_config import (
     EVENT_LOOP_BACKPRESSURE,
     SHOW_EVENT_DISPATCH,
 )
-from apixis.core.event.base import ApixEvent, HandlerChainToken, handler_chain_context
+from apixis.core.event.base import (
+    ApixEvent, ApixEventHandler, HandlerChainToken, handler_chain_context,
+)
 from apixis.core.event.handler_registry import ApixHandlerRegistry
 from apixis.core.event.event_pipe import ApixEventPipe
 from apixis.core.event.event_registry import ApixEventRegistry
@@ -37,9 +39,9 @@ class ApixEventLoop:
         self._background_handler_tasks: set[asyncio.Task] = set()
 
         # An event may already be dequeued while waiting for foreground
-        # dispatch capacity. Keep ownership here so stopping the consumer
-        # cannot lose the event before it is handed to a dispatch task.
-        self._pending_event: ApixEvent | None = None
+        # dispatch capacity. Keep the event and its captured handler references
+        # together so stopping the consumer cannot lose or re-resolve them.
+        self._pending_dispatch: tuple[ApixEvent, list[ApixEventHandler]] | None = None
 
         self._started = False
 
@@ -72,9 +74,9 @@ class ApixEventLoop:
         """Pause consumption, preserving queued and pending events.
 
         Queued events remain available for restart. An event already dequeued
-        but still waiting for dispatch capacity remains pending for the next
-        consumer. Existing dispatch and background tasks continue without
-        being awaited here.
+        but still waiting for dispatch capacity retains its captured handlers
+        for the next consumer. Existing dispatch and background tasks continue
+        without being awaited here.
         """
         task = self._event_consumer_task
         self._event_consumer_task = None
@@ -103,34 +105,40 @@ class ApixEventLoop:
                 # Dequeue before acquiring dispatch capacity. This prevents an
                 # idle consumer from occupying a slot needed by a suspended
                 # foreground handler when it tries to reacquire that slot.
-                if self._pending_event is None:
-                    self._pending_event = await self._event_pipe.get()
+                if self._pending_dispatch is None:
+                    event = await self._event_pipe.get()
+                    try:
+                        # Capture references and order synchronously at dequeue.
+                        # Capacity waits must not expose this event to later
+                        # registration changes.
+                        handler_chain = (
+                            self._registry.get_handlers_for_event(event.event_name)
+                            if event.event_name
+                            else []
+                        )
+                    except BaseException as exc:
+                        self._event_pipe.task_done()
+                        if not isinstance(exc, Exception):
+                            raise
+                        logger.error(
+                            f"Handler chain resolution failed: "
+                            f"{type(exc).__name__}: {exc}\n"
+                            f"{traceback.format_exc()}"
+                        )
+                        continue
+                    self._pending_dispatch = event, handler_chain
 
-                # If cancellation happens here, the dequeued event remains in
-                # _pending_event and will be resumed by the next consumer.
+                # If cancellation happens here, the event and its handlers
+                # remain pending and will be resumed by the next consumer.
                 await self._event_semaphore.acquire()
 
-                event = self._pending_event
-                self._pending_event = None
-
-                if event is None:
-                    self._event_semaphore.release()
-                    continue
+                event, handler_chain = self._pending_dispatch
+                self._pending_dispatch = None
 
                 chain = HandlerChainToken(self._event_semaphore)
                 try:
                     if event.event_name:
                         self._event_registry.record_event(event)
-
-                    # Resolve synchronously after dequeue, before another task
-                    # can change registrations or ordering.
-                    handler_chain = (
-                        self._registry.get_handlers_chain_for_event(
-                            event.event_name
-                        )
-                        if event.event_name
-                        else []
-                    )
 
                     if SHOW_EVENT_DISPATCH:
                         print(
@@ -173,13 +181,19 @@ class ApixEventLoop:
                     task.add_done_callback(partial(self._on_dispatch_done, chain=chain))
                     self._event_pipe.task_done()
 
+                finally:
+                    # The dispatch task owns these references now. An idle
+                    # consumer must not retain handlers (or their bound graphs)
+                    # from the previous event after that dispatch completes.
+                    del event, handler_chain
+
         except asyncio.CancelledError:
             logger.info("Event loop cancelled.")
 
     async def _dispatch_event(
         self,
         event: ApixEvent,
-        handler_chain: list[str],
+        handler_chain: list[ApixEventHandler],
     ) -> ApixEvent | None:
         """Dispatch an event and notify foreground handlers on cancellation."""
         logger.debug(
@@ -194,45 +208,24 @@ class ApixEventLoop:
             if not handler_chain:
                 return event
 
-            for handler_name in handler_chain:
-                # Earlier handlers may await while subscriptions change.
-                handler = self._registry.get_handler(handler_name)
-
-                if (
-                    handler is None
-                    or not self._registry._matches_handler(
-                        handler,
-                        event.event_name,
-                    )
-                ):
-                    continue
-
+            for handler in handler_chain:
                 if handler.background:
                     self._create_background_handler_task(
-                        handler_name,
+                        handler,
                         event,
                     )
                 else:
                     await self._execute_handler(
-                        handler_name,
+                        handler,
                         event,
                     )
 
             return event
 
         except asyncio.CancelledError:
-            # Keep cancellation cleanup ordered within the same handler chain.
-            for handler_name in handler_chain:
-                handler = self._registry.get_handler(handler_name)
-
-                if (
-                    handler is not None
-                    and not handler.background
-                    and self._registry._matches_handler(
-                        handler,
-                        event.event_name,
-                    )
-                ):
+            # Notify the same captured foreground handlers in chain order.
+            for handler in handler_chain:
+                if not handler.background:
                     try:
                         await handler.notify_cancelled(
                             event,
@@ -267,23 +260,11 @@ class ApixEventLoop:
 
     async def _execute_handler(
         self,
-        handler_name: str,
+        handler: ApixEventHandler,
         event: ApixEvent,
     ) -> None:
         """Execute one foreground handler in the current event dispatch."""
         try:
-            # Earlier awaits may have changed the current registration.
-            handler = self._registry.get_handler(handler_name)
-
-            if (
-                handler is None
-                or not self._registry._matches_handler(
-                    handler,
-                    event.event_name,
-                )
-            ):
-                return
-
             await handler.execute(event)
 
         except Exception as exc:
@@ -295,12 +276,12 @@ class ApixEventLoop:
 
     def _create_background_handler_task(
         self,
-        handler_name: str,
+        handler: ApixEventHandler,
         event: ApixEvent,
     ) -> None:
         """Create one background handler task without foreground semaphore context."""
         coroutine = self._run_background_handler(
-            handler_name,
+            handler,
             event,
         )
 
@@ -337,24 +318,11 @@ class ApixEventLoop:
 
     async def _run_background_handler(
         self,
-        handler_name: str,
+        handler: ApixEventHandler,
         event: ApixEvent,
     ) -> None:
         """Execute one background handler and notify only its own cancellation."""
         try:
-            # Resolve the current entry when the background task actually runs,
-            # because registration may have changed since dispatch.
-            handler = self._registry.get_handler(handler_name)
-
-            if (
-                handler is None
-                or not self._registry._matches_handler(
-                    handler,
-                    event.event_name,
-                )
-            ):
-                return
-
             try:
                 await handler.execute(event)
 
