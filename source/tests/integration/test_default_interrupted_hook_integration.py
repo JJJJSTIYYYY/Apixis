@@ -6,7 +6,7 @@ import pytest
 
 from apixis.core.event.factory import get_event_pipe
 from apixis.core.event import get_handler, subscribe, unsubscribe
-from apixis.core.graph import END, GLOBALNS, START, GraphManager
+from apixis.core.graph import GLOBALNS, GraphManager
 from apixis.core.graph.interrupter import interrupt, interrupted_hook
 from apixis.core.graph.utils.namespace import get_graph_interrupted_name
 from apixis.core.utils import BlockHookNotRegisteredError, BlockNotResolvedError
@@ -30,8 +30,8 @@ async def test_missing_hook_fails_without_waiting_for_timeout(mode, namespace, t
         continued.append(True)
         return state
 
-    graph = (GraphManager().add_node(review).add_edge(START, "review")
-             .compile_graph(namespace))
+    graph = (GraphManager().add_node(review)
+             .compile_graph(entry_point="review", using_namespace=namespace))
     context = graph.create_context({})
     try:
         async with asyncio.timeout(1):
@@ -61,8 +61,8 @@ async def test_deferred_hook_must_accept_its_block(registration, accepted):
 
     if registration == "standalone_before":
         interrupted_hook(namespace)(capture)
-    graph = (GraphManager().add_node(review).add_edge(START, "review")
-             .compile_graph(namespace))
+    graph = (GraphManager().add_node(review)
+             .compile_graph(entry_point="review", using_namespace=namespace))
     if registration == "owned":
         graph.add_interrupted_hook(capture)
     elif registration == "standalone_after":
@@ -110,7 +110,7 @@ async def test_plain_observer_must_accept_block_for_deferred_resolution(subscrip
     async def review(state):
         return {"answer": await interrupt()}
 
-    graph = GraphManager().add_node(review).add_edge(START, "review").compile_graph()
+    graph = GraphManager().add_node(review).compile_graph(entry_point="review")
 
     event_name = get_graph_interrupted_name(graph.namespace, missing_ok=True)
     pattern = event_name if subscription == "exact" else get_graph_interrupted_name("*", missing_ok=True)
@@ -158,7 +158,7 @@ async def test_registered_hook_without_prior_core_entry_does_not_suppress_fallba
         await interrupt()
         return state
 
-    graph = GraphManager().add_node(review).add_edge(START, "review").compile_graph()
+    graph = GraphManager().add_node(review).compile_graph(entry_point="review")
     event_name = get_graph_interrupted_name(graph.namespace, missing_ok=True)
 
     @interrupted_hook(graph.namespace)
@@ -187,9 +187,9 @@ async def test_simultaneous_graphs_keep_seen_and_fallback_independent():
     async def review(state):
         return {"answer": await interrupt()}
 
-    manager = GraphManager().add_node(review).add_edge(START, "review")
-    first = manager.compile_graph("seen-first")
-    second = manager.compile_graph("seen-second")
+    manager = GraphManager().add_node(review)
+    first = manager.compile_graph(entry_point="review", using_namespace="seen-first")
+    second = manager.compile_graph(entry_point="review", using_namespace="seen-second")
 
     @first.add_interrupted_hook
     async def resolve(block):
@@ -217,7 +217,7 @@ async def test_default_handles_upstream_termination_without_user_hook(mode, acti
         continued.append(True)
         return state
 
-    graph = GraphManager().add_node(review).add_edge(START, "review").compile_graph()
+    graph = GraphManager().add_node(review).compile_graph(entry_point="review")
 
     @subscribe(get_graph_interrupted_name(graph.namespace, missing_ok=True), priority=10)
     async def plugin(event):
@@ -255,7 +255,7 @@ async def test_node_can_recover_from_missing_hook_error():
         except BlockHookNotRegisteredError:
             return {"review_skipped": True}
 
-    graph = GraphManager().add_node(review).add_edge(START, "review").compile_graph()
+    graph = GraphManager().add_node(review).compile_graph(entry_point="review")
     try:
         async with asyncio.timeout(1):
             assert await graph.invoke({}) == {"review_skipped": True}
@@ -274,16 +274,16 @@ async def test_default_registration_collision_releases_partial_graph_and_namespa
     # listener registration to fail after graph dispatch has been registered.
     unrelated.__name__ = event_name
     subscribe(event_name)(unrelated)
-    manager = GraphManager().add_edge(START, END)
+    manager = GraphManager()
     try:
         from apixis.core.utils.exception import EventHandlerAlreadyRegisteredError
         with pytest.raises(EventHandlerAlreadyRegisteredError):
-            manager.compile_graph("collision")
+            manager.compile_graph(entry_point=None, using_namespace="collision")
         assert get_handler(event_name).core_func is unrelated
     finally:
         unsubscribe(event_name)
 
-    graph = manager.compile_graph("collision")
+    graph = manager.compile_graph(entry_point=None, using_namespace="collision")
     async with asyncio.timeout(1):
         assert await graph.invoke({}) == {}
     graph.decompose()
@@ -294,15 +294,15 @@ async def test_decomposition_removes_default_and_namespace_reuse_restores_it():
         await interrupt()
         return state
 
-    manager = GraphManager().add_node(review).add_edge(START, "review")
-    old = manager.compile_graph("reused-default")
+    manager = GraphManager().add_node(review)
+    old = manager.compile_graph(entry_point="review", using_namespace="reused-default")
 
     @old.add_interrupted_hook
     async def resolve(block):
         block.resolve("old answer")
 
     old.decompose()
-    graph = manager.compile_graph("reused-default")
+    graph = manager.compile_graph(entry_point="review", using_namespace="reused-default")
     try:
         async with asyncio.timeout(1):
             with pytest.raises(BlockHookNotRegisteredError):

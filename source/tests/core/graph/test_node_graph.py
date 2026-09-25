@@ -5,6 +5,8 @@ from typing import Annotated, TypedDict
 
 import pytest
 
+from apixis.core.graph.base import _END
+
 from apixis.core.event.factory import (
     get_event_loop,
     get_handler_registry,
@@ -15,9 +17,7 @@ from apixis.core.utils.exception import EventHandlerAlreadyRegisteredError
 from apixis.core.graph import (
     AutoMerge,
     Command,
-    END,
     GLOBALNS,
-    START,
     Node,
     NodeGraph,
     Reset,
@@ -38,21 +38,18 @@ def _bound_context(
 ) -> GraphContext:
     """Build a fully bound context for lifecycle unit tests."""
     context = graph.create_context(state)
-    context._bind(
-        run_id=run_id,
-        completion=asyncio.get_running_loop().create_future(),
-        stream_writer=noop_stream_writer(),
-    )
+    graph._begin_invocation(None, context, noop_stream_writer())
+    context.run_id = run_id
     context.steps = steps
     return context
 
 
 def test_apply_command_rejects_non_dict_update():
     """NodeGraph defensively validates commands from external callers."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
 
     with pytest.raises(TypeError, match="Command.update must be a dict"):
-        graph.apply_command(Command(update=[]), START, graph.create_context({}))
+        graph.apply_command(Command(update=[]), "node", graph.create_context({}))
 
 
 @pytest.mark.parametrize("using_namespace", [None, ""])
@@ -64,7 +61,7 @@ def test_empty_listener_namespace_uses_generated_namespace(
     monkeypatch.setattr(idgen, "next_id", lambda: 123456789)
     graph = NodeGraph(
         {},
-        {START: END},
+        None,
         using_namespace=using_namespace,
     )
 
@@ -73,7 +70,7 @@ def test_empty_listener_namespace_uses_generated_namespace(
 
 def test_global_listener_namespace_must_be_explicit():
     """GLOBALNS selects the shared global listener domain explicitly."""
-    graph = NodeGraph({}, {START: END}, using_namespace=GLOBALNS)
+    graph = NodeGraph({}, None, using_namespace=GLOBALNS)
 
     assert graph.namespace == GLOBALNS
 
@@ -82,7 +79,7 @@ def test_listener_namespace_uses_supplied_value():
     """A non-empty listener namespace is retained without random suffixes."""
     graph = NodeGraph(
         {},
-        {START: END},
+        None,
         using_namespace="agent-runtime",
     )
 
@@ -91,7 +88,7 @@ def test_listener_namespace_uses_supplied_value():
 
 def test_set_max_steps_is_fluent_and_updates_runtime_limit():
     """The compatibility setter returns the graph and changes its limit."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
 
     assert graph.set_max_steps(7) is graph
     assert graph._max_steps == 7
@@ -99,18 +96,18 @@ def test_set_max_steps_is_fluent_and_updates_runtime_limit():
 
 def test_apply_command_rejects_non_string_goto():
     """A direct apply_command call cannot route to a non-string target."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
 
     with pytest.raises(TypeError, match="Command.goto must be a string or None"):
-        graph.apply_command(Command(goto=1), START, graph.create_context({}))
+        graph.apply_command(Command(goto=1), "node", graph.create_context({}))
 
 
 def test_apply_command_rejects_plain_dict():
     """Only Command instances satisfy the direct runtime contract."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
 
     with pytest.raises(TypeError, match="must return a Command"):
-        graph.apply_command({}, START, graph.create_context({}))
+        graph.apply_command({}, "node", graph.create_context({}))
 
 
 class AutoMergeState(TypedDict):
@@ -138,7 +135,7 @@ def test_apply_command_auto_increases_annotated_fields():
     """Marked existing fields call __add__; unmarked fields are replaced."""
     graph = NodeGraph(
         {},
-        {START: END},
+        None,
         state_schema=AutoMergeState,
     )
     context = graph.create_context(
@@ -157,7 +154,7 @@ def test_apply_command_auto_increases_annotated_fields():
                 "replaced": [2],
             }
         ),
-        START,
+        "node",
         context,
     )
 
@@ -166,21 +163,21 @@ def test_apply_command_auto_increases_annotated_fields():
         "total": 6,
         "replaced": [2],
     }
-    assert next_node == END
+    assert next_node == _END
 
 
 def test_apply_command_initializes_missing_auto_increase_field():
     """A marked field without a current value is assigned directly."""
     graph = NodeGraph(
         {},
-        {START: END},
+        None,
         state_schema=AutoMergeState,
     )
 
     context = graph.create_context({})
     graph.apply_command(
         Command(update={"values": [1]}),
-        START,
+        "node",
         context,
     )
 
@@ -191,7 +188,7 @@ def test_apply_command_applies_command_list_in_order():
     """A command batch commits each update before applying the next one."""
     graph = NodeGraph(
         {},
-        {START: END},
+        None,
         state_schema=AutoMergeState,
     )
     context = graph.create_context(
@@ -210,7 +207,7 @@ def test_apply_command_applies_command_list_in_order():
                 goto="batch-target",
             ),
         ],
-        START,
+        "node",
         context,
     )
 
@@ -223,8 +220,8 @@ def test_apply_command_applies_command_list_in_order():
 
 
 def test_apply_command_collects_all_command_routes():
-    """Every command contributes a route and END is ignored when work remains."""
-    graph = NodeGraph({}, {START: END})
+    """Commands contribute next targets while terminal commands add no work."""
+    graph = NodeGraph({}, None)
     context = graph.create_context({})
 
     next_node = graph.apply_command(
@@ -232,7 +229,7 @@ def test_apply_command_collects_all_command_routes():
             Command(goto="overridden-target"),
             Command(update={"value": 1}),
         ],
-        START,
+        "node",
         context,
     )
 
@@ -240,19 +237,19 @@ def test_apply_command_collects_all_command_routes():
     assert next_node == "overridden-target"
 
 
-def test_apply_command_treats_empty_command_list_as_empty_command():
-    """An empty batch preserves state and follows the default edge."""
-    graph = NodeGraph({}, {START: END})
+def test_apply_command_empty_command_list_finishes():
+    """An empty batch preserves state and finishes."""
+    graph = NodeGraph({}, None)
     original_state = {"nested": [1]}
     context = graph.create_context(original_state)
 
     committed_state = context.state
-    next_node = graph.apply_command([], START, context)
+    next_node = graph.apply_command([], "node", context)
 
     assert context.state == original_state
     assert context.state is committed_state
     assert context.state["nested"] is committed_state["nested"]
-    assert next_node == END
+    assert next_node == _END
 
 
 @pytest.mark.parametrize(
@@ -265,37 +262,37 @@ def test_apply_command_treats_empty_command_list_as_empty_command():
 )
 def test_apply_command_singleton_batch_keeps_one_node_result(result):
     """A list target takes one result per node, including a multi-command result."""
-    graph = NodeGraph({}, {START: END}, state_schema=AutoMergeState)
+    graph = NodeGraph({}, None, state_schema=AutoMergeState)
     context = graph.create_context({"total": 0})
 
-    assert graph.apply_command([result], [START], context) == END
+    assert graph.apply_command([result], ["node"], context) == _END
     assert context.state == {"total": 3}
 
 
-def test_apply_command_singleton_empty_result_uses_default_edge():
-    """An empty result still belongs to its source node and follows its edge."""
-    graph = NodeGraph({"after": Node(lambda state: {})}, {START: "after"})
+def test_apply_command_singleton_empty_result_finishes():
+    """An empty result contributes no next target."""
+    graph = NodeGraph({"after": Node(lambda state: {})}, "after")
     context = graph.create_context({"value": 1})
 
-    assert graph.apply_command([[]], [START], context) == "after"
+    assert graph.apply_command([[]], ["node"], context) == _END
     assert context.state == {"value": 1}
 
 
 @pytest.mark.parametrize("results", [Command(), [], [Command(), Command()]])
 def test_apply_command_rejects_singleton_batch_result_count_mismatch(results):
     """A singleton batch requires exactly one result before any state is applied."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
     context = graph.create_context({})
 
     with pytest.raises(TypeError, match="one result per node"):
-        graph.apply_command(results, [START], context)
+        graph.apply_command(results, ["node"], context)
     assert context.state == {}
 
 
-@pytest.mark.parametrize("node_name", [START, [START]])
+@pytest.mark.parametrize("node_name", ["node", ["node"]])
 def test_apply_command_rejects_nested_node_result(node_name):
     """Batch grouping must not make nested lists legal inside a node result."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
     context = graph.create_context({})
     result = [[Command(update={"value": 1})]]
 
@@ -310,14 +307,14 @@ def test_auto_increase_requires_callable_add_method():
     """A marked current value must expose a callable addition protocol."""
     graph = NodeGraph(
         {},
-        {START: END},
+        None,
         state_schema=AutoMergeState,
     )
 
     with pytest.raises(TypeError, match="does not provide a callable __add__"):
         graph.apply_command(
             Command(update={"values": [1]}),
-            START,
+            "node",
             graph.create_context({"values": MissingAdd()}),
         )
 
@@ -326,14 +323,14 @@ def test_auto_increase_rejects_not_implemented_addition():
     """NotImplemented becomes a useful state merge error."""
     graph = NodeGraph(
         {},
-        {START: END},
+        None,
         state_schema=AutoMergeState,
     )
 
     with pytest.raises(TypeError, match="could not add an update"):
         graph.apply_command(
             Command(update={"values": [1]}),
-            START,
+            "node",
             graph.create_context({"values": UnsupportedAdd()}),
         )
 
@@ -342,7 +339,7 @@ def test_replace_bypasses_auto_increase_and_is_unwrapped():
     """Reset forces assignment for both marked and ordinary fields."""
     graph = NodeGraph(
         {},
-        {START: END},
+        None,
         state_schema=AutoMergeState,
     )
     context = graph.create_context(
@@ -359,7 +356,7 @@ def test_replace_bypasses_auto_increase_and_is_unwrapped():
                 "replaced": Reset([4]),
             }
         ),
-        START,
+        "node",
         context,
     )
 
@@ -373,28 +370,28 @@ def test_replace_initializes_missing_auto_increase_field():
     """Reset is also unwrapped when the marked field has no old value."""
     graph = NodeGraph(
         {},
-        {START: END},
+        None,
         state_schema=AutoMergeState,
     )
 
     context = graph.create_context({})
     graph.apply_command(
         Command(update={"values": [1]}),
-        START,
+        "node",
         context,
     )
     assert context.state == {"values": [1]}
 
     graph.apply_command(
         Command(update={"values": [2]}),
-        START,
+        "node",
         context,
     )
     assert context.state == {"values": [1, 2]}
 
     graph.apply_command(
         Command(update={"values": Reset([3])}),
-        START,
+        "node",
         context,
     )
     assert context.state == {"values": [3]}
@@ -408,15 +405,15 @@ def test_node_graph_rejects_non_class_state_schema():
     ):
         NodeGraph(
             {},
-            {START: END},
+            None,
             state_schema={},
         )
 
 
 @pytest.mark.asyncio
 async def test_finish_and_fail_do_not_replace_completed_future():
-    """Late END or failure events cannot overwrite an invocation result."""
-    graph = NodeGraph({}, {START: END})
+    """Late terminal or failure events cannot overwrite an invocation result."""
+    graph = NodeGraph({}, None)
     context = _bound_context(
         graph,
         "test-run",
@@ -444,14 +441,14 @@ async def test_finish_and_fail_do_not_replace_completed_future():
 )
 def test_is_active_context_rejects_malformed_event_context(context):
     """Graph listeners ignore events that do not carry a valid run context."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
 
     assert graph._is_active_context(context) is False
 
 
 def test_is_active_context_rejects_owned_but_unbound_context():
     """Ownership alone is insufficient without invocation runtime fields."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
     context = graph.create_context({})
 
     assert graph._is_active_context(context) is False
@@ -460,7 +457,7 @@ def test_is_active_context_rejects_owned_but_unbound_context():
 @pytest.mark.asyncio
 async def test_is_active_context_rejects_aborted_context():
     """An aborted context is no longer eligible for node dispatch."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
     context = _bound_context(graph, "completed-run", {"value": 1})
     assert graph._is_active_context(context) is True
 
@@ -472,16 +469,16 @@ async def test_is_active_context_rejects_aborted_context():
 @pytest.mark.asyncio
 async def test_abort_rejects_non_context():
     """Abort accepts a GraphContext rather than an identifier."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
 
     with pytest.raises(TypeError, match="requires a GraphContext"):
         await graph.abort("missing")
 
 
 @pytest.mark.asyncio
-async def test_abort_releases_pending_context():
-    """A graph can abort its managed pending context without running it."""
-    graph = NodeGraph({}, {START: END})
+async def test_abort_accepts_owned_pending_context():
+    """A graph can abort its pending context without managing or running it."""
+    graph = NodeGraph({}, None)
 
     context = graph.create_context({})
     await graph.abort(context)
@@ -492,7 +489,7 @@ async def test_abort_releases_pending_context():
 @pytest.mark.asyncio
 async def test_abort_rejects_context_for_inactive_run():
     """A retained or foreign context can abort an inactive graph run with no side effects."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
     context = _bound_context(graph, "inactive-run", {"checkpoint": 1})
     context.abort()
 
@@ -506,7 +503,7 @@ async def test_abort_rejects_context_for_inactive_run():
 @pytest.mark.asyncio
 async def test_abort_finishes_active_run_with_saved_snapshot():
     """Abort resolves completion and lifecycle immediately becomes inactive."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
     context = _bound_context(
         graph,
         "active-run",
@@ -529,7 +526,7 @@ async def test_abort_finishes_active_run_with_saved_snapshot():
 @pytest.mark.asyncio
 async def test_abort_same_run_twice():
     """A completed context can be aborted through the graph twice."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
     context = _bound_context(graph, "active-run", {})
     context.target_node_name = "retry"
     context.take_a_snapshot()
@@ -541,7 +538,7 @@ async def test_abort_same_run_twice():
 @pytest.mark.asyncio
 async def test_invoke_rejects_non_context_argument():
     """The optional invocation context has an explicit runtime type contract."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
 
     with pytest.raises(TypeError, match="GraphContext or None"):
         await graph.invoke(graph_context={})
@@ -550,7 +547,7 @@ async def test_invoke_rejects_non_context_argument():
 @pytest.mark.asyncio
 async def test_cancel_during_initial_publication_aborts_the_accepted_context(monkeypatch):
     """Cancellation while publishing the first event aborts the accepted attempt."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
     context = graph.create_context({})
 
     async def cancel_post(**kwargs):
@@ -568,7 +565,7 @@ async def test_cancel_during_initial_publication_aborts_the_accepted_context(mon
 @pytest.mark.asyncio
 async def test_post_failure_marks_running_context_failed(monkeypatch):
     """A setup failure after binding resolves the context as failed."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
     context = graph.create_context({})
     error = RuntimeError("post failed")
 
@@ -588,22 +585,22 @@ async def test_post_failure_marks_running_context_failed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_execute_start_ignores_error_after_attempt_becomes_stale(monkeypatch):
-    """A stale START failure cannot overwrite an aborted result."""
-    graph = NodeGraph({}, {START: END})
-    context = _bound_context(graph, "stale-start", {"saved": True})
-    completion = context.completion
-    assert completion is not None
+async def test_terminal_dispatch_error_preserves_an_aborted_result(monkeypatch):
+    """A terminal dispatch failure cannot overwrite an aborted result."""
+    graph = NodeGraph({"node": Node(lambda state: {})}, "node")
+    context = graph.create_context({"saved": True})
+    post_next = graph._post_next
 
     async def abort_then_fail(node_name, bound_context):
-        bound_context.abort()
-        raise RuntimeError("late start failure")
+        if node_name == "node":
+            await post_next(node_name, bound_context)
+        else:
+            bound_context.abort()
+            raise RuntimeError("late terminal failure")
 
     monkeypatch.setattr(graph, "_post_next", abort_then_fail)
 
-    await graph._execute_start(context)
-
-    assert await completion == {"saved": True}
+    assert await asyncio.wait_for(graph.invoke(graph_context=context), 1) == {"saved": True}
     assert context.status == "aborted"
 
 
@@ -620,7 +617,7 @@ async def test_execute_node_ignores_error_after_attempt_becomes_stale():
 
     graph = NodeGraph(
         {"node": Node(fail_late)},
-        {START: "node", "node": END},
+        "node",
     )
     context = _bound_context(graph, "stale-node", {"saved": True})
     completion = context.completion
@@ -635,13 +632,13 @@ async def test_execute_node_ignores_error_after_attempt_becomes_stale():
     assert await completion == {"saved": True}
     assert context.status == "aborted"
     assert context.context_snapshot
-    assert context.context_snapshot[-1]["target_node_name"] == START
+    assert context.context_snapshot[-1]["target_node_name"] == "node"
 
 
 @pytest.mark.asyncio
 async def test_post_next_propagates_event_pipe_failure(monkeypatch):
     """Posting failures propagate to the caller with the selected target retained."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
     context = graph.create_context({})
 
     async def fail_post_event(**kwargs):
@@ -650,9 +647,9 @@ async def test_post_next_propagates_event_pipe_failure(monkeypatch):
     monkeypatch.setattr(get_event_pipe(), "post_event", fail_post_event)
 
     with pytest.raises(RuntimeError, match="event pipe unavailable"):
-        await graph._post_next(END, context)
+        await graph._post_next(_END, context)
 
-    assert context.target_node_name == END
+    assert context.target_node_name == _END
 
 
 def test_decompose_unregisters_only_graph_handlers_and_is_idempotent():
@@ -664,7 +661,7 @@ def test_decompose_unregisters_only_graph_handlers_and_is_idempotent():
     subscribe("node")(retained_plugin)
     graph = NodeGraph(
         {"node": Node(lambda state: {})},
-        {START: "node", "node": END},
+        "node",
         using_namespace="decompose",
     )
     graph_handler_names = set(graph._handlers)
@@ -694,7 +691,7 @@ def test_dispatch_listener_registration_collision_does_not_leak_handler():
     with pytest.raises(EventHandlerAlreadyRegisteredError):
         NodeGraph(
             {"node": Node(lambda state: {})},
-            {START: "node", "node": END},
+            "node",
             using_namespace="rollback",
         )
 
@@ -704,14 +701,14 @@ def test_dispatch_listener_registration_collision_does_not_leak_handler():
     assert "rollback" not in namespace_set
 
     unsubscribe(conflicting_handler.__name__)
-    graph = NodeGraph({}, {START: END}, using_namespace="rollback")
+    graph = NodeGraph({}, None, using_namespace="rollback")
     assert graph.namespace in namespace_set
 
 
 @pytest.mark.asyncio
 async def test_decomposed_graph_rejects_new_invocation():
     """Every public business interface rejects an invalidated graph."""
-    graph = NodeGraph({}, {START: END})
+    graph = NodeGraph({}, None)
     context = graph.create_context({})
     graph.decompose()
 
@@ -738,13 +735,13 @@ async def test_decompose_rejects_active_invocation():
 
     graph = NodeGraph(
         {"node": Node(blocking_node)},
-        {START: "node", "node": END},
+        "node",
         using_namespace="active-decompose",
     )
     invocation = asyncio.create_task(graph.invoke({}))
     await started.wait()
 
-    with pytest.raises(RuntimeError, match="contexts are unfinished"):
+    with pytest.raises(RuntimeError, match="contexts are running"):
         graph.decompose(force=False)
 
     assert graph._decomposed is False

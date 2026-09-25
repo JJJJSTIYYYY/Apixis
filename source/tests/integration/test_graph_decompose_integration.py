@@ -9,7 +9,7 @@ from typing import Annotated, TypedDict
 import pytest
 
 from apixis.core.event.factory import get_handler_registry
-from apixis.core.graph import NodeGraph, Node, START, END, KeepRef, AutoMerge
+from apixis.core.graph import NodeGraph, Node, KeepRef, AutoMerge
 from apixis.core.graph.base import namespace_set
 from apixis.core.graph.utils import acquire_namespace, release_namespace
 from apixis.core.graph.context import get_stream_writer
@@ -23,22 +23,23 @@ class State(TypedDict):
     resource: Annotated[dict, KeepRef()]
 
 
-async def test_pending_contexts_are_managed_and_force_false_is_non_mutating():
-    graph = NodeGraph({}, {START: END})
+@pytest.mark.parametrize("force", [False, True])
+async def test_decompose_leaves_pending_contexts_unchanged(force):
+    graph = NodeGraph({}, None)
     context = graph.create_context({"value": [1]})
-    with pytest.raises(RuntimeError, match="unfinished"):
-        graph.decompose(force=False)
+    graph.decompose(force=force)
     assert context.status == "pending"
-    assert graph.namespace in namespace_set
-    graph.decompose()
-    assert context.status == "aborted"
     assert context.state == {"value": [1]}
-    assert not graph._contexts
+    assert graph.namespace not in namespace_set
+    with pytest.raises(RuntimeError, match="decomposed"):
+        await graph.invoke(graph_context=context)
+    with pytest.raises(RuntimeError, match="decomposed"):
+        await anext(graph.stream(graph_context=context))
     graph.decompose()
 
 
 async def test_context_and_checkpoint_do_not_retain_their_graph():
-    graph = NodeGraph({"node": Node(lambda state: {})}, {START: "node"})
+    graph = NodeGraph({"node": Node(lambda state: {})}, "node")
     context = graph.create_context({"value": [1]})
     await graph.invoke(graph_context=context)
     snapshot = context.get_snapshot()
@@ -52,7 +53,7 @@ async def test_context_and_checkpoint_do_not_retain_their_graph():
     assert snapshot["graph_id"] == graph_id
 
 
-async def test_forced_decompose_aborts_concurrent_invocations_and_pending_context():
+async def test_forced_decompose_aborts_only_running_contexts():
     started = asyncio.Queue()
     release = asyncio.Event()
     finished = asyncio.Queue()
@@ -63,7 +64,7 @@ async def test_forced_decompose_aborts_concurrent_invocations_and_pending_contex
         await finished.put(state["label"])
         return {"history": ["late"]}
 
-    graph = NodeGraph({"work": Node(work)}, {START: "work"}, state_schema=State)
+    graph = NodeGraph({"work": Node(work)}, "work", state_schema=State)
     contexts = [
         graph.create_context({"label": name, "history": [name]}) for name in ("a", "b")
     ]
@@ -73,12 +74,13 @@ async def test_forced_decompose_aborts_concurrent_invocations_and_pending_contex
         await asyncio.wait_for(started.get(), 1)
         await asyncio.wait_for(started.get(), 1)
         graph.decompose(force=True)
-        assert all(c.status == "aborted" for c in (*contexts, pending))
+        assert all(c.status == "aborted" for c in contexts)
+        assert pending.status == "pending"
         assert not graph._contexts
         results = await asyncio.wait_for(asyncio.gather(*tasks), 1)
         assert [r["history"] for r in results] == [["a"], ["b"]]
         # Register and run a new graph while both old nodes are still blocked.
-        replacement = NodeGraph({}, {START: END}, using_namespace=graph.namespace)
+        replacement = NodeGraph({}, None, using_namespace=graph.namespace)
         assert await replacement.invoke({"fresh": True}) == {"fresh": True}
     finally:
         release.set()
@@ -98,12 +100,12 @@ async def test_replacement_forces_active_old_graph_and_keeps_new_listener():
         await release.wait()
         return {"value": "late"}
 
-    old = NodeGraph({"work": Node(work)}, {START: "work"}, using_namespace="swap")
+    old = NodeGraph({"work": Node(work)}, "work", using_namespace="swap")
     context = old.create_context({"value": "saved"})
     old_task = asyncio.create_task(old.invoke(graph_context=context))
     try:
         await asyncio.wait_for(started.wait(), 1)
-        replacement = NodeGraph({}, {START: END}, using_namespace="swap", exist_ok=True)
+        replacement = NodeGraph({}, None, using_namespace="swap", exist_ok=True)
         assert context.status == "aborted"
         assert await asyncio.wait_for(old_task, 1) == {"value": "saved"}
         old.decompose()
@@ -126,14 +128,14 @@ async def test_force_decompose_drains_buffered_stream_and_releases_registration(
         writer("late")
         return {}
 
-    graph = NodeGraph({"work": Node(work)}, {START: "work"})
+    graph = NodeGraph({"work": Node(work)}, "work")
     context = graph.create_context({})
     stream = graph.stream(graph_context=context)
     try:
         assert await asyncio.wait_for(anext(stream), 1) == "first"
         await asyncio.wait_for(started.wait(), 1)
         graph.decompose()
-        replacement = NodeGraph({}, {START: END})
+        replacement = NodeGraph({}, None)
         chunks = [chunk async for chunk in stream]
         assert chunks == ["second"]
         assert await replacement.invoke({"new": True}) == {"new": True}
@@ -144,7 +146,7 @@ async def test_force_decompose_drains_buffered_stream_and_releases_registration(
 
 
 async def test_graph_copies_raw_context_result_using_its_own_policy():
-    graph = NodeGraph({}, {START: END}, state_schema=State)
+    graph = NodeGraph({}, None, state_schema=State)
     resource = {"shared": True}
     context = graph.create_context({"history": ["original"], "resource": resource})
     result = await graph.invoke(graph_context=context)
@@ -166,7 +168,7 @@ async def test_abort_result_is_copied_by_graph_without_mutating_snapshot():
         await release.wait()
         return {}
 
-    graph = NodeGraph({"work": Node(work)}, {START: "work"}, state_schema=State)
+    graph = NodeGraph({"work": Node(work)}, "work", state_schema=State)
     context = graph.create_context({"history": [], "resource": {"items": []}})
     task = asyncio.create_task(graph.invoke(graph_context=context))
     try:
@@ -182,7 +184,7 @@ async def test_abort_result_is_copied_by_graph_without_mutating_snapshot():
 
 
 async def test_rejected_shortcut_does_not_leave_an_unreachable_context():
-    graph = NodeGraph({}, {START: END}, max_steps=0)
+    graph = NodeGraph({"work": Node(lambda state: {})}, "work", max_steps=0)
     with pytest.raises(RecursionError):
         await graph.invoke({})
     with pytest.raises(RecursionError):

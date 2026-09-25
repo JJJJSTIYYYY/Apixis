@@ -4,10 +4,12 @@ import asyncio
 from typing import Annotated, TypedDict
 
 import pytest
+
+from apixis.core.graph.base import _END
 import pytest_asyncio
 
 from apixis.core.event.factory import get_event_loop, get_event_pipe
-from apixis.core.graph import AutoMerge, Command, GraphManager, ParallelNode, START
+from apixis.core.graph import AutoMerge, Command, GraphManager, ParallelNode
 from apixis.core.graph.context import GraphContext, get_graph_context
 
 
@@ -76,8 +78,7 @@ async def test_graph_batch_containing_parallel_node_keeps_both_orderings():
                 regular_done,
             ]
         )
-        .add_edge(START, "launch")
-        .compile_graph()
+        .compile_graph(entry_point="launch")
     )
 
     result = await graph.invoke({"history": []})
@@ -111,8 +112,7 @@ async def test_parallel_node_is_one_graph_node_for_conflict_detection():
         .add_node(lambda state: Command(goto=["parallel", "regular"]), "launch")
         .add_node(parallel)
         .add_node(lambda state: {"ordinary": "regular"}, "regular")
-        .add_edge(START, "launch")
-        .compile_graph()
+        .compile_graph(entry_point="launch")
     )
 
     context = graph.create_context({})
@@ -160,8 +160,7 @@ async def test_concurrent_invocations_bind_batches_to_their_own_contexts():
         GraphManager(HistoryState)
         .add_node(lambda state: Command(goto=["left", "right"]), "launch")
         .add_nodes([left, right])
-        .add_edge(START, "launch")
-        .compile_graph()
+        .compile_graph(entry_point="launch")
     )
 
     contexts = {
@@ -179,7 +178,7 @@ async def test_concurrent_invocations_bind_batches_to_their_own_contexts():
     assert contexts["first"].run_id != contexts["second"].run_id
     for label, context in contexts.items():
         assert observed_contexts[label] == [context, context]
-        assert context.target_node_name == []
+        assert context.target_node_name == _END
         assert context.steps == 2
         assert context.get_snapshot()["target_node_name"] == ["left", "right"]
 
@@ -206,8 +205,7 @@ async def test_failed_batch_recovers_from_graph_context_snapshot():
             "launch",
         )
         .add_nodes([a, b])
-        .add_edge(START, "launch")
-        .compile_graph()
+        .compile_graph(entry_point="launch")
     )
 
     failed = graph.create_context({})

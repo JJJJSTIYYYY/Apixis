@@ -22,14 +22,14 @@ pip install apixis
 | [Event handlers](./core/event/handlers.md) | 排序、通配符、错误/accept/cancel 回调 |
 | [Event channels](./core/event/channels.md) | builtin、gateway、Kafka、RabbitMQ 通道 |
 | [Graph API](./core/graph/README.md) | 构图、执行、stream、context、interrupt |
-| [Graph state & routing](./core/graph/state.md) | `Command`、`AutoMerge`、`KeepRef`、`Reset`、并行路由 |
+| [Graph state & commands](./core/graph/state.md) | `Command`、`AutoMerge`、`KeepRef`、`Reset`、并发下一跳 |
 | [Utilities](./core/utils/README.md) | 公共异常、logger、生命周期工具 |
 | [Configuration](./core/config/README.md) | 运行时配置项及默认值 |
 
 ## 最小图调用
 
 ```python
-from apixis import END, START, GraphManager
+from apixis import GraphManager
 
 
 def step(state: dict) -> dict:
@@ -39,9 +39,7 @@ def step(state: dict) -> dict:
 graph = (
     GraphManager()
     .add_node(step)
-    .add_edge(START, "step")
-    .add_edge("step", END)
-    .compile_graph()
+    .compile_graph(entry_point="step")
 )
 
 result = await graph.invoke({"count": 0})

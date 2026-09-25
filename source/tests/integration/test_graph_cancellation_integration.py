@@ -4,9 +4,11 @@ import asyncio
 
 import pytest
 
+from apixis.core.graph.base import _END
+
 from apixis.core.event import ApixEventHandler, subscribe, unsubscribe
 from apixis.core.event.factory import get_event_pipe
-from apixis.core.graph import END, START, GraphManager
+from apixis.core.graph import GraphManager
 from apixis.core.graph.context import get_stream_writer
 from apixis.core.graph.interrupter.graph_interrupter import interrupt
 from apixis.core.graph.utils.namespace import get_graph_interrupted_name
@@ -21,7 +23,7 @@ async def run_graph(graph, context, mode, chunks):
 
 
 @pytest.mark.parametrize("mode", ["invoke", "stream"])
-@pytest.mark.parametrize("target", [START, "business", END])
+@pytest.mark.parametrize("target", ["business", _END])
 @pytest.mark.parametrize("cause", ["raise", "child", "future"])
 async def test_upstream_plugin_cancellation_ends_call_and_runtime_remains_usable(mode, target, cause):
     """A cancelled plugin dependency must not strand an invocation or queue join."""
@@ -36,8 +38,7 @@ async def test_upstream_plugin_cancellation_ends_call_and_runtime_remains_usable
         get_stream_writer()("business chunk")
         return {"done": True}
 
-    graph = (GraphManager().add_node(business).add_edge(START, "business")
-             .add_edge("business", END).compile_graph())
+    graph = (GraphManager().add_node(business).compile_graph(entry_point="business"))
 
     async def wait_forever():
         await asyncio.Future()
@@ -75,9 +76,9 @@ async def test_upstream_plugin_cancellation_ends_call_and_runtime_remains_usable
             assert context.completion.cancelled()
             assert len(notifications) == 1
             assert len(notifications[0].error_stack) == 1 and notifications[0].error_stack[0].exception_type == 'CancelledError'
-            assert called == (["business"] if target == END else [])
+            assert called == (["business"] if target == _END else [])
             if mode == "stream":
-                assert chunks == (["business chunk"] if target == END else [])
+                assert chunks == (["business chunk"] if target == _END else [])
 
             unsubscribe(handler.name)
             assert await graph.invoke({}) == {"done": True}
@@ -106,8 +107,7 @@ async def test_node_cancellation_ends_call_without_committing_or_routing(mode):
         return state
 
     graph = (GraphManager().add_node(business).add_node(downstream)
-             .add_edge(START, "business").add_edge("business", "downstream")
-             .compile_graph())
+             .compile_graph(entry_point="business"))
     context = graph.create_context({"value": "initial"})
     try:
         async with asyncio.timeout(1):
@@ -134,8 +134,8 @@ async def test_interruption_dispatch_cancellation_releases_block_and_call(mode, 
         resumed.append(True)
         return state
 
-    graph = (GraphManager().add_node(business).add_edge(START, "business")
-             .compile_graph())
+    graph = (GraphManager().add_node(business)
+             .compile_graph(entry_point="business"))
 
     @subscribe(get_graph_interrupted_name(graph.namespace, missing_ok=True), priority=10)
     async def plugin(event):
@@ -170,11 +170,11 @@ async def test_background_plugin_cancellation_does_not_cancel_graph(mode):
     def business(state):
         return {"done": True}
 
-    graph = (GraphManager().add_node(business).add_edge(START, "business")
-             .compile_graph())
+    graph = (GraphManager().add_node(business)
+             .compile_graph(entry_point="business"))
 
     async def background(event):
-        if event.context.target_node_name == START:
+        if event.context.target_node_name == "business":
             raise asyncio.CancelledError()
 
     async def cleanup(event):
@@ -208,8 +208,8 @@ async def test_cleanup_failure_before_graph_notification_cannot_strand_call():
     def business(state):
         pytest.fail("Cancelled dispatch must not execute its graph node.")
 
-    graph = (GraphManager().add_node(business).add_edge(START, "business")
-             .compile_graph())
+    graph = (GraphManager().add_node(business)
+             .compile_graph(entry_point="business"))
 
     async def plugin(event):
         raise asyncio.CancelledError()

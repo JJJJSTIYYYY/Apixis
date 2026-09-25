@@ -7,7 +7,6 @@ import pytest
 
 from apixis.core.graph import (
     AutoMerge,
-    START,
     BaseNode,
     Command,
     GraphManager,
@@ -43,10 +42,10 @@ class CommandBatchNode(BaseNode):
 @pytest.mark.parametrize("list_target", [False, True], ids=["string", "singleton-list"])
 @pytest.mark.parametrize("node_kind", ["ordinary", "parallel", "batch", "empty-batch"])
 async def test_explicit_context_target_preserves_node_result_groups(list_target, node_kind):
-    """Explicit singleton batches preserve commands, defaults, and update order."""
+    """Explicit singleton batches preserve commands and update order."""
     commands = [
-        Command(update={"audit": ["first"], "winner": "first"}),
-        Command(update={"audit": ["second"], "winner": "second"}),
+        Command(update={"audit": ["first"], "winner": "first"}, goto="observe"),
+        Command(update={"audit": ["second"], "winner": "second"}, goto="observe"),
     ]
     if node_kind == "ordinary":
         node = Node(lambda state: commands[0], name="work")
@@ -67,21 +66,18 @@ async def test_explicit_context_target_preserves_node_result_groups(list_target,
     graph = (
         GraphManager(WorkflowState)
         .add_nodes([node, observe])
-        .add_edge(START, "work")
-        .add_edge("work", "observe")
-        .compile_graph()
+        .compile_graph(entry_point="work")
     )
     context = graph.create_context({"audit": [], "winner": "initial"})
     context.target_node_name = ["work"] if list_target else "work"
 
     result = await asyncio.wait_for(graph.invoke(graph_context=context), timeout=1)
 
-    assert result == {
-        "audit": expected_audit,
-        "winner": expected_winner,
-        "observed": {"audit": expected_audit, "winner": expected_winner},
-    }
-    assert context.steps == 2
+    expected = {"audit": expected_audit, "winner": expected_winner}
+    if node_kind != "empty-batch":
+        expected["observed"] = {"audit": expected_audit, "winner": expected_winner}
+    assert result == expected
+    assert context.steps == (1 if node_kind == "empty-batch" else 2)
 
 
 async def test_concurrent_branches_are_applied_in_declaration_order():
@@ -92,12 +88,12 @@ async def test_concurrent_branches_are_applied_in_declaration_order():
     async def first(state: dict) -> Command:
         await second_started.wait()
         completion_order.append("first")
-        return Command(update={"audit": ["first"], "winner": "first"})
+        return Command(update={"audit": ["first"], "winner": "first"}, goto="observe")
 
     async def second(state: dict) -> Command:
         completion_order.append("second")
         second_started.set()
-        return Command(update={"audit": ["second"], "winner": "second"})
+        return Command(update={"audit": ["second"], "winner": "second"}, goto="observe")
 
     def observe(state: dict) -> dict:
         return {"observed": {"audit": state["audit"], "winner": state["winner"]}}
@@ -106,9 +102,7 @@ async def test_concurrent_branches_are_applied_in_declaration_order():
     graph = (
         GraphManager(WorkflowState)
         .add_nodes([parallel_node, observe])
-        .add_edge(START, parallel_node.name)
-        .add_edge(parallel_node.name, "observe")
-        .compile_graph()
+        .compile_graph(entry_point=parallel_node.name)
     )
 
     assert isinstance(graph, NodeGraph)
@@ -122,7 +116,7 @@ async def test_concurrent_branches_are_applied_in_declaration_order():
     assert result["observed"] == {"audit": ["first", "second"], "winner": "second"}
 
 
-async def test_custom_command_goto_overrides_manager_default_edge():
+async def test_custom_command_goto_selects_next_node():
     """A custom node's route is honored after it returns its command list."""
     def fallback(state: dict) -> dict:
         return {"route": "fallback"}
@@ -136,9 +130,7 @@ async def test_custom_command_goto_overrides_manager_default_edge():
     graph = (
         GraphManager(WorkflowState)
         .add_nodes([batch, fallback, selected])
-        .add_edge(START, batch.name)
-        .add_edge(batch.name, "fallback")
-        .compile_graph()
+        .compile_graph(entry_point=batch.name)
     )
 
     result = await graph.invoke({"audit": []})
@@ -147,8 +139,8 @@ async def test_custom_command_goto_overrides_manager_default_edge():
     assert result["audit"] == ["selected"]
 
 
-async def test_empty_command_list_continues_along_default_edge():
-    """A custom node's empty Command list acts as a graph no-op."""
+async def test_empty_command_list_finishes():
+    """An empty command list completes the graph without further work."""
     def after_batch(state: dict) -> dict:
         return {"route": "after-batch"}
 
@@ -156,14 +148,12 @@ async def test_empty_command_list_continues_along_default_edge():
     graph = (
         GraphManager(WorkflowState)
         .add_nodes([batch, after_batch])
-        .add_edge(START, batch.name)
-        .add_edge(batch.name, "after_batch")
-        .compile_graph()
+        .compile_graph(entry_point=batch.name)
     )
 
     result = await graph.invoke({"audit": ["initial"]})
 
-    assert result == {"audit": ["initial"], "route": "after-batch"}
+    assert result == {"audit": ["initial"]}
 
 
 async def test_branch_exception_propagates_and_stops_downstream_node():
@@ -182,9 +172,7 @@ async def test_branch_exception_propagates_and_stops_downstream_node():
     graph = (
         GraphManager(WorkflowState)
         .add_nodes([parallel_node, downstream])
-        .add_edge(START, parallel_node.name)
-        .add_edge(parallel_node.name, "downstream")
-        .compile_graph()
+        .compile_graph(entry_point=parallel_node.name)
     )
 
     with pytest.raises(RuntimeError, match="branch exploded"):
@@ -209,8 +197,7 @@ async def test_graph_timeout_cancels_running_parallel_node():
     graph = (
         GraphManager(WorkflowState)
         .add_node(parallel_node, timeout=0.02)
-        .add_edge(START, parallel_node.name)
-        .compile_graph()
+        .compile_graph(entry_point=parallel_node.name)
     )
 
     with pytest.raises(

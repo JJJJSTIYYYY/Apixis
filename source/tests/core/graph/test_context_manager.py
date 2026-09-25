@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from apixis.core.graph import NodeGraph, START, END, get_graph_namespace
+from apixis.core.graph import NodeGraph, get_graph_namespace
 from uuid import uuid4
 
 from apixis.core.graph.context import (
@@ -21,7 +21,7 @@ from apixis.core.graph.context.stream_writer import _NOOP_STREAM_WRITER
 
 def _context_with_writer() -> tuple[GraphContext, StreamWriter]:
     """Create a context carrying a node-facing stream writer."""
-    context = NodeGraph({}, {START: END}, using_namespace=uuid4().hex).create_context(
+    context = NodeGraph({}, None, using_namespace=uuid4().hex).create_context(
         {}
     )
     writer = StreamWriter(lambda chunk: None)
@@ -55,7 +55,7 @@ def test_apix_graph_context_exposes_context_and_its_writer():
 
 def test_bound_context_without_writer_rejects_stream_access():
     """A graph context alone does not imply an active node stream writer."""
-    context = NodeGraph({}, {START: END}, using_namespace=uuid4().hex).create_context(
+    context = NodeGraph({}, None, using_namespace=uuid4().hex).create_context(
         {}
     )
 
@@ -75,7 +75,7 @@ def test_run_identity_accessors_require_complete_runtime_binding():
     with pytest.raises(RuntimeError, match="get_current_namespace.*only available"):
         get_current_namespace()
 
-    context = NodeGraph({}, {START: END}, using_namespace=uuid4().hex).create_context(
+    context = NodeGraph({}, None, using_namespace=uuid4().hex).create_context(
         {}
     )
     with apix_graph_context(context):
@@ -86,7 +86,7 @@ def test_run_identity_accessors_require_complete_runtime_binding():
 
 def test_run_identity_accessors_return_bound_values():
     """A complete node binding exposes its run ID and graph namespace."""
-    context = NodeGraph({}, {START: END}, using_namespace=uuid4().hex).create_context(
+    context = NodeGraph({}, None, using_namespace=uuid4().hex).create_context(
         {}
     )
     context.run_id = "graph-run"

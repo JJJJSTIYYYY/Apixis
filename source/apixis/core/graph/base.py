@@ -78,11 +78,8 @@ class Reset:
     value: Any
 
 
-START = "__start__"
-"""Predefined node name that begins every graph invocation."""
-
-END = "__end__"
-"""Predefined node name that completes every graph invocation."""
+_END = "__end__"
+"""Internal target marking a completed graph invocation."""
 
 
 GRAPH_DISPATCH = "__graph_dispatch__"
@@ -114,8 +111,8 @@ class Command:
         goto:
             One or more next node names. A list schedules its nodes in one
             concurrent batch and also defines their deterministic result
-            application order. ``None`` permits a manager-defined default
-            transition, while an empty list ends the graph immediately.
+            application order. ``None`` and an empty list contribute no next
+            target. The graph finishes when the whole batch has no next target.
     """
 
     update: dict[str, Any] = field(default_factory=dict)

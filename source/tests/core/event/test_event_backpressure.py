@@ -8,7 +8,7 @@ from apixis.core.event import ApixEvent, EventType, subscribe, unsubscribe
 from apixis.core.event import event_loop, event_pipe, factory
 from apixis.core.event.factory import get_handler_registry
 from apixis.core.event.base import suspend_process
-from apixis.core.graph import START, END, Command, GraphManager
+from apixis.core.graph import Command, GraphManager
 from apixis.core.graph.interrupter import interrupt
 
 
@@ -133,13 +133,13 @@ async def test_nested_graph_waits_release_saturated_parent_capacity(
             raise asyncio.CancelledError()
         return {"value": state["value"] + 1}
 
-    leaf_graph = GraphManager().add_node(leaf).add_edge(START, "leaf").compile_graph()
+    leaf_graph = GraphManager().add_node(leaf).compile_graph(entry_point="leaf")
 
     async def middle(state):
         return await leaf_graph.invoke(state)
 
     middle_graph = (
-        GraphManager().add_node(middle).add_edge(START, "middle").compile_graph()
+        GraphManager().add_node(middle).compile_graph(entry_point="middle")
     )
 
     async def parent(state):
@@ -151,7 +151,7 @@ async def test_nested_graph_waits_release_saturated_parent_capacity(
         return await middle_graph.invoke(state)
 
     parent_graph = (
-        GraphManager().add_node(parent).add_edge(START, "parent").compile_graph()
+        GraphManager().add_node(parent).compile_graph(entry_point="parent")
     )
     try:
         results = await asyncio.wait_for(
@@ -332,15 +332,13 @@ async def test_concurrent_graphs_route_next_nodes_under_saturation(runtime, wait
         if first_nodes == EVENT_CAPACITY:
             entered.set()
         await release.wait()
-        return {"value": state["value"] + 1}
+        return Command(update={"value": state["value"] + 1}, goto="second")
 
     def second(state):
         return {"value": state["value"] * 2}
 
     graph = (
-        GraphManager().add_node(first).add_node(second)
-        .add_edge(START, "first").add_edge("first", "second")
-        .add_edge("second", END).compile_graph()
+        GraphManager().add_node(first).add_node(second).compile_graph(entry_point="first")
     )
     runs = [asyncio.create_task(graph.invoke({"value": value})) for value in range(EVENT_CAPACITY)]
     try:
@@ -814,8 +812,7 @@ async def test_parallel_graph_interruptions_share_one_event_slot(runtime, timeou
         return {"second": await interrupt(data="second", timeout=timeout)}
 
     graph = (
-        GraphManager().add_node(route).add_node(first).add_node(second)
-        .add_edge(START, "route").compile_graph()
+        GraphManager().add_node(route).add_node(first).add_node(second).compile_graph(entry_point="route")
     )
     received = []
 

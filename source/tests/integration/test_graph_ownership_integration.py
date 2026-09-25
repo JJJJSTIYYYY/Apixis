@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from apixis.core.event import get_handler
-from apixis.core.graph import AutoMerge, KeepRef, GraphManager, NodeGraph, START
+from apixis.core.graph import AutoMerge, KeepRef, GraphManager, NodeGraph
 from apixis.core.graph import base as graph_base
 from apixis.core.graph.utils import state as state_utils
 from apixis.core.graph.context import GraphContext
@@ -30,8 +30,7 @@ def build(schema=None, namespace="ownership", replace=False, node=None):
     return (
         GraphManager(schema)
         .add_node(node or (lambda state: {"history": ["node"]}), "work")
-        .add_edge(START, "work")
-        .compile_graph(using_namespace=namespace, exist_ok=replace)
+        .compile_graph(entry_point="work", using_namespace=namespace, exist_ok=replace)
     )
 
 
@@ -72,9 +71,10 @@ async def test_context_creation_copies_input_and_has_read_only_owner():
     assert context.graph_id == graph.graph_id
     with pytest.raises(AttributeError):
         context.graph_id = graph.graph_id
-    unmanaged = GraphContext(graph.graph_id)
-    with pytest.raises(InvalidContextError, match="not managed"):
-        await graph.invoke(graph_context=unmanaged)
+    prepared = GraphContext(graph.graph_id)
+    prepared.state = {"history": []}
+    prepared.target_node_name = "work"
+    assert await graph.invoke(graph_context=prepared) == {"history": ["node"]}
     assert (await graph.invoke(graph_context=context))["history"] == ["start", "node"]
 
 
@@ -250,7 +250,7 @@ async def test_failed_registration_releases_namespace_without_restoring_old_grap
 
     def reject_registration(self):
         assert self.namespace in graph_base.namespace_set
-        assert context.status == "aborted"
+        assert context.status == "pending"
         assert get_handler(self.dispatch_name) is None
         with pytest.raises(RuntimeError, match="decomposed"):
             old.create_context({})

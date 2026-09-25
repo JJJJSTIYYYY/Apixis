@@ -4,11 +4,13 @@ import asyncio
 from typing import Annotated, TypedDict
 
 import pytest
+
+from apixis.core.graph.base import _END
 import pytest_asyncio
 
 from apixis.core.event.factory import get_event_loop
 from apixis.core.event.factory import get_event_pipe
-from apixis.core.graph import AutoMerge, END, START, GraphManager
+from apixis.core.graph import AutoMerge, Command, GraphManager
 from apixis.core.utils.exception import InvalidContextError
 from apixis.core.graph.context import get_stream_writer
 
@@ -41,16 +43,16 @@ async def test_abort_invoke_returns_last_completed_snapshot_and_stops_routing():
     final_called = asyncio.Event()
 
     def prepare(state):
-        return {"history": ["prepare"], "route": "slow"}
+        return Command(update={"history": ["prepare"], "route": "slow"}, goto="slow")
 
     async def slow(state):
         slow_started.set()
         await release_slow.wait()
         slow_finished.set()
-        return {"history": ["slow"], "slow_result": "completed"}
+        return Command(update={"history": ["slow"], "slow_result": "completed"}, goto="final")
 
     def unused(state):
-        return {"history": ["unused"]}
+        return Command(update={"history": ["unused"]}, goto="final")
 
     def final(state):
         final_called.set()
@@ -59,16 +61,8 @@ async def test_abort_invoke_returns_last_completed_snapshot_and_stops_routing():
     graph = (
         GraphManager(AbortState)
         .add_nodes([prepare, slow, unused, final])
-        .add_edge(START, "prepare")
-        .add_router(
-            "prepare",
-            ["slow", "unused"],
-            lambda state: state["route"],
-        )
-        .add_edge("slow", "final")
-        .add_edge("unused", "final")
-        .add_edge("final", END)
-        .compile_graph()
+
+        .compile_graph(entry_point="prepare")
     )
     context = graph.create_context({"history": ["initial"]})
     invocation = asyncio.create_task(graph.invoke(graph_context=context))
@@ -110,7 +104,7 @@ async def test_context_abort_directly_finishes_its_invocation():
         return {"history": ["slow"]}
 
     graph = (
-        GraphManager(AbortState).add_node(slow).add_edge(START, "slow").compile_graph()
+        GraphManager(AbortState).add_node(slow).compile_graph(entry_point="slow")
     )
     context = graph.create_context({"history": ["initial"]})
     invocation = asyncio.create_task(graph.invoke(graph_context=context))
@@ -149,8 +143,7 @@ async def test_aborted_snapshot_recovers_while_stale_node_is_still_running():
     graph = (
         GraphManager(AbortState)
         .add_node(recoverable)
-        .add_edge(START, "recoverable")
-        .compile_graph()
+        .compile_graph(entry_point="recoverable")
     )
     context = graph.create_context({"history": ["initial"]})
     invocation = asyncio.create_task(graph.invoke(graph_context=context))
@@ -171,7 +164,7 @@ async def test_aborted_snapshot_recovers_while_stale_node_is_still_running():
     assert attempts == 2
     assert context.status == "aborted"
     assert recovered.status == "finished"
-    assert recovered.target_node_name == END
+    assert recovered.target_node_name == _END
     assert recovered.steps == 1
     assert not first_finished.is_set()
 
@@ -194,8 +187,7 @@ async def test_failed_snapshot_recovers_at_failed_node():
     graph = (
         GraphManager(AbortState)
         .add_node(flaky)
-        .add_edge(START, "flaky")
-        .compile_graph()
+        .compile_graph(entry_point="flaky")
     )
 
     context = graph.create_context({"history": ["initial"]})
@@ -230,8 +222,7 @@ async def test_replacement_rejects_old_context_and_snapshot_while_stale_node_fin
     old_graph = (
         GraphManager(AbortState)
         .add_node(old_node, "shared")
-        .add_edge(START, "shared")
-        .compile_graph(using_namespace="replace-run")
+        .compile_graph(entry_point="shared", using_namespace="replace-run")
     )
     old_context = old_graph.create_context({"history": ["initial"]})
     old_invocation = asyncio.create_task(old_graph.invoke(graph_context=old_context))
@@ -247,14 +238,13 @@ async def test_replacement_rejects_old_context_and_snapshot_while_stale_node_fin
     replacement = (
         GraphManager(AbortState)
         .add_node(replacement_node, "shared")
-        .add_edge(START, "shared")
-        .compile_graph(using_namespace="replace-run", exist_ok=True)
+        .compile_graph(entry_point="shared", using_namespace="replace-run", exist_ok=True)
     )
     with pytest.raises(ValueError, match="different graph"):
         replacement.restore_context(old_context.context_snapshot)
     with pytest.raises(InvalidContextError, match="different graph"):
         await replacement.invoke(graph_context=recovered)
-    assert recovered.status == "aborted"
+    assert recovered.status == "pending"
     replacement_context = replacement.create_context({"history": ["initial"]})
     result = await replacement.invoke(graph_context=replacement_context)
 
@@ -281,18 +271,18 @@ async def test_abort_stream_flushes_chunks_then_stops_complex_graph():
         writer("prepare:started")
         await asyncio.sleep(0)
         writer("prepare:finished")
-        return {"history": ["prepare"], "route": "slow"}
+        return Command(update={"history": ["prepare"], "route": "slow"}, goto="slow")
 
     async def slow(state):
         get_stream_writer()("slow:started")
         slow_started.set()
         await release_slow.wait()
         slow_finished.set()
-        return {"history": ["slow"], "slow_result": "completed"}
+        return Command(update={"history": ["slow"], "slow_result": "completed"}, goto="final")
 
     def unused(state):
         get_stream_writer()("unused")
-        return {"history": ["unused"]}
+        return Command(update={"history": ["unused"]}, goto="final")
 
     def final(state):
         final_called.set()
@@ -302,15 +292,8 @@ async def test_abort_stream_flushes_chunks_then_stops_complex_graph():
     graph = (
         GraphManager(AbortState)
         .add_nodes([prepare, slow, unused, final])
-        .add_edge(START, "prepare")
-        .add_router(
-            "prepare",
-            ["slow", "unused"],
-            lambda state: state["route"],
-        )
-        .add_edge("slow", "final")
-        .add_edge("unused", "final")
-        .compile_graph()
+
+        .compile_graph(entry_point="prepare")
     )
     context = graph.create_context({"history": ["initial"]})
     stream = graph.stream(graph_context=context)

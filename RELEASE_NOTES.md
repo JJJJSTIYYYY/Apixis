@@ -1,3 +1,55 @@
+# Context 运行期管理
+
+- `create_context()` / `restore_context()` 只准备 pending context，不再让图持有它。
+- `invoke()` / `stream()` 接纳调用并进入 running 后建立管理关系，完成、失败、中止或取消时立即解除；直接调用 `context.abort()` 同样生效。
+- `decompose(force=True)` 仅中止 running context；`force=False` 仅在存在 running context 时拒绝分解。
+- pending context 不因图分解或命名空间替换而改变状态；之后通过已分解的图执行时抛异常，跨图调用仍被拒绝。
+- 对齐接口文档与生命周期测试，新增未执行 context 的状态资源回收、直接 abort 的即时清理，以及尚未消费完的 stream 终结清理回归。
+
+本轮验证：Python 3.12.14、pytest 9.1.1、pytest-asyncio 1.4.0，完整测试 **901 passed**。
+
+# Graph Command 重构
+
+- 删除 `GraphManager.add_edge()`、`add_router()`、条件节点生成逻辑和默认跳转表。
+- `Command.goto` 是节点执行后唯一的下一跳来源：`None` / `[]` 结束当前分支，字符串执行单节点，列表执行并发步。
+- 并发步按声明顺序合并 command，下一跳按首次出现顺序去重。结束分支不阻止其他分支继续，所有分支均无下一跳时结束图。
+- 单元素列表保留并发步形式；专用节点的空 command 列表不再生成占位 command。
+- 删除 `START` 及其额外调度；`END` 改为不公开导出的内部标记 `_END`。
+- 仅新建 context 时复制入口目标；快照恢复保留目标节点与步数，执行始终以 context 当前目标为准。
+- 同步迁移调用示例、安装验证脚本、测试与接口文档。
+
+## 接口迁移
+
+```python
+from apixis import Command, GraphManager
+
+
+def first(state):
+    return Command(update={"value": state["value"] + 1}, goto="second")
+
+
+def second(state):
+    return {"value": state["value"] * 2}
+
+
+graph = GraphManager().add_nodes([first, second]).compile_graph("first")
+```
+
+`compile_graph(entry_point, *, using_namespace=None, exist_ok=False)` 必须显式指定入口。
+直接构造使用 `NodeGraph(nodes, entry_point, ...)`；不再接受默认跳转表。
+`validate_graph_definition(nodes)` 仅验证节点定义。
+条件判断放在普通节点内，由其返回 `Command(goto=...)`。
+普通 mapping 返回值只更新 state 并结束当前分支；需要继续时必须显式返回 `Command`。
+
+## 本轮验证
+
+Python 3.12.14、pytest 9.1.1、pytest-asyncio 1.4.0：完整测试 **892 passed**。
+远程通道沿用模拟测试，未连接真实 Kafka / RabbitMQ 服务。
+
+---
+
+以下为此前版本的发布记录。
+
 # 本次修复与发布验证
 
 ## 修改内容

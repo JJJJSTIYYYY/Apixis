@@ -52,7 +52,7 @@ class BaseNode(ABC):
     def _is_command(value: Any) -> TypeGuard[Command]:
         """Return whether ``value`` is an actual :class:`Command` instance."""
         return isinstance(value, Command)
-    
+
     @staticmethod
     def _normalise_result(
         result: object,
@@ -60,7 +60,7 @@ class BaseNode(ABC):
         """Convert a node return value into one or more commands.
 
         A regular mapping is always treated as a state update. Only an actual
-        :class:`Command` instance may select a route. Lists are normalised item
+        :class:`Command` instance may select the next step. Lists are normalised item
         by item and preserve their original order.
 
         Raises:
@@ -103,7 +103,7 @@ class BaseNode(ABC):
 
     @staticmethod
     def _is_valid_goto(value: object) -> bool:
-        """Return whether a command route satisfies the public contract."""
+        """Return whether a command target satisfies the public contract."""
         return (
             value is None
             or isinstance(value, str)
@@ -135,7 +135,7 @@ class BaseNode(ABC):
                 return_exceptions=True,
             )
             raise
-    
+
 
     def _wrap_func(
         self,
@@ -169,9 +169,9 @@ class Node(BaseNode):
     func: NodeFunction
 
     def __init__(
-        self, 
-        func: NodeFunction, 
-        name: str | None = None, 
+        self,
+        func: NodeFunction,
+        name: str | None = None,
         timeout: float | None = None
     ):
         """Create a node.
@@ -185,11 +185,11 @@ class Node(BaseNode):
         """
         if func is None or not isinstance(func, Callable):
             raise ValueError("A graph node requires a callable function.")
-        
+
         self.name = name or func.__name__
         if not self.name:
             raise ValueError("A graph node requires a name.")
-        
+
         self.func = self._wrap_func(func)
         self.timeout = timeout
 

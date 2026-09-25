@@ -7,8 +7,10 @@ from typing import Annotated, TypedDict
 
 import pytest
 
-from apixis.core.graph import AutoMerge, KeepRef, NodeGraph, END
-from apixis.core.graph.base import START
+from apixis.core.graph.base import _END
+
+from apixis.core.graph import AutoMerge, KeepRef, NodeGraph
+
 from apixis.core.graph.context import GraphContext, GraphContextSnapshot
 from apixis.core.graph.context import noop_stream_writer
 
@@ -21,7 +23,7 @@ class ContextState(TypedDict):
 @pytest.fixture
 def graph():
     """Use a real graph owner for context lifecycle and checkpoint tests."""
-    return NodeGraph({}, {START: END}, state_schema=ContextState)
+    return NodeGraph({}, None, state_schema=ContextState)
 
 
 def _bind(
@@ -44,13 +46,13 @@ def _bind(
 
 
 def test_new_context_is_pending_unbound_and_has_no_snapshot(graph):
-    """A new context begins at START without runtime or recovery state."""
+    """An empty graph creates a terminal context without runtime or recovery state."""
     context = graph.create_context({})
 
     assert context.status == "pending"
     assert context.run_id is None
     assert context.state == {}
-    assert context.target_node_name == START
+    assert context.target_node_name == _END
     assert context.steps == 0
     assert context.context_snapshot == []
     assert context.completion is None
@@ -77,7 +79,7 @@ def test_snapshot_round_trip_preserves_concurrent_target_list(graph):
 
 @pytest.mark.asyncio
 async def test_bind_transitions_pending_to_running_without_taking_snapshot(graph):
-    """START binding initializes runtime fields but leaves the snapshot absent."""
+    """Binding initializes runtime fields but leaves the snapshot absent."""
     context = graph.create_context({})
     state = {"value": 1}
     completion = _bind(graph, context, "run-1", state)
@@ -86,7 +88,7 @@ async def test_bind_transitions_pending_to_running_without_taking_snapshot(graph
     assert context.run_id == "run-1"
     assert context.state == state
     assert context.state is not state
-    assert context.target_node_name == START
+    assert context.target_node_name == _END
     assert context.context_snapshot == []
     assert context.completion is completion
     assert context.is_consumed is True
@@ -180,7 +182,7 @@ async def test_restore_context_deep_copies_every_field_including_keep_ref(graph)
 
 @pytest.mark.parametrize("snapshot", [None])
 def test_restore_context_rejects_missing_snapshot(graph, snapshot):
-    """START failures without a checkpoint cannot be recovered."""
+    """Failures before the first checkpoint cannot be recovered."""
     with pytest.raises(RuntimeError, match="without a snapshot"):
         graph.restore_context(snapshot)
 
@@ -369,7 +371,7 @@ async def test_running_abort_resolves_the_saved_snapshot_and_is_idempotent(graph
 
 @pytest.mark.asyncio
 async def test_finish_is_idempotent_and_does_not_replace_snapshot(graph):
-    """END resolves current state while leaving the previous checkpoint intact."""
+    """Completion resolves current state while leaving the previous checkpoint intact."""
     pending = graph.create_context({})
     with pytest.raises(RuntimeError, match="completion is None"):
         pending._finish()

@@ -1,8 +1,6 @@
 """Public API for Apixis's event-driven graph execution module."""
 
 from apixis.core.graph.base import (
-    START,
-    END,
     GRAPH_DISPATCH,
     GRAPH_INTERRUPTED,
     GLOBALNS,
@@ -53,8 +51,6 @@ from apixis.core.graph.utils import (
 )
 
 __all__ = [
-    "START",
-    "END",
     "GRAPH_DISPATCH",
     "GRAPH_INTERRUPTED",
     "GLOBALNS",

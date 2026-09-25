@@ -109,7 +109,7 @@ async def interrupt(
         # External ``Block.cancel()`` aborts the owning graph attempt at its
         # last committed snapshot. The CancelledError is then re-raised to
         # stop the interrupted node immediately, so neither its remaining
-        # code nor a downstream route can run. Runtime task cancellation is
+        # code nor a downstream node can run. Runtime task cancellation is
         # left to the surrounding graph timeout/cancellation machinery.
         current_task = asyncio.current_task()
         if block.cancelled and (current_task is None or current_task.cancelling() == 0):

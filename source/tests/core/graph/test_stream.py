@@ -3,11 +3,13 @@
 import asyncio
 
 import pytest
+
+from apixis.core.graph import Command
 import pytest_asyncio
 
 from apixis.core.event.factory import get_event_loop
 from apixis.core.event.factory import get_event_pipe
-from apixis.core.graph import START, GraphManager
+from apixis.core.graph import GraphManager
 from apixis.core.graph.context import get_stream_writer
 from apixis.core.graph.context.stream_writer import StreamChannel
 from apixis.core.utils.exception import InvalidContextError
@@ -38,7 +40,7 @@ async def test_sync_node_emits_chunks_in_write_order():
         writer.write({"token": "b"})
         return {"finished": True}
 
-    graph = GraphManager().add_node(node).add_edge(START, "node").compile_graph()
+    graph = GraphManager().add_node(node).compile_graph(entry_point="node")
 
     assert await _collect(graph, {}) == [{"token": "a"}, {"token": "b"}]
 
@@ -53,7 +55,7 @@ async def test_async_node_can_emit_arbitrary_chunks():
         writer("second")
         return {}
 
-    graph = GraphManager().add_node(node).add_edge(START, "node").compile_graph()
+    graph = GraphManager().add_node(node).compile_graph(entry_point="node")
 
     assert await _collect(graph, {}) == ["first", "second"]
 
@@ -63,7 +65,7 @@ async def test_chunks_from_multiple_nodes_share_one_ordered_stream():
 
     def first(state):
         get_stream_writer()(1)
-        return {}
+        return Command(goto="second")
 
     def second(state):
         get_stream_writer()(2)
@@ -72,9 +74,7 @@ async def test_chunks_from_multiple_nodes_share_one_ordered_stream():
     graph = (
         GraphManager()
         .add_nodes([first, second])
-        .add_edge(START, "first")
-        .add_edge("first", "second")
-        .compile_graph()
+        .compile_graph(entry_point="first")
     )
 
     assert await _collect(graph, {}) == [1, 2]
@@ -85,8 +85,7 @@ async def test_stream_without_custom_chunks_finishes_cleanly():
     graph = (
         GraphManager()
         .add_node(lambda state: {"finished": True}, "node")
-        .add_edge(START, "node")
-        .compile_graph()
+        .compile_graph(entry_point="node")
     )
 
     assert await _collect(graph, {}) == []
@@ -99,7 +98,7 @@ async def test_invoke_graph_uses_a_noop_stream_writer():
         get_stream_writer()({"ignored": True})
         return {"finished": True}
 
-    graph = GraphManager().add_node(node).add_edge(START, "node").compile_graph()
+    graph = GraphManager().add_node(node).compile_graph(entry_point="node")
 
     assert await graph.invoke({}) == {"finished": True}
 
@@ -117,7 +116,7 @@ async def test_stream_yields_queued_chunks_before_propagating_node_error():
         get_stream_writer()({"status": "started"})
         raise RuntimeError("stream failed")
 
-    graph = GraphManager().add_node(node).add_edge(START, "node").compile_graph()
+    graph = GraphManager().add_node(node).compile_graph(entry_point="node")
     stream = graph.stream({})
 
     assert await anext(stream) == {"status": "started"}
@@ -135,8 +134,7 @@ async def test_stream_yields_queued_chunks_before_node_timeout():
     graph = (
         GraphManager()
         .add_node(node, timeout=0.02)
-        .add_edge(START, "node")
-        .compile_graph()
+        .compile_graph(entry_point="node")
     )
     stream = graph.stream({})
 
@@ -153,8 +151,7 @@ async def test_stream_rejects_non_dict_state():
     graph = (
         GraphManager()
         .add_node(lambda state: {}, "node")
-        .add_edge(START, "node")
-        .compile_graph()
+        .compile_graph(entry_point="node")
     )
 
     with pytest.raises(TypeError, match="Graph state must be a dict"):
@@ -171,7 +168,7 @@ async def test_concurrent_streams_keep_writer_channels_isolated():
         writer(f"{state['run']}:second")
         return {}
 
-    graph = GraphManager().add_node(node).add_edge(START, "node").compile_graph()
+    graph = GraphManager().add_node(node).compile_graph(entry_point="node")
 
     left, right = await asyncio.gather(
         _collect(graph, {"run": "left"}),
@@ -191,7 +188,7 @@ async def test_closing_stream_early_cancels_its_graph_run():
         await release_node.wait()
         return {}
 
-    graph = GraphManager().add_node(node).add_edge(START, "node").compile_graph()
+    graph = GraphManager().add_node(node).compile_graph(entry_point="node")
     context = graph.create_context({})
     stream = graph.stream(graph_context=context)
 
@@ -209,8 +206,7 @@ async def test_completed_context_cannot_be_reused():
     graph = (
         GraphManager()
         .add_node(lambda state: {"finished": True}, "node")
-        .add_edge(START, "node")
-        .compile_graph()
+        .compile_graph(entry_point="node")
     )
 
     context = graph.create_context({})
@@ -243,7 +239,7 @@ async def test_aborted_stream_snapshot_recovers_without_waiting_for_stale_work()
         writer("resumed:finished")
         return {"recovered": True}
 
-    graph = GraphManager().add_node(node).add_edge(START, "node").compile_graph()
+    graph = GraphManager().add_node(node).compile_graph(entry_point="node")
     context = graph.create_context({"initial": True})
     first_stream = graph.stream(graph_context=context)
 

@@ -6,10 +6,10 @@ import copy
 from asyncio import Future
 from dataclasses import dataclass, field
 import time
-from typing import Any, Literal, TypeAlias, TypedDict
+from typing import Any, Callable, Literal, TypeAlias, TypedDict
 
 from apixis.core.graph.base import (
-    START,
+    _END,
 )
 from apixis.core.graph.context.stream_writer import StreamWriter
 
@@ -56,14 +56,15 @@ class GraphContext:
 
     The immutable public graph_id identifies ownership without retaining a
     graph object. Use graph.create_context() and graph.restore_context() to
-    obtain managed contexts. Contexts store state references; their graph
-    applies schema-specific copy and merge policies at execution boundaries.
+    prepare contexts. The graph manages only running attempts. Contexts store
+    state references; their graph applies schema-specific copy and merge
+    policies at execution boundaries.
     """
 
     _graph_id: str
     run_id: str | None = field(default=None, init=False)
     state: dict[str, Any] = field(default_factory=dict, init=False)
-    target_node_name: str | list[str] = field(default=START, init=False)
+    target_node_name: str | list[str] = field(default=_END, init=False)
     steps: int = field(default=0, init=False)
     context_snapshot: list[GraphContextSnapshot] = field(
         default_factory=list,
@@ -82,6 +83,11 @@ class GraphContext:
     _status: GraphContextStatus = field(
         default="pending",
         init=False,
+    )
+    _on_terminal: Callable[[GraphContext], None] | None = field(
+        default=None,
+        init=False,
+        repr=False,
     )
 
     @property
@@ -124,6 +130,10 @@ class GraphContext:
                 f"Invalid GraphContext status transition: {self._status} -> {status}."
             )
         self._status = status
+        if status != "running" and self._on_terminal is not None:
+            # Release runtime ownership at the transition, even for direct aborts.
+            on_terminal, self._on_terminal = self._on_terminal, None
+            on_terminal(self)
 
     def _bind(
         self,
@@ -131,6 +141,7 @@ class GraphContext:
         run_id: str,
         completion: Future[Any],
         stream_writer: StreamWriter,
+        on_terminal: Callable[[GraphContext], None] | None = None,
     ) -> None:
         """Attach runtime resources to one pending attempt without copying state."""
         # Validate before replacing any resources belonging to an older run.
@@ -138,6 +149,7 @@ class GraphContext:
         self.run_id = run_id
         self.completion = completion
         self.stream_writer = stream_writer
+        self._on_terminal = on_terminal
 
     def _set_target_node(self, target_node_name: str | list[str]) -> None:
         """Record the node or concurrent batch targeted by dispatch."""
@@ -209,7 +221,7 @@ class GraphContext:
         """Abort a pending or running attempt at its latest snapshot."""
         self._transition_to("aborted")
         completion = self.completion
-        # Pending contexts own no Future, but must still be released by abort.
+        # Pending contexts own no runtime resources or graph management reference.
         if completion is not None and not completion.done():
             completion.set_result(self._latest_snapshot_state())
 

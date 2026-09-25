@@ -4,6 +4,8 @@ import asyncio
 import time
 
 import pytest
+
+from apixis.core.graph import Command
 import pytest_asyncio
 
 from apixis.core.event import ApixEvent, EventType, unsubscribe
@@ -12,7 +14,7 @@ from apixis.core.event.factory import (
     get_handler_registry,
     get_event_pipe,
 )
-from apixis.core.graph import START, END, GLOBALNS, GraphManager
+from apixis.core.graph import GLOBALNS, GraphManager
 from apixis.core.graph.context import apix_graph_context
 from apixis.core.graph.interrupter import Block, interrupt, interrupted_hook
 from apixis.core.graph.utils.namespace import get_graph_interrupted_name
@@ -80,7 +82,7 @@ async def test_interrupt_requires_an_active_graph_node_context():
         await interrupt()
 
     with apix_graph_context(
-        GraphManager().add_edge(START, END).compile_graph().create_context({})
+        GraphManager().compile_graph(entry_point=None).create_context({})
     ):
         with pytest.raises(RuntimeError, match="active graph node"):
             await interrupt()
@@ -131,8 +133,7 @@ async def test_graph_pauses_and_resumes_at_multiple_breakpoints(namespace):
     graph = (
         GraphManager()
         .add_node(review)
-        .add_edge(START, "review")
-        .compile_graph(using_namespace=namespace)
+        .compile_graph(entry_point="review", using_namespace=namespace)
     )
 
     @graph.add_interrupted_hook
@@ -180,8 +181,7 @@ async def test_public_global_hook_resumes_default_graph(namespace):
     graph = (
         GraphManager()
         .add_node(review)
-        .add_edge(START, "review")
-        .compile_graph(GLOBALNS)
+        .compile_graph(entry_point="review", using_namespace=GLOBALNS)
     )
 
     @interrupted_hook(namespace=namespace, exist_ok=False)
@@ -203,12 +203,12 @@ async def test_external_block_cancel_aborts_graph_at_saved_snapshot():
     downstream_called = asyncio.Event()
 
     def prepare(state):
-        return {"checkpoint": "prepared"}
+        return Command(update={"checkpoint": "prepared"}, goto="wait_for_decision")
 
     async def wait_for_decision(state):
         await interrupt(data="optional")
         continued.set()
-        return {"decision": "continued"}
+        return Command(update={"decision": "continued"}, goto="downstream")
 
     def downstream(state):
         downstream_called.set()
@@ -217,10 +217,8 @@ async def test_external_block_cancel_aborts_graph_at_saved_snapshot():
     graph = (
         GraphManager()
         .add_nodes([prepare, wait_for_decision, downstream])
-        .add_edge(START, "prepare")
-        .add_edge("prepare", "wait_for_decision")
-        .add_edge("wait_for_decision", "downstream")
-        .compile_graph(using_namespace="cancel-flow")
+
+        .compile_graph(entry_point="prepare", using_namespace="cancel-flow")
     )
 
     @graph.add_interrupted_hook
@@ -258,8 +256,7 @@ async def test_interrupt_timeout_resumes_graph_and_cancels_block():
     graph = (
         GraphManager()
         .add_node(wait_briefly)
-        .add_edge(START, "wait_briefly")
-        .compile_graph(using_namespace="timeout-flow")
+        .compile_graph(entry_point="wait_briefly", using_namespace="timeout-flow")
     )
 
     @graph.add_interrupted_hook
@@ -287,8 +284,7 @@ async def test_node_timeout_is_not_swallowed_by_interrupt_cancellation():
     graph = (
         GraphManager()
         .add_node(wait_forever, timeout=0.02)
-        .add_edge(START, "wait_forever")
-        .compile_graph(using_namespace="node-timeout-flow")
+        .compile_graph(entry_point="wait_forever", using_namespace="node-timeout-flow")
     )
 
     @graph.add_interrupted_hook

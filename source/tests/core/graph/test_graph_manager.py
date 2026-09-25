@@ -4,12 +4,12 @@ import math
 
 import pytest
 
+from apixis.core.graph.base import _END
+
 from apixis.core.event.factory import get_handler_registry
 from apixis.core.graph import (
-    END,
     GLOBALNS,
     GRAPH_DISPATCH,
-    START,
     GraphManager,
     get_graph_dispatch_name,
     namespace_set,
@@ -75,9 +75,9 @@ def test_add_node_rejects_non_finite_timeout_without_registering_node(timeout):
     assert manager.has_node("source") is False
 
 
-@pytest.mark.parametrize("reserved_name", [START, END])
+@pytest.mark.parametrize("reserved_name", [_END])
 def test_reserved_node_names_are_rejected(reserved_name):
-    """User nodes cannot replace the predefined START and END nodes."""
+    """User nodes cannot use the internal terminal marker as their name."""
     with pytest.raises(ValueError, match="reserved graph node name"):
         GraphManager().add_node(source, reserved_name)
 
@@ -90,90 +90,12 @@ def test_duplicate_node_name_is_rejected():
         manager.add_node(target, "source")
 
 
-@pytest.mark.parametrize(
-    ("left", "right", "message"),
-    [
-        ("missing", END, "has not been added"),
-        (START, "missing", "has not been added"),
-        (END, START, "cannot have an outgoing transition"),
-    ],
-)
-def test_edge_endpoints_must_exist_and_end_cannot_be_a_source(left, right, message):
-    """Edges validate both endpoints and the terminal END constraint."""
-    with pytest.raises(ValueError, match=message):
-        GraphManager().add_edge(left, right)
-
-
-def test_only_one_manager_transition_is_allowed_per_source():
-    """A source cannot have two direct or generated outgoing transitions."""
-    manager = GraphManager().add_nodes([source, target]).add_edge(START, "source")
-
-    with pytest.raises(ValueError, match="already has an outgoing transition"):
-        manager.add_edge(START, "target")
-
-
-def test_condition_must_be_callable():
-    """Conditional edges reject non-callable predicates."""
-    manager = GraphManager().add_nodes([source, target])
-
-    with pytest.raises(TypeError, match="condition.*callable"):
-        manager.add_edge("source", "target", condition=True)
-
-
-def test_generated_condition_name_avoids_user_node_collision():
-    """Generated helper nodes receive a suffix when their base name exists."""
-
-    def predicate(state):
-        return True
-
-    manager = (
-        GraphManager()
-        .add_nodes([source, target])
-        .add_node(lambda state: {}, "__condition__source__predicate")
-    )
-
-    manager.add_edge("source", "target", predicate)
-
-    assert "__condition__source__predicate_2" in manager._nodes
-
-
-def test_router_requires_at_least_one_target():
-    """A router without declared destinations cannot be constructed."""
-    manager = GraphManager().add_node(source)
-
-    with pytest.raises(ValueError, match="at least one target"):
-        manager.add_router("source", [], lambda state: END)
-
-
-def test_router_targets_must_exist():
-    """Every declared router destination must be a known node or END."""
-    manager = GraphManager().add_node(source)
-
-    with pytest.raises(ValueError, match="has not been added"):
-        manager.add_router("source", ["missing"], lambda state: "missing")
-
-
-def test_router_must_be_callable():
-    """Router definitions reject non-callable selectors."""
-    manager = GraphManager().add_nodes([source, target])
-
-    with pytest.raises(TypeError, match="router.*NodeFunction"):
-        manager.add_router("source", ["target"], router="target")
-
-
-def test_compile_requires_start_transition():
-    """A compiled graph must have an entry transition from START."""
-    with pytest.raises(ValueError, match="outgoing transition from `START`"):
-        GraphManager().add_node(source).compile_graph()
-
-
 def test_compile_retains_timeout_on_node():
     """The compiled graph reads timeout policy from its node."""
     graph = (
         GraphManager()
         .add_node(source, timeout=2.5)
-        .add_edge(START, "source")
-        .compile_graph()
+        .compile_graph(entry_point="source")
     )
 
     assert graph._nodes["source"].timeout == 2.5
@@ -191,8 +113,7 @@ def test_compile_forwards_listener_namespace(using_namespace, expected):
     graph = (
         GraphManager()
         .add_node(source)
-        .add_edge(START, "source")
-        .compile_graph(using_namespace=using_namespace)
+        .compile_graph(entry_point="source", using_namespace=using_namespace)
     )
 
     assert graph.namespace == expected
@@ -206,14 +127,12 @@ def test_compile_generates_namespace_for_empty_value(using_namespace):
     first = (
         GraphManager()
         .add_node(source)
-        .add_edge(START, "source")
-        .compile_graph(using_namespace=using_namespace)
+        .compile_graph(entry_point="source", using_namespace=using_namespace)
     )
     second = (
         GraphManager()
         .add_node(target)
-        .add_edge(START, "target")
-        .compile_graph(using_namespace=using_namespace)
+        .compile_graph(entry_point="target", using_namespace=using_namespace)
     )
 
     assert first.namespace != second.namespace
@@ -228,16 +147,14 @@ def test_compile_rejects_occupied_namespace_by_default():
     first_graph = (
         GraphManager()
         .add_node(source)
-        .add_edge(START, "source")
-        .compile_graph(using_namespace="occupied")
+        .compile_graph(entry_point="source", using_namespace="occupied")
     )
 
     with pytest.raises(ValueError, match="already in use"):
         (
             GraphManager()
             .add_node(target)
-            .add_edge(START, "target")
-            .compile_graph(using_namespace="occupied")
+            .compile_graph(entry_point="target", using_namespace="occupied")
         )
 
     assert first_graph._decomposed is False
@@ -250,8 +167,7 @@ def test_compile_exist_ok_decomposes_and_replaces_original_graph(namespace):
     first_graph = (
         GraphManager()
         .add_node(source, "shared")
-        .add_edge(START, "shared")
-        .compile_graph(using_namespace=namespace)
+        .compile_graph(entry_point="shared", using_namespace=namespace)
     )
     first_callbacks = {
         get_handler_registry().get_handler(handler_name).core_func
@@ -263,8 +179,7 @@ def test_compile_exist_ok_decomposes_and_replaces_original_graph(namespace):
     replacement = (
         GraphManager()
         .add_node(target, "shared")
-        .add_edge(START, "shared")
-        .compile_graph(
+        .compile_graph(entry_point="shared",
             using_namespace=namespace,
             exist_ok=True,
         )
@@ -292,8 +207,7 @@ def test_decompose_releases_namespace_by_contextmanager():
     graph = (
         GraphManager()
         .add_node(source)
-        .add_edge(START, "source")
-        .compile_graph(using_namespace="reusable")
+        .compile_graph(entry_point="source", using_namespace="reusable")
     )
 
     assert "reusable" in namespace_set
@@ -312,8 +226,7 @@ def test_decompose_releases_namespace_for_later_compile():
     first_graph = (
         GraphManager()
         .add_node(source)
-        .add_edge(START, "source")
-        .compile_graph(using_namespace="reusable")
+        .compile_graph(entry_point="source", using_namespace="reusable")
     )
 
     assert "reusable" in namespace_set
@@ -327,8 +240,7 @@ def test_decompose_releases_namespace_for_later_compile():
     replacement = (
         GraphManager()
         .add_node(target)
-        .add_edge(START, "target")
-        .compile_graph(using_namespace="reusable")
+        .compile_graph(entry_point="target", using_namespace="reusable")
     )
     assert _namespace_graphs["reusable"] is replacement
 
@@ -338,15 +250,13 @@ def test_none_and_empty_string_create_independent_namespaces():
     first = (
         GraphManager()
         .add_node(source)
-        .add_edge(START, "source")
-        .compile_graph(using_namespace=None)
+        .compile_graph(entry_point="source", using_namespace=None)
     )
 
     second = (
         GraphManager()
         .add_node(target)
-        .add_edge(START, "target")
-        .compile_graph(using_namespace="")
+        .compile_graph(entry_point="target", using_namespace="")
     )
 
     assert first.namespace != second.namespace
@@ -357,12 +267,12 @@ def test_none_and_empty_string_create_independent_namespaces():
 @pytest.mark.parametrize("exist_ok", [False, True])
 def test_compile_rejects_glob_namespace_without_changing_registry(namespace, exist_ok):
     """Invalid names cannot acquire ownership or replace existing listeners."""
-    manager = GraphManager().add_node(source).add_edge(START, "source")
-    original = manager.compile_graph()
+    manager = GraphManager().add_node(source)
+    original = manager.compile_graph(entry_point="source")
     handlers = dict(get_handler_registry().registry)
 
     with pytest.raises(ValueError, match="glob characters"):
-        manager.compile_graph(using_namespace=namespace, exist_ok=exist_ok)
+        manager.compile_graph(entry_point="source", using_namespace=namespace, exist_ok=exist_ok)
 
     assert _namespace_graphs == {original.namespace: original}
     assert get_handler_registry().registry == handlers
@@ -377,7 +287,7 @@ def test_global_event_name_and_ownership_check_use_canonical_namespace(namespace
     with pytest.raises(KeyError, match="<global>"):
         get_graph_dispatch_name(namespace, missing_ok=False)
 
-    graph = GraphManager().add_edge(START, END).compile_graph(GLOBALNS)
+    graph = GraphManager().compile_graph(entry_point=None, using_namespace=GLOBALNS)
     assert (
         get_graph_dispatch_name(
             namespace,

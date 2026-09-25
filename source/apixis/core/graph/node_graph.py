@@ -27,8 +27,7 @@ from apixis.core.utils.exception import (
 )
 from apixis.core.utils.id_generator import idgen
 from apixis.core.graph.base import (
-    END,
-    START,
+    _END,
     Command,
     Reset,
 )
@@ -65,7 +64,7 @@ class NodeGraph:
     def __init__(
         self,
         nodes: dict[str, BaseNode],
-        default_gotos: dict[str, str],
+        entry_point: str | list[str] | None,
         *,
         max_steps: int = 1024,
         state_schema: type | None = None,
@@ -77,9 +76,9 @@ class NodeGraph:
 
         Args:
             nodes: Nodes keyed by their graph names.
-            default_gotos: Manager-defined transitions.
+            entry_point: First node or concurrent batch; None or [] finishes immediately.
             max_steps: Maximum number of node-dispatch batches in one run.
-                Routing to END or an empty target list consumes no additional
+                Completing without a next target consumes no additional
                 step and remains allowed when the last batch uses the budget.
             state_schema: Annotated schema compiled once for this graph.
                 Fields marked with ``Annotated[..., AutoMerge()]`` are
@@ -97,15 +96,15 @@ class NodeGraph:
         """
         # Keep finalization safe if initialization fails before acquisition.
         self._decomposed = True
+        validate_graph_definition(nodes)
         self._nodes = dict(nodes)
-        self._default_gotos = dict(default_gotos)
-        validate_graph_definition(self._nodes, self._default_gotos)
         self._max_steps = max_steps
+        self._entry_point = self._normalise_target(entry_point)
         self._no_snapshot = no_snapshot
         # Compile both state policies once; contexts never parse a schema.
         self._auto_merge_keys, self._keep_ref_keys = parse_state_schema(state_schema)
         self._graph_id = uuid4().hex
-        self._contexts: set[GraphContext] = set()
+        self._contexts: set[GraphContext] = set()  # Running attempts only.
         self._namespace = using_namespace or str(idgen.next_id())
         self._handlers: dict[str, ApixEventHandler] = {}
 
@@ -157,11 +156,7 @@ class NodeGraph:
                 return
 
             target_node_name = context.target_node_name
-            if target_node_name == START:
-                await self._execute_start(context)
-            elif target_node_name == END:
-                self._finish(context)
-            elif target_node_name == []:
+            if target_node_name == _END:
                 self._finish(context)
             else:
                 await self._execute_node(target_node_name, context)
@@ -263,22 +258,22 @@ class NodeGraph:
     def decompose(self, *, force: bool = True) -> None:
         """Retire this graph and release its contexts, listeners, and namespace.
 
-        With force=True, pending and running contexts are aborted first. Their
+        With force=True, running contexts are aborted first. Their
         callers receive the last checkpoint; late node results cannot commit.
-        With force=False, unfinished contexts reject decomposition without any
-        mutation. Completed contexts remain inspectable through caller handles.
+        With force=False, running contexts reject decomposition without any
+        mutation. Pending contexts remain unchanged and cannot start after
+        decomposition. Caller-held contexts remain inspectable.
         """
         if self._decomposed:
             return
-        unfinished = [c for c in self._contexts if c.status in ("pending", "running")]
-        if unfinished and not force:
+        if self._contexts and not force:
             raise RuntimeError(
-                "Cannot decompose a NodeGraph while contexts are unfinished."
+                "Cannot decompose a NodeGraph while contexts are running."
             )
         self._decomposed = True
-        for context in unfinished:
+        # Terminal transitions remove contexts from the running set immediately.
+        for context in tuple(self._contexts):
             context.abort()
-        self._contexts.clear()
         self._unregister_handlers()
         release_namespace(self, decompose_immediately=False)
 
@@ -293,12 +288,12 @@ class NodeGraph:
         )
 
     def create_context(self, state: dict) -> GraphContext:
-        """Copy initial state using the compiled policy and manage a new attempt."""
+        """Copy initial state and prepare an attempt without retaining it."""
         self._ensure_not_decomposed()
         prepared = copy_state(state, self._keep_ref_keys)
         context = GraphContext(self.graph_id)
         context.state = prepared
-        self._contexts.add(context)
+        context._set_target_node(self._entry_point)
         return context
 
     def restore_context(
@@ -307,7 +302,7 @@ class NodeGraph:
         *,
         version: int = -1,
     ) -> GraphContext:
-        """Restore this graph's checkpoint into an independently managed attempt.
+        """Restore this graph's checkpoint into an independent pending attempt.
 
         Context inputs select from that context's stored history. List versions
         use native indexing and retain the selected prefix. A single snapshot
@@ -338,7 +333,6 @@ class NodeGraph:
         context.target_node_name = copy.deepcopy(restored["target_node_name"])
         context.steps = restored["steps"]
         context.context_snapshot = restored_history
-        self._contexts.add(context)
         return context
 
     def _validate_snapshot(self, snapshot: GraphContextSnapshot) -> None:
@@ -386,12 +380,11 @@ class NodeGraph:
     ) -> GraphContext:
         """Resolve one state source and accept it without suspending.
 
-        Rejected caller-owned contexts remain untouched. A context created by
-        the shortcut invocation path is discarded if admission fails.
+        Rejected contexts remain untouched. Only successfully bound running
+        attempts enter the graph's management set.
         """
         self._ensure_not_decomposed()
-        created = context is None
-        if created:
+        if context is None:
             if not isinstance(state, dict):
                 raise TypeError("Graph state must be a dict.")
             context = self.create_context(state)
@@ -400,29 +393,22 @@ class NodeGraph:
                 raise TypeError("Pass either state or graph_context, not both.")
             if not isinstance(context, GraphContext):
                 raise TypeError("graph_context must be a GraphContext or None.")
-        if context is None:
-            raise RuntimeError("GraphContext could not be created.")
-        try:
-            if context.graph_id != self.graph_id:
-                raise InvalidContextError("GraphContext belongs to a different graph.")
-            if context.status != "pending":
-                raise InvalidContextError(
-                    "GraphContext must be pending before starting an invocation."
-                )
-            if context not in self._contexts:
-                raise InvalidContextError("GraphContext is not managed by this graph.")
-            if not isinstance(context.state, dict):
-                raise TypeError("Graph state must be a dict.")
-            self._validate_target(context.target_node_name, context.steps)
-            context._bind(
-                run_id="graph-" + uuid4().hex,
-                completion=asyncio.get_running_loop().create_future(),
-                stream_writer=writer,
+        if context.graph_id != self.graph_id:
+            raise InvalidContextError("GraphContext belongs to a different graph.")
+        if context.status != "pending":
+            raise InvalidContextError(
+                "GraphContext must be pending before starting an invocation."
             )
-        except BaseException:
-            if created:
-                self._contexts.discard(context)
-            raise
+        if not isinstance(context.state, dict):
+            raise TypeError("Graph state must be a dict.")
+        self._validate_target(context.target_node_name, context.steps)
+        context._bind(
+            run_id="graph-" + uuid4().hex,
+            completion=asyncio.get_running_loop().create_future(),
+            stream_writer=writer,
+            on_terminal=self._contexts.discard,
+        )
+        self._contexts.add(context)
         return context
 
     async def invoke(
@@ -430,10 +416,7 @@ class NodeGraph:
     ) -> dict:
         """Execute initial state or one prepared context, using its existing state."""
         context = self._begin_invocation(state, graph_context, noop_stream_writer())
-        try:
-            return await self._invoke(context)
-        finally:
-            self._contexts.discard(context)
+        return await self._invoke(context)
 
     async def stream(
         self, state: dict | None = None, graph_context: GraphContext | None = None
@@ -457,19 +440,18 @@ class NodeGraph:
             if context.status == "running":
                 context.abort()
             channel.close()
-            self._contexts.discard(context)
 
     async def abort(self, graph_context: GraphContext) -> None:
         """Interrupt the invocation represented by ``graph_context``.
 
-        The graph's :data:`END` node is not executed, so the invocation's
+        The graph's terminal dispatch is skipped, so the invocation's
         completion future is resolved with the most recently saved state
         snapshot. Any queued chunks are yielded before a stream ends.
 
         When this method is called, the graph execution is not interrupted
         immediately. A snapshot is captured immediately before each ordinary
         node starts. The current node may continue running, but its result
-        cannot be committed or routed after the abort. The :meth:`invoke` and
+        cannot be committed or scheduled after the abort. The :meth:`invoke` and
         :meth:`stream` interfaces return immediately with the captured state.
 
         The same operation is also available directly through
@@ -477,7 +459,7 @@ class NodeGraph:
 
         Raises:
             TypeError: If ``graph_context`` is not a GraphContext instance.
-            ValueError: If the context is not active in this graph.
+            ValueError: If the context belongs to a different graph.
         """
         self._ensure_not_decomposed()
         if not isinstance(graph_context, GraphContext):
@@ -486,13 +468,9 @@ class NodeGraph:
         if not (graph_context.is_active or not graph_context.is_consumed):
             return  # Already finished, aborted, or cancelled; nothing to do.
 
-        if (
-            graph_context.graph_id != self.graph_id
-            or graph_context not in self._contexts
-        ):
-            raise ValueError("Graph context is not active in this graph.")
+        if graph_context.graph_id != self.graph_id:
+            raise ValueError("GraphContext belongs to a different graph.")
         graph_context.abort()
-        self._contexts.discard(graph_context)
 
     async def _invoke(self, context: GraphContext) -> dict:
         """Execute an admitted attempt and copy its result at the graph boundary."""
@@ -519,14 +497,6 @@ class NodeGraph:
             if completion.done() and not completion.cancelled():
                 completion.exception()
             raise
-
-    async def _execute_start(self, context: GraphContext) -> None:
-        """Route the predefined start node to its configured successor."""
-        try:
-            await self._post_next(self._default_gotos[START], context)
-        except Exception as exc:
-            if context.is_active:
-                self._fail(context, exc)
 
     async def _execute_one_node(
         self,
@@ -595,7 +565,7 @@ class NodeGraph:
         node_name: str | list[str],
         context: GraphContext,
     ) -> str | list[str]:
-        """Apply a completed batch in order and collect its ordered routes.
+        """Apply a completed batch in order and collect its next targets.
 
         A string node name takes one Command or list[Command]. A list of node
         names takes one such result per node, even for a singleton batch.
@@ -609,10 +579,10 @@ class NodeGraph:
         if (
             not isinstance(context, GraphContext)
             or context.graph_id != self.graph_id
-            or context not in self._contexts
+            or context.status not in ("pending", "running")
         ):
             raise InvalidContextError(
-                "GraphContext belongs to a different graph or is not managed by this graph."
+                "GraphContext must belong to this graph and be pending or running."
             )
         normalized_node_names = self._normalise_targets(node_name)
         # Adapt single-node calls once; internally every batch has one result
@@ -623,7 +593,8 @@ class NodeGraph:
         )
 
         updated_normal_keys: set[str] = set()
-        routes: list[str] = []
+        next_targets: dict[str, None] = {}
+        concurrent = False
         for current_node, commands in zip(normalized_node_names, command_groups):
             current_node_normal_keys: set[str] = set()
             for current_command in commands:
@@ -668,15 +639,23 @@ class NodeGraph:
                         context.state[key] = value
 
                 goto = current_command.goto
-                if goto is None:
-                    goto = self._default_gotos.get(current_node, END)
                 if not BaseNode._is_valid_goto(goto):
                     raise TypeError(
                         "Command.goto must be a string or None, or a list of strings."
                     )
-                routes.extend(goto if isinstance(goto, list) else [goto])
+                if isinstance(goto, list):
+                    for name in goto:
+                        if name != _END:
+                            concurrent = True
+                            next_targets[name] = None
+                elif goto is not None and goto != _END:
+                    next_targets[goto] = None
 
-        return self._normalise_routes(routes)
+        if not next_targets:
+            return _END
+        if concurrent or len(next_targets) > 1:
+            return list(next_targets)
+        return next(iter(next_targets))
 
     @staticmethod
     def _normalise_command_groups(
@@ -693,7 +672,7 @@ class NodeGraph:
             elif isinstance(result, list) and all(
                 isinstance(item, Command) for item in result
             ):
-                groups.append(result or [Command()])
+                groups.append(result)
             else:
                 raise TypeError("Node.execute must return a Command or list[Command].")
         return groups
@@ -711,42 +690,41 @@ class NodeGraph:
             return list(target)
         raise TypeError("Graph target must be a string or non-empty list of strings.")
 
-    @staticmethod
-    def _normalise_routes(routes: list[str]) -> str | list[str]:
-        """Filter END when work remains and perform stable de-duplication."""
-        if not routes:
-            return []
-        unique = list(dict.fromkeys(routes))
-        runnable = [route for route in unique if route != END]
-        if not runnable:
-            return END
-        return runnable[0] if len(runnable) == 1 else runnable
+    def _normalise_target(
+        self,
+        target: str | list[str] | None,
+    ) -> str | list[str]:
+        """Resolve termination and duplicates, preserving a batch's shape."""
+        if not BaseNode._is_valid_goto(target):
+            raise TypeError("Graph target must be a string, None, or list of strings.")
+        if target is None:
+            return _END
+        if isinstance(target, list):
+            target = list(dict.fromkeys(name for name in target if name != _END))
+            if not target:
+                return _END
+        if target == _END:
+            return target
+        for name in [target] if isinstance(target, str) else target:
+            if name not in self._nodes:
+                raise ValueError(f"Unknown graph node `{name}`.")
+        return target
 
-    def _validate_target(self, node_name: str | list[str], steps: int) -> None:
-        """Check an entry or next hop before committing runtime changes."""
+    def _validate_target(
+        self, target: str | list[str] | None, steps: int
+    ) -> str | list[str]:
+        """Check a runtime target against its invocation's execution budget."""
         if isinstance(steps, bool) or not isinstance(steps, int):
             raise TypeError("Graph steps must be an int.")
         if steps < 0:
             raise ValueError("Graph steps cannot be negative.")
-        normalized_node_names = [node_name] if isinstance(node_name, str) else node_name
-        if not isinstance(normalized_node_names, list) or not all(
-            isinstance(item, str) for item in normalized_node_names
-        ):
-            raise TypeError("Graph target must be a string or list of strings.")
-        for current_name in normalized_node_names:
-            if current_name not in (START, END) and current_name not in self._nodes:
-                raise ValueError(f"Unknown graph node `{current_name}`.")
-        # Terminal dispatch completes the invocation without executing a batch.
-        # Validate its input above, but do not require another execution step.
-        if node_name == END or not normalized_node_names:
-            return
-        if steps >= self._max_steps:
+        target = self._normalise_target(target)
+        # Completion does not execute nodes or consume a step.
+        if target != _END and steps >= self._max_steps:
             raise RecursionError(
                 f"Graph exceeded its maximum of {self._max_steps} steps."
             )
-        if steps > 0:
-            if (isinstance(node_name, str) and node_name == START) or (isinstance(node_name, list) and START in node_name):
-                raise ValueError("Cannot route to START after invocation begins.")
+        return target
 
     async def _post_next(
         self,
@@ -754,8 +732,10 @@ class NodeGraph:
         context: GraphContext,
     ) -> None:
         """Target one node or concurrent batch and post one dispatch."""
-        self._validate_target(node_name, context.steps)
-        context._set_target_node(node_name)
+        target = self._validate_target(
+            node_name, context.steps
+        )
+        context._set_target_node(target)
         await (await aget_event_pipe()).post_event(
             event_type=EventType.WORKFLOW,
             event_name=self.dispatch_name,
@@ -763,7 +743,7 @@ class NodeGraph:
         )
 
     def _finish(self, context: GraphContext) -> None:
-        """Resolve an invocation with the state carried by its END event."""
+        """Resolve an invocation with the state carried by its terminal event."""
         if self._is_active_context(context):
             context._finish()
 

@@ -1,11 +1,11 @@
 # Graph API
 
-Graph API 的主要入口是 `GraphManager`。它负责声明节点与边，`compile_graph()` 返回可执行的 `NodeGraph`。
+Graph API 的主要入口是 `GraphManager`。它负责注册节点与 state 策略，`compile_graph()` 返回可执行的 `NodeGraph`。
 
 ## 构建图
 
 ```python
-from apixis import END, START, GraphManager
+from apixis import GraphManager
 
 
 def step(state: dict) -> dict:
@@ -15,9 +15,7 @@ def step(state: dict) -> dict:
 graph = (
     GraphManager()
     .add_node(step)
-    .add_edge(START, "step")
-    .add_edge("step", END)
-    .compile_graph()
+    .compile_graph(entry_point="step")
 )
 ```
 
@@ -33,22 +31,40 @@ graph = (
 
 批量注册节点。
 
-### `add_edge(l_node, r_node, condition=None, *, timeout=None)`
+### `compile_graph(entry_point, *, using_namespace=None, exist_ok=False)`
 
-添加直接边。传入 `condition` 时，会插入一个条件节点；条件函数必须返回 `bool`，`True` 路由至 `r_node`，`False` 路由至 `END`。
+显式指定入口并编译为 `NodeGraph`：
 
-### `add_router(l_node, r_nodes, router, *, timeout=None)`
+- `entry_point="first"`：从单个节点开始；
+- `entry_point=["a", "b"]`：从并发步开始；
+- `entry_point=None` 或 `[]`：不执行节点，直接结束。
 
-添加路由节点。router 可返回单个目标名、目标名列表、`Command(goto=...)`，或包含 `goto` 的 mapping。目标必须来自 `r_nodes`。
+入口节点必须已经注册。节点之后的每一步完全由返回的 `Command.goto` 决定。
+返回普通 mapping 等价于 `Command(update=mapping)`，应用更新后结束当前分支。
+条件判断直接写在节点内，例如：
 
-### `compile_graph(using_namespace=None, exist_ok=False)`
+```python
+from apixis import Command
 
-编译为 `NodeGraph`。图必须存在 `START` 的出边。
+
+def choose(state):
+    return Command(goto="approved" if state["approved"] else None)
+```
 
 - `using_namespace=None` 或 `""`：自动生成进程内唯一的 namespace，不承诺跨进程唯一；
 - `GLOBALNS`：显式使用全局命名域；
 - `exist_ok=False`：namespace 已占用时抛异常；
 - `exist_ok=True`：释放旧图并由新图接管。
+
+### `NodeGraph(nodes, entry_point, *, max_steps=1024, state_schema=None, using_namespace=None, no_snapshot=False, exist_ok=False)`
+
+也可直接使用节点名到 `BaseNode` 的映射构建图。`entry_point` 与上面语义一致。
+`max_steps` 按节点执行批次计数，并发步也只计一步；完成图不占额外步数。
+`no_snapshot=True` 关闭执行前快照。
+
+新建 context 时，目标设置为图的入口；执行期间始终以 context 的 `target_node_name` 为准。
+恢复 context 时保留快照中的目标和步数，不重新选择入口。
+第一条 dispatch 直接执行入口节点，没有额外的开始事件。使用 `goto=None` / `[]` 结束分支。
 
 ## 执行
 
@@ -96,6 +112,8 @@ writer.write({"progress": 0.5})
 ```python
 context = graph.create_context(initial_state)
 ```
+
+新建或恢复的 context 处于 `pending`，图不会持有它。`invoke()` / `stream()` 开始执行后，图只管理 `running` context；完成、失败或中止时立即解除管理。context 的 `graph_id` 归属不变，不能跨图使用。
 
 常用属性：
 
@@ -184,7 +202,7 @@ block.accept() # 标记 block 已被处理，可用于 block 暂存后的异步�
 graph.decompose()
 ```
 
-`decompose(force=True)` 会中止未完成 context 并释放 handler / namespace；`force=False` 在仍有未完成 context 时抛异常。
+`decompose(force=True)` 会中止 `running` context 并释放 handler / namespace；`force=False` 仅在仍有 `running` context 时抛异常。`pending` context 保持原状态，但之后通过已分解的图调用 `invoke()` / `stream()` 会抛异常。
 
 ### 使用上下文管理器自动管理生命周期
 

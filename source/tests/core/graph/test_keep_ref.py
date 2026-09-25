@@ -4,6 +4,8 @@ import asyncio
 from typing import Annotated, Any, TypedDict
 
 import pytest
+
+from apixis.core.graph.base import _END
 import pytest_asyncio
 
 from apixis.core.event.factory import get_event_loop
@@ -11,12 +13,10 @@ from apixis.core.event.factory import get_event_pipe
 from apixis.core.graph import (
     AutoMerge,
     Command,
-    END,
     GraphManager,
     KeepRef,
     NodeGraph,
     Reset,
-    START,
 )
 from apixis.core.graph import copy_state, parse_state_schema
 from apixis.core.graph.context import noop_stream_writer
@@ -147,7 +147,7 @@ def test_apply_command_commits_explicit_keep_ref_update_to_context():
     """Applying a command immediately commits its KeepRef-aware state."""
     original_resource = UncopyableResource()
     replacement_resource = UncopyableResource()
-    graph = NodeGraph({}, {START: END}, state_schema=KeepRefState)
+    graph = NodeGraph({}, None, state_schema=KeepRefState)
     original_state = {"resource": original_resource}
     context = graph.create_context(original_state)
 
@@ -158,20 +158,20 @@ def test_apply_command_commits_explicit_keep_ref_update_to_context():
                 "ordinary": {"values": []},
             }
         ),
-        START,
+        "node",
         context,
     )
 
     assert original_state["resource"] is original_resource
     assert context.state["resource"] is replacement_resource
     assert context.state["ordinary"] == {"values": []}
-    assert next_node == END
+    assert next_node == _END
 
 
 def test_command_batch_uses_the_latest_committed_context_state():
     """Each batched command observes the state committed by its predecessor."""
     resource = UncopyableResource()
-    graph = NodeGraph({}, {START: END}, state_schema=KeepRefState)
+    graph = NodeGraph({}, None, state_schema=KeepRefState)
     context = graph.create_context(
         {
             "resource": resource,
@@ -184,25 +184,25 @@ def test_command_batch_uses_the_latest_committed_context_state():
             Command(update={"messages": ["first"]}),
             Command(update={"messages": ["second"]}),
         ],
-        START,
+        "node",
         context,
     )
 
     assert context.state["resource"] is resource
     assert context.state["messages"] == ["initial", "first", "second"]
-    assert next_node == END
+    assert next_node == _END
 
 
 def test_reset_commits_exact_keep_ref_replacement_to_context():
     """Reset bypasses AutoMerge without copying a KeepRef replacement."""
     original_resource = UncopyableResource()
     replacement_resource = UncopyableResource()
-    graph = NodeGraph({}, {START: END}, state_schema=KeepRefState)
+    graph = NodeGraph({}, None, state_schema=KeepRefState)
     context = graph.create_context({"resource": original_resource})
 
     graph.apply_command(
         Command(update={"resource": Reset(replacement_resource)}),
-        START,
+        "node",
         context,
     )
 
@@ -213,7 +213,7 @@ def test_reset_commits_exact_keep_ref_replacement_to_context():
 async def test_snapshot_deep_copies_keep_ref_state():
     """Recovery checkpoints isolate fields that live state copies keep shared."""
     resource = MutableResource()
-    graph = NodeGraph({}, {START: END}, state_schema=KeepRefState)
+    graph = NodeGraph({}, None, state_schema=KeepRefState)
     context = graph.create_context({"resource": resource})
     completion = asyncio.get_running_loop().create_future()
     context._bind(
@@ -253,7 +253,7 @@ async def test_keep_ref_survives_complete_multi_node_graph_invocation():
         seen_ids.append(id(state["resource"]))
         state["resource"].events.append("first")
         state["ordinary"]["nested"].append("node-only")
-        return Command(update={"messages": ["first"]})
+        return Command(update={"messages": ["first"]}, goto="second")
 
     def second(state: dict[str, Any]) -> dict[str, Any]:
         seen_ids.append(id(state["resource"]))
@@ -267,9 +267,7 @@ async def test_keep_ref_survives_complete_multi_node_graph_invocation():
     graph = (
         GraphManager(KeepRefState)
         .add_nodes([first, second])
-        .add_edge(START, "first")
-        .add_edge("first", "second")
-        .compile_graph()
+        .compile_graph(entry_point="first")
     )
 
     result = await graph.invoke(original)
@@ -291,7 +289,7 @@ async def test_auto_increase_and_keep_ref_work_on_the_same_state_field():
     def first(state: dict[str, Any]) -> Command:
         seen_references.append(state["accumulator"])
         state["accumulator"].values.append("direct")
-        return Command(update={"accumulator": ["first-update"]})
+        return Command(update={"accumulator": ["first-update"]}, goto="second")
 
     def second(state: dict[str, Any]) -> Command:
         seen_references.append(state["accumulator"])
@@ -300,9 +298,7 @@ async def test_auto_increase_and_keep_ref_work_on_the_same_state_field():
     graph = (
         GraphManager(CombinedMarkerState)
         .add_nodes([first, second])
-        .add_edge(START, "first")
-        .add_edge("first", "second")
-        .compile_graph()
+        .compile_graph(entry_point="first")
     )
 
     result = await graph.invoke({"accumulator": accumulator})
@@ -339,8 +335,7 @@ async def test_context_abort_uses_deep_copied_keep_ref_snapshot():
     graph = (
         GraphManager(KeepRefState)
         .add_node(waiting_node)
-        .add_edge(START, "waiting_node")
-        .compile_graph()
+        .compile_graph(entry_point="waiting_node")
     )
     context = graph.create_context(
         {

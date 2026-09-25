@@ -10,8 +10,6 @@ import sys
 
 import apixis
 from apixis import (
-    END,
-    START,
     EventType,
     GraphManager,
     get_event_loop,
@@ -45,9 +43,7 @@ async def main() -> None:
     graph = (
         GraphManager()
         .add_node(increment)
-        .add_edge(START, "increment")
-        .add_edge("increment", END)
-        .compile_graph()
+        .compile_graph(entry_point="increment")
     )
     await start_core()
     pipe, loop = get_event_pipe(), get_event_loop()

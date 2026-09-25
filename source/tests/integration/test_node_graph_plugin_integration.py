@@ -1,6 +1,8 @@
 """Executable example of extending NodeGraph through event subscriptions."""
 
 import pytest
+
+from apixis.core.graph.base import _END
 import pytest_asyncio
 
 from apixis.core.event import ApixEvent, unsubscribe, subscribe
@@ -9,7 +11,6 @@ from apixis.core.event.factory import get_event_loop
 from apixis.core.event.factory import get_event_pipe
 from apixis.core.graph import (
     GLOBALNS,
-    START,
     GraphManager,
     get_graph_dispatch_name,
 )
@@ -49,8 +50,7 @@ async def test_subscribe_inserts_plugin_before_node_graph_listener(namespace):
     graph = (
         GraphManager()
         .add_node(business_node, node_name)
-        .add_edge(START, node_name)
-        .compile_graph(namespace)
+        .compile_graph(entry_point=node_name, using_namespace=namespace)
     )
 
     # A higher priority makes this handler the left boundary of the plugin
@@ -109,12 +109,12 @@ async def test_subscribe_inserts_plugin_before_node_graph_listener(namespace):
 
 @pytest.mark.parametrize("mode", ["invoke", "stream"])
 @pytest.mark.parametrize("action", ["error", "timeout", "accept", "accept_and_error"])
-@pytest.mark.parametrize("target", [START, "business", "END"])
+@pytest.mark.parametrize("target", ["business", "terminal"])
 async def test_upstream_plugin_termination_completes_graph(mode, action, target):
     """Public subscriptions must not leave invoke or stream waiting forever."""
     import asyncio
 
-    from apixis.core.graph import END
+
     from apixis.core.graph.context import get_stream_writer
     from apixis.core.utils.exception import GraphNodeError
 
@@ -128,11 +128,9 @@ async def test_upstream_plugin_termination_completes_graph(mode, action, target)
     graph = (
         GraphManager()
         .add_node(business)
-        .add_edge(START, "business")
-        .add_edge("business", END)
-        .compile_graph(GLOBALNS)
+        .compile_graph(entry_point="business", using_namespace=GLOBALNS)
     )
-    target_name = END if target == "END" else target
+    target_name = _END if target == "terminal" else target
     captured_events = []
 
     @subscribe(GLOBAL_DISPATCH, priority=10, time_out=0.01)
@@ -177,9 +175,9 @@ async def test_upstream_plugin_termination_completes_graph(mode, action, target)
         assert context.completion.done()
         assert not context.is_active
         assert not graph._contexts
-        assert called == (["business"] if target == "END" else [])
+        assert called == (["business"] if target == "terminal" else [])
         if mode == "stream":
-            assert chunks == (["business chunk"] if target == "END" else [])
+            assert chunks == (["business chunk"] if target == "terminal" else [])
     finally:
         unsubscribe(termination_plugin.__name__)
         graph.decompose()
@@ -202,8 +200,7 @@ async def test_graph_dispatch_handles_its_own_snapshot_failure(mode):
     graph = (
         GraphManager()
         .add_node(business)
-        .add_edge(START, "business")
-        .compile_graph()
+        .compile_graph(entry_point="business")
     )
 
     context = graph.create_context({})
@@ -240,13 +237,12 @@ async def test_background_plugin_failure_does_not_fail_graph():
     graph = (
         GraphManager()
         .add_node(business)
-        .add_edge(START, "business")
-        .compile_graph(GLOBALNS)
+        .compile_graph(entry_point="business", using_namespace=GLOBALNS)
     )
 
     @subscribe(GLOBAL_DISPATCH, priority=20, background=True)
     async def background_plugin(event):
-        if event.context.target_node_name == START:
+        if event.context.target_node_name == "business":
             failed.set()
             raise ValueError("optional background work failed")
 
@@ -288,8 +284,7 @@ async def test_interruption_hook_termination_unblocks_node(action, timeout):
     graph = (
         GraphManager()
         .add_node(business)
-        .add_edge(START, "business")
-        .compile_graph(GLOBALNS)
+        .compile_graph(entry_point="business", using_namespace=GLOBALNS)
     )
 
     @subscribe(get_graph_interrupted_name(GLOBALNS, missing_ok=True), priority=10)
@@ -345,8 +340,7 @@ async def test_dispatch_name_orders_plugins_on_both_sides_of_graph(namespace):
     graph = (
         GraphManager()
         .add_node(business)
-        .add_edge(START, "business")
-        .compile_graph(namespace)
+        .compile_graph(entry_point="business", using_namespace=namespace)
     )
 
     @subscribe(graph.dispatch_name, between_handlers=(None, graph.dispatch_name))
@@ -388,8 +382,7 @@ async def test_wildcard_plugin_observes_global_and_named_graphs_created_later():
             graph = (
                 GraphManager()
                 .add_node(business)
-                .add_edge(START, "business")
-                .compile_graph(namespace)
+                .compile_graph(entry_point="business", using_namespace=namespace)
             )
             names.append(graph.dispatch_name)
             assert await graph.invoke({}) == {"done": True}

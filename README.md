@@ -17,7 +17,7 @@ Event-driven graph orchestration for Python asyncio applications.
 APIXIS provides two composable runtimes:
 
 - an asynchronous event system with wildcard subscriptions, ordered handlers, backpressure, and pluggable channels;
-- a stateful graph runtime with routing, parallel nodes, snapshots, streaming, and interruption/resume workflows.
+- a stateful graph runtime with Command-driven steps, parallel nodes, snapshots, streaming, and interruption/resume workflows.
 
 > Python 3.12+ is required. Runtime APIs are designed for `asyncio`.
 
@@ -48,7 +48,7 @@ See [the release guide](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/r
 ```python
 import asyncio
 
-from apixis import END, START, GraphManager
+from apixis import GraphManager
 
 
 def increment(state: dict) -> dict:
@@ -59,9 +59,7 @@ async def master() -> None:
     graph = (
         GraphManager()
         .add_node(increment)
-        .add_edge(START, "increment")
-        .add_edge("increment", END)
-        .compile_graph()
+        .compile_graph(entry_point="increment")
     )
     try:
         result = await graph.invoke({"value": 1})
@@ -78,7 +76,7 @@ asyncio.run(master())
 - [API reference](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/README.md)
 - [Event API](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/core/event/README.md)
 - [Graph API](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/core/graph/README.md)
-- [State and routing](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/core/graph/state.md)
+- [State and commands](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/core/graph/state.md)
 - [Utilities and exceptions](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/core/utils/README.md)
 
 ## License

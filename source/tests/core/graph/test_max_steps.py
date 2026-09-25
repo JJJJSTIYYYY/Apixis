@@ -4,7 +4,8 @@ import asyncio
 
 import pytest
 
-from apixis.core.graph import Command, END, START, GraphManager, get_stream_writer
+
+from apixis.core.graph import Command, GraphManager, get_stream_writer
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
@@ -20,7 +21,7 @@ async def run_graph(graph, context, mode):
 
 @pytest.mark.parametrize("mode", ["invoke", "stream"])
 @pytest.mark.parametrize("limit", [1, 3])
-@pytest.mark.parametrize("ending", ["implicit", "edge", "end", "empty", "end_list"])
+@pytest.mark.parametrize("ending", ["implicit", "empty"])
 async def test_last_allowed_node_can_finish(mode, limit, ending):
     """Every supported terminal route succeeds after exactly the allowed work."""
     calls = []
@@ -31,13 +32,11 @@ async def test_last_allowed_node_can_finish(mode, limit, ending):
         get_stream_writer()(count)
         if count < limit:
             return Command(update={"count": count}, goto="work")
-        target = {"end": END, "empty": [], "end_list": [END]}.get(ending)
+        target = {"empty": []}.get(ending)
         return Command(update={"count": count}, goto=target)
 
-    manager = GraphManager().add_node(work).add_edge(START, "work")
-    if ending == "edge":
-        manager.add_edge("work", END)
-    graph = manager.compile_graph().set_max_steps(limit)
+    manager = GraphManager().add_node(work)
+    graph = manager.compile_graph(entry_point="work").set_max_steps(limit)
     context = graph.create_context({"count": 0})
 
     result = await run_graph(graph, context, mode)
@@ -50,9 +49,9 @@ async def test_last_allowed_node_can_finish(mode, limit, ending):
 
 
 @pytest.mark.parametrize("mode", ["invoke", "stream"])
-@pytest.mark.parametrize("target", ["extra", ["extra", "other"], [END, "extra"]])
+@pytest.mark.parametrize("target", ["extra", ["extra", "other"]])
 async def test_exhausted_budget_prevents_next_node_side_effects(mode, target):
-    """An END branch cannot exempt remaining work from the execution budget."""
+    """Remaining work must respect the execution budget."""
     calls = []
 
     def first(state):
@@ -68,8 +67,7 @@ async def test_exhausted_budget_prevents_next_node_side_effects(mode, target):
         return {}
 
     graph = (
-        GraphManager().add_nodes([first, extra, other])
-        .add_edge(START, "first").compile_graph().set_max_steps(1)
+        GraphManager().add_nodes([first, extra, other]).compile_graph(entry_point="first").set_max_steps(1)
     )
     context = graph.create_context({})
 
@@ -83,7 +81,7 @@ async def test_exhausted_budget_prevents_next_node_side_effects(mode, target):
 
 
 @pytest.mark.parametrize("mode", ["invoke", "stream"])
-@pytest.mark.parametrize("target", [END, []])
+@pytest.mark.parametrize("target", [None, []])
 async def test_parallel_batch_can_finish_at_the_limit(mode, target):
     """A final concurrent batch costs one step regardless of its node count."""
     calls = []
@@ -106,8 +104,7 @@ async def test_parallel_batch_can_finish_at_the_limit(mode, target):
         return await branch("right")
 
     graph = (
-        GraphManager().add_nodes([route, left, right])
-        .add_edge(START, "route").compile_graph().set_max_steps(2)
+        GraphManager().add_nodes([route, left, right]).compile_graph(entry_point="route").set_max_steps(2)
     )
     context = graph.create_context({})
 
@@ -128,11 +125,11 @@ async def test_restored_context_uses_only_its_remaining_steps(mode):
     def work(state):
         count = state["count"] + 1
         calls.append(count)
-        return Command(update={"count": count}, goto="work" if count < 2 else END)
+        return Command(update={"count": count}, goto="work" if count < 2 else None)
 
     graph = (
-        GraphManager().add_node(work).add_edge(START, "work")
-        .compile_graph().set_max_steps(2)
+        GraphManager().add_node(work)
+        .compile_graph(entry_point="work").set_max_steps(2)
     )
     original = graph.create_context({"count": 0})
     await run_graph(graph, original, "invoke")
