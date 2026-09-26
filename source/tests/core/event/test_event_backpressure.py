@@ -681,7 +681,10 @@ async def test_suspended_chain_shares_capacity_and_resumes_before_continuing(
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         assert peak == 1
-        assert not parent_done.is_set()
+        # gather() may propagate the first branch error while a sibling is
+        # still suspended; that branch no longer reacquires capacity early.
+        if not (fail and mode == "parallel"):
+            assert not parent_done.is_set()
         finish_probes.set()
         await wait_for_dispatch(loop)
         assert parent_done.is_set()
@@ -689,6 +692,58 @@ async def test_suspended_chain_shares_capacity_and_resumes_before_continuing(
     finally:
         finish_wait.set()
         finish_probes.set()
+
+
+@pytest.mark.parametrize("runtime", [1], indirect=True)
+async def test_parallel_waits_reacquire_only_after_all_branches_resume(
+    runtime, wait_for_dispatch,
+):
+    """A completed sibling must not hold the only slot needed by another wait."""
+    pipe, loop = runtime
+    entered = asyncio.Queue()
+    first_signal, second_signal = asyncio.Event(), asyncio.Event()
+    first_done, second_done, parent_done = (
+        asyncio.Event(), asyncio.Event(), asyncio.Event()
+    )
+
+    async def branch(signal, done):
+        async with suspend_process():
+            entered.put_nowait(None)
+            await signal.wait()
+        done.set()
+
+    @subscribe("parallel.parent")
+    async def parent(event):
+        await asyncio.gather(
+            branch(first_signal, first_done),
+            branch(second_signal, second_done),
+        )
+        parent_done.set()
+
+    @subscribe("parallel.first")
+    async def first(event):
+        first_signal.set()
+
+    @subscribe("parallel.second")
+    async def second(event):
+        second_signal.set()
+
+    try:
+        await pipe.post_event(event_type=EventType.INFO, event_name="parallel.parent")
+        await asyncio.wait_for(entered.get(), 1)
+        await asyncio.wait_for(entered.get(), 1)
+
+        await pipe.post_event(event_type=EventType.INFO, event_name="parallel.first")
+        await asyncio.wait_for(first_done.wait(), 1)
+        assert not second_done.is_set()
+
+        await pipe.post_event(event_type=EventType.INFO, event_name="parallel.second")
+        await asyncio.wait_for(parent_done.wait(), 1)
+        await wait_for_dispatch(loop)
+        assert second_done.is_set()
+    finally:
+        first_signal.set()
+        second_signal.set()
 
 
 @pytest.mark.parametrize("runtime", [1], indirect=True)

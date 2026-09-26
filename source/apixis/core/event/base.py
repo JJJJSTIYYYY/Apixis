@@ -23,6 +23,7 @@ class HandlerChainToken:
     semaphore: asyncio.BoundedSemaphore
     held: bool = True
     closed: bool = False
+    suspended: int = 0
     resume_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -40,7 +41,7 @@ async def suspend_process():
     when the block exits.
 
     Nested calls share the outer suspension, including child tasks created
-    inside it. Independently suspended branches share one permit: the first
+    inside it. Independently suspended branches share one permit: the last
     branch to resume reacquires it. Background handlers have no chain token.
 
     Yields:
@@ -60,22 +61,24 @@ async def suspend_process():
 
     token = handler_chain_context.set(None)
     try:
+        chain.suspended += 1
         if chain.held:
             chain.semaphore.release()
             chain.held = False
         try:
             yield
         finally:
-            # Sibling tasks may exit their suspension concurrently. Only one
-            # may reacquire the chain's permit; cancellation leaves it unheld.
-            async with chain.resume_lock:
-                if not chain.closed and not chain.held:
-                    await chain.semaphore.acquire()
-                    if chain.closed:
-                        # Dispatch may finish while a detached child waits.
-                        chain.semaphore.release()
-                    else:
-                        chain.held = True
+            chain.suspended -= 1
+            if chain.suspended == 0:
+                # A sibling may suspend while acquisition waits for capacity.
+                async with chain.resume_lock:
+                    if not chain.closed and not chain.held and chain.suspended == 0:
+                        await chain.semaphore.acquire()
+                        if chain.closed or chain.suspended:
+                            # The dispatch ended or another branch suspended.
+                            chain.semaphore.release()
+                        else:
+                            chain.held = True
     finally:
         handler_chain_context.reset(token)
 
