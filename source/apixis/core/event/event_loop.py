@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 from datetime import datetime
 from functools import partial
 import traceback
@@ -185,7 +186,10 @@ class ApixEventLoop:
                     # The dispatch task owns these references now. An idle
                     # consumer must not retain handlers (or their bound graphs)
                     # from the previous event after that dispatch completes.
-                    del event, handler_chain
+                    with suppress(Exception):
+                        del event
+                        del handler_chain
+                        del task
 
         except asyncio.CancelledError:
             logger.info("Event loop cancelled.")

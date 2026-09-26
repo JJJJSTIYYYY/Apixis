@@ -350,7 +350,7 @@ async def await_for(
     handler.subscribe = [event_name]
     handler.priority = 10000 if point == 'received' else -10000
     handler.filter_event = filter
-    registry = await aget_handler_registry()
+    registry = get_handler_registry()
     registry.register_handler(handler, exist_ok=True)
 
     try:
