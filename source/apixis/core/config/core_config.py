@@ -3,6 +3,7 @@
 from typing import Literal
 from uuid import uuid4
 import uuid
+import os
 
 from apixis.core.config.base import _get_config
 
@@ -33,8 +34,9 @@ def _create_node_id(remote_enabled: bool) -> str:
 NODE_ID = _create_node_id(REMOTE_GATEWAY_ENABLE)
 
 
-# Local runtime paths and node identity
-BASE_DIR = _get_config("SERVER.base_dir", "./.apix/.apixis/")
+# Shared data root and Apixis runtime paths
+BASE_DIR = _get_config("SERVER.base_dir", "./.apix/")
+APIXIS_BASE_DIR = os.path.join(BASE_DIR, "apixis")
 NODE_NAME = _get_config("SERVER.node_name", str(uuid.getnode()))
 
 

@@ -14,7 +14,7 @@ async def log_output(monkeypatch, tmp_path):
     """Use a small shared buffer and real files with isolated flush state."""
     module = importlib.import_module("apixis.core.utils.logger")
     monkeypatch.setattr(module, "LOG_BUFFER_SIZE", 3)
-    monkeypatch.setattr(module, "BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(module, "APIXIS_BASE_DIR", str(tmp_path))
     monkeypatch.setattr(module, "DEBUG_LEVEL", "DEBUG")
     monkeypatch.setattr(Logger, "log_cache", deque(maxlen=3))
     monkeypatch.setattr(Logger, "log_cache_size", 0)

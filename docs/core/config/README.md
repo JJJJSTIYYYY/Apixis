@@ -21,6 +21,7 @@ PIPELINE:
 
 | 路径 | 默认值 | 说明 |
 | --- | ---: | --- |
+| `SERVER.base_dir` | `./.apix/` | 共享数据根目录；Apixis 的日志写入其下的 `apixis` 子目录 |
 | `LOG.debug_level` | `DEBUG` | 日志级别 |
 | `LOG.trace` | `true` | trace 开关 |
 | `LOG.show_event_dispatch` | `true` | event dispatch 日志 |

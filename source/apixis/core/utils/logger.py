@@ -10,7 +10,7 @@ from typing import Any
 import inspect
 
 from apixis.core.config.core_config import (
-    BASE_DIR, DEBUG_LEVEL, TRACE, MAX_LOG_FILE_SIZE, LOG_BUFFER_SIZE,
+    APIXIS_BASE_DIR, DEBUG_LEVEL, TRACE, MAX_LOG_FILE_SIZE, LOG_BUFFER_SIZE,
 )
 
 
@@ -293,7 +293,7 @@ class Logger:
         if not log_file or not log_file.strip():
             log_file = str(time.time())
 
-        log_dir = os.path.join(BASE_DIR, log_folder)
+        log_dir = os.path.join(APIXIS_BASE_DIR, log_folder)
 
         os.makedirs(log_dir, exist_ok=True)
 
@@ -386,7 +386,7 @@ class Logger:
             if not messages:
                 continue
 
-            log_dir = os.path.join(BASE_DIR, logger_name)
+            log_dir = os.path.join(APIXIS_BASE_DIR, logger_name)
 
             os.makedirs(log_dir, exist_ok=True)
 

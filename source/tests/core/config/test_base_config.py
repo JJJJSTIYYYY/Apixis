@@ -1,6 +1,7 @@
 """Tests for shared configuration loading and core runtime settings."""
 
 import uuid
+import os
 
 import pytest
 
@@ -127,6 +128,10 @@ def test_external_channel_defaults_are_available():
     assert core_config.EVENT_CHANNEL_TYPE in {"kafka", "rabbitmq"}
     assert core_config.KAFKA_BOOTSTRAP_SERVERS
     assert core_config.RABBITMQ_URL.startswith("amqp")
+
+
+def test_apixis_data_path_is_within_shared_root():
+    assert core_config.APIXIS_BASE_DIR == os.path.join(core_config.BASE_DIR, "apixis")
 
 
 @pytest.mark.parametrize(
