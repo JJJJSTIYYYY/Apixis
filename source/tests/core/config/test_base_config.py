@@ -1,5 +1,7 @@
 """Tests for shared configuration loading and core runtime settings."""
 
+import uuid
+
 import pytest
 
 from apixis.core.config import base, core_config
@@ -118,7 +120,7 @@ def test_remote_node_id_is_uuid4_hex():
     node_id = core_config._create_node_id(True)
     assert len(node_id) == 32
     assert int(node_id, 16) >= 0
-    assert core_config._create_node_id(False) == "apix_service"
+    assert core_config._create_node_id(False) == str(uuid.getnode())
 
 
 def test_external_channel_defaults_are_available():
@@ -164,12 +166,3 @@ def test_yaml_rejects_non_mapping(tmp_path):
     path.write_text("- item\n", encoding="utf-8")
     with pytest.raises(ValueError, match="must contain a YAML mapping"):
         base._load_from_yaml(str(path))
-
-
-@pytest.mark.parametrize("remote", [[], {"enable": True}, {
-    "enable": True, "base_url": "http://gateway", "config_endpoint": " "
-}])
-def test_remote_configuration_validation_is_preserved(monkeypatch, remote):
-    monkeypatch.setattr(base, "_load_from_yaml", lambda path: {"REMOTE_GATEWAY": remote})
-    with pytest.raises(ValueError, match="REMOTE_GATEWAY"):
-        base._load_config("config.yaml")

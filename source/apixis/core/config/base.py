@@ -120,8 +120,8 @@ def _load_config(path: str) -> dict[str, Any]:
     if enable is not True:
         return local_config
 
-    center_base_url = remote_center.get("base_url")
-    config_endpoint = remote_center.get("config_endpoint")
+    center_base_url = remote_center.get("base_url", "http://localhost:8080")
+    config_endpoint = remote_center.get("config_endpoint", "/api/config")
 
     if not isinstance(center_base_url, str) or not center_base_url.strip():
         raise ValueError(

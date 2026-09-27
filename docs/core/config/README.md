@@ -15,9 +15,6 @@ LOG:
 PIPELINE:
   event_pipe_max_len: 65536
   event_loop_backpressure: 1024
-
-LIFESPAN:
-  resource_clean_interval: 300
 ```
 
 ## 主要配置
@@ -30,7 +27,6 @@ LIFESPAN:
 | `LOG.buffer_size` | `1024` | 日志缓存条数上限，对应 `LOG_BUFFER_SIZE`；必须为正整数，所有 logger 共享 FIFO，满时丢弃最旧记录 |
 | `PIPELINE.event_pipe_max_len` | `65536` | 外部 mailbox 默认缓冲限制 |
 | `PIPELINE.event_loop_backpressure` | `1024` | event dispatch 并发背压；最小值 128 |
-| `LIFESPAN.resource_clean_interval` | `300` | 资源清理周期 |
 
 远程 gateway、Kafka 和 RabbitMQ 还可通过 `REMOTE_GATEWAY` / `EVENT_CHANNEL` 配置。仅使用本地图和 builtin event channel 时无需配置这些项。
 

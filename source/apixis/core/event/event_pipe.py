@@ -229,6 +229,7 @@ class ApixEventPipe:
         event: ApixEvent,
         channel: ChannelType = "builtin",
     ) -> None:
+        """Push an event without waiting, raising QueueFull if at capacity."""
         if channel == "mailbox":
             raise EventChannelPermissionError("mailbox channels are receive-only")
         if channel == "mailtruck":

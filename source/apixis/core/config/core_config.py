@@ -2,6 +2,7 @@
 
 from typing import Literal
 from uuid import uuid4
+import uuid
 
 from apixis.core.config.base import _get_config
 
@@ -9,7 +10,7 @@ from apixis.core.config.base import _get_config
 # Remote gateway and node identity
 REMOTE_GATEWAY_ENABLE = _get_config("REMOTE_GATEWAY.enable", False) is True
 REMOTE_GATEWAY_BASE_URL = _get_config(
-    "REMOTE_GATEWAY.base_url", "http://localhost:8080"
+    "REMOTE_GATEWAY.base_url", "http://localhost:28080"
 )
 REMOTE_GATEWAY_CONFIG_ENDPOINT = _get_config(
     "REMOTE_GATEWAY.config_endpoint", "/api/config"
@@ -26,15 +27,15 @@ GATEWAY_TIMEOUT = _get_config("REMOTE_GATEWAY.timeout", 10.0)
 
 def _create_node_id(remote_enabled: bool) -> str:
     """Create a globally unique MQ id only for remote node mode."""
-    return uuid4().hex if remote_enabled else "apix_service"
+    return uuid4().hex if remote_enabled else str(uuid.getnode())
 
 
 NODE_ID = _create_node_id(REMOTE_GATEWAY_ENABLE)
 
 
 # Local runtime paths and node identity
-BASE_DIR = _get_config("SERVER.base_dir", "./.apix_data/")
-NODE_NAME = _get_config("SERVER.node_name", "apix_service")
+BASE_DIR = _get_config("SERVER.base_dir", "./.apix/.apixis/")
+NODE_NAME = _get_config("SERVER.node_name", str(uuid.getnode()))
 
 
 # Log
@@ -94,9 +95,4 @@ RABBITMQ_QUEUE_PREFIX = _get_config(
 )
 RABBITMQ_PREFETCH_COUNT = _get_config(
     "EVENT_CHANNEL.rabbitmq.prefetch_count", 100
-)
-
-
-RESOURCE_CLEAN_INTERVAL = _get_config(
-    "LIFESPAN.resource_clean_interval", 300
 )
