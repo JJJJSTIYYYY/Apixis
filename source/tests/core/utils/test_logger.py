@@ -22,6 +22,7 @@ async def log_output(monkeypatch, tmp_path):
     monkeypatch.setattr(Logger, "flush_task", None)
     monkeypatch.setattr(Logger, "running", False)
     monkeypatch.setattr(Logger, "cache_lock", asyncio.Lock())
+    monkeypatch.setattr(Logger, "lifecycle_lock", asyncio.Lock())
     monkeypatch.setattr(Logger, "current_log_file_index", {})
     monkeypatch.setattr(Logger, "current_log_date", {})
     yield tmp_path
@@ -43,6 +44,32 @@ async def test_fifo_is_shared_across_logger_names_and_flush_preserves_order(log_
     assert "keep-second-1" in second_text
     assert second_text.index("keep-second-1") < second_text.index("keep-second-2")
     assert len(first_text.splitlines()) + len(second_text.splitlines()) == 3
+
+
+async def test_concurrent_restart_completes_stop_and_flushes_logs(log_output):
+    """A restart must let the previous stop finish and persist pending logs."""
+    logger = Logger("restart")
+    await Logger.start()
+    logger.info("before-stop")
+    stopping = asyncio.create_task(Logger.stop())
+    starting = asyncio.create_task(Logger.start())
+    try:
+        done, pending = await asyncio.wait([stopping, starting], timeout=2)
+        assert not pending, "Concurrent restart prevented lifecycle completion"
+        for task in done:
+            task.result()
+        text = next((log_output / "restart").glob("*.log")).read_text()
+        assert text.count("before-stop") == 1
+
+        logger.info("after-restart")
+        await asyncio.wait_for(Logger.stop(), 2)
+        text = next((log_output / "restart").glob("*.log")).read_text()
+        assert text.count("before-stop") == 1
+        assert text.count("after-restart") == 1
+    finally:
+        # Also release the old worker if the lifecycle regression returns.
+        await asyncio.wait_for(Logger.stop(), 2)
+        await asyncio.wait_for(asyncio.gather(stopping, starting), 2)
 
 
 async def test_fifo_stays_bounded_after_flush_and_does_not_repeat_records(log_output):

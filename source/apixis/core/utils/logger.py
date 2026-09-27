@@ -53,6 +53,7 @@ class Logger:
     flush_task = None
     running = False
     cache_lock = asyncio.Lock()
+    lifecycle_lock = asyncio.Lock()
     
     COLOR_CODES = {
         'red': '\033[91m',
@@ -314,25 +315,29 @@ class Logger:
 
     @classmethod
     async def start(cls):
-        if cls.running:
-            return
+        # Wait for the previous worker to exit before starting another one.
+        async with cls.lifecycle_lock:
+            if cls.running:
+                return
 
-        cls.running = True
-        cls.flush_task = asyncio.create_task(cls.flush_loop())
+            cls.running = True
+            cls.flush_task = asyncio.create_task(cls.flush_loop())
 
     @classmethod
     async def stop(cls):
-        if not cls.running:
-            return
+        async with cls.lifecycle_lock:
+            if not cls.running:
+                return
 
-        cls.running = False
+            cls.running = False
 
-        cls.flush_event.set()
+            cls.flush_event.set()
 
-        if cls.flush_task:
-            await cls.flush_task
+            if cls.flush_task:
+                await cls.flush_task
+                cls.flush_task = None
 
-        await cls.flush()
+            await cls.flush()
 
     @classmethod
     async def flush_loop(cls):
