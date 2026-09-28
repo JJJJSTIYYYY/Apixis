@@ -149,8 +149,7 @@ async def test_plain_observer_must_accept_block_for_deferred_resolution(subscrip
         graph.decompose()
 
 
-@pytest.mark.parametrize("reason", ["filtered", "later"])
-async def test_registered_hook_without_prior_core_entry_does_not_suppress_fallback(reason):
+async def test_filtered_hook_does_not_suppress_fallback():
     """A matching registration alone is insufficient when its core has not run."""
     called = []
 
@@ -168,8 +167,8 @@ async def test_registered_hook_without_prior_core_entry_does_not_suppress_fallba
     handler = get_handler(capture.__name__)
     handler.register(
         event_name,
-        priority=10 if reason == "filtered" else -1,
-        filter_event=[event_name] if reason == "filtered" else [],
+        priority=10,
+        filter_event=[event_name],
     )
     try:
         async with asyncio.timeout(1):
@@ -179,6 +178,47 @@ async def test_registered_hook_without_prior_core_entry_does_not_suppress_fallba
         assert called == []
     finally:
         handler.unregister()
+        graph.decompose()
+
+
+@pytest.mark.parametrize("priority", [0, -1, -9999])
+@pytest.mark.parametrize("register_before_graph", [False, True])
+@pytest.mark.parametrize("resolve", [False, True])
+async def test_default_validation_runs_after_low_priority_hooks(
+    priority, register_before_graph, resolve,
+):
+    """Public-priority hooks run before validation regardless of registration order."""
+    namespace = "low-priority-interruption"
+    event_name = get_graph_interrupted_name(namespace, missing_ok=True)
+    called = []
+
+    async def review(state):
+        return {"answer": await interrupt()}
+
+    async def capture(event):
+        called.append(event.context)
+        if resolve:
+            event.context.resolve("approved")
+
+    if register_before_graph:
+        subscribe(event_name, priority=priority)(capture)
+    graph = (GraphManager().add_node(review)
+             .compile_graph(entry_point="review", using_namespace=namespace))
+    if not register_before_graph:
+        subscribe(event_name, priority=priority)(capture)
+
+    try:
+        async with asyncio.timeout(1):
+            if resolve:
+                assert await graph.invoke({}) == {"answer": "approved"}
+            else:
+                with pytest.raises(BlockNotResolvedError):
+                    await graph.invoke({})
+            await get_event_pipe().join()
+        assert len(called) == 1
+        assert called[0].done
+    finally:
+        unsubscribe(capture.__name__)
         graph.decompose()
 
 

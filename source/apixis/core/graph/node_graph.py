@@ -9,7 +9,7 @@ from contextlib import suppress
 from functools import wraps
 from typing import Any
 
-from apixis.core.event.factory import aget_event_pipe
+from apixis.core.event.factory import aget_event_pipe, get_handler_registry
 from apixis.core.event.base import suspend_process
 from apixis.core.event import (
     ApixEvent,
@@ -235,7 +235,11 @@ class NodeGraph:
         temp_hook.__name__ = event_name
         handler = BlockEventHandler(temp_hook)
         handler.set_core_func(require_interrupted_hook)
-        subscribe(event_name, priority=0, exist_ok=False)(handler)
+        # Use the reserved trailing priority, as await_for(point="processed")
+        # does, so hooks at every public numeric priority can handle the block.
+        handler.subscribe = [event_name]
+        handler.priority = -10000
+        get_handler_registry().register_handler(handler, exist_ok=False)
         self._handlers[handler.name] = handler
 
     def _unregister_handlers(self) -> None:
