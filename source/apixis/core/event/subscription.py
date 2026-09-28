@@ -311,7 +311,7 @@ async def await_for(
     event_name: str, 
     *, 
     point: Literal['received', 'processed'] = 'received', 
-    filter: str | None = None,
+    filter: list[str] | str | None = None,
     time_out: float | None = None
 ) -> dict:
     """Wait a event, and return the event data when event is processing.
@@ -331,11 +331,14 @@ async def await_for(
     """
     future = asyncio.get_running_loop().create_future()
 
-    async def resolve_future(event: ApixEvent) -> None:
+    async def resolve_future(event: ApixEvent, *args, **kwargs) -> None:
         """Resolve the future."""
         if future.done():
             return
         return future.set_result(event)
+
+    if filter is not None and isinstance(filter, str):
+        filter = [filter]
 
     handler = ApixEventHandler(
         core_func=resolve_future,

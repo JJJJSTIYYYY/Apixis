@@ -145,7 +145,7 @@ async def test_await_for_ignores_filtered_events(wait_for_dispatch):
     loop = get_event_loop()
     registered = set(get_handler_registry().registry)
     waiter = asyncio.create_task(
-        await_for("job.*", filter="job.ignore.*", time_out=1)
+        await_for("job.*", filter=["job.ignore.*"], time_out=1)
     )
     await wait_until_registered(registered)
     try:

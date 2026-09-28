@@ -213,10 +213,10 @@ class NodeGraph:
         """Always provide interruption cleanup and reject missing user hooks."""
         event_name = get_graph_interrupted_name(self.namespace, missing_ok=True)
 
-        async def temp_hook(_) -> None:
+        async def temp_hook(_, *args, **kwargs) -> None:
             return
 
-        async def require_interrupted_hook(event: ApixEvent) -> None:
+        async def require_interrupted_hook(event: ApixEvent, *args, **kwargs) -> None:
             block: Block = event.context
             if not self._is_active_block(block):
                 return
