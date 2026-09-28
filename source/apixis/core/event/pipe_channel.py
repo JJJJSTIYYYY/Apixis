@@ -300,10 +300,15 @@ class KafkaChannel(_BufferedMailboxChannel):
             enable_auto_commit=True,
             auto_offset_reset="latest",
         )
-        await self._consumer.start()
-        self._consumer_task = asyncio.create_task(
-            self._consume(), name=f"kafka-mailbox-{self.mq_id}"
-        )
+        try:
+            await self._consumer.start()
+            self._consumer_task = asyncio.create_task(
+                self._consume(), name=f"kafka-mailbox-{self.mq_id}"
+            )
+        except BaseException:
+            # Failed or cancelled startup still owns a consumer that needs closing.
+            await self.close()
+            raise
 
     async def _consume(self) -> None:
         async for record in self._consumer:
@@ -357,21 +362,26 @@ class RabbitMQChannel(_BufferedMailboxChannel):
             ) from exc
 
         self._connection = await aio_pika.connect_robust(self.url)
-        self._broker_channel = await self._connection.channel()
-        await self._broker_channel.set_qos(prefetch_count=self.prefetch_count)
-        exchange = await self._broker_channel.declare_exchange(
-            self.exchange_name,
-            aio_pika.ExchangeType.DIRECT,
-            durable=True,
-        )
-        self._broker_queue = await self._broker_channel.declare_queue(
-            self.queue_name,
-            durable=True,
-        )
-        await self._broker_queue.bind(exchange, routing_key=self.mq_id)
-        self._consumer_task = asyncio.create_task(
-            self._consume(), name=f"rabbitmq-mailbox-{self.mq_id}"
-        )
+        try:
+            self._broker_channel = await self._connection.channel()
+            await self._broker_channel.set_qos(prefetch_count=self.prefetch_count)
+            exchange = await self._broker_channel.declare_exchange(
+                self.exchange_name,
+                aio_pika.ExchangeType.DIRECT,
+                durable=True,
+            )
+            self._broker_queue = await self._broker_channel.declare_queue(
+                self.queue_name,
+                durable=True,
+            )
+            await self._broker_queue.bind(exchange, routing_key=self.mq_id)
+            self._consumer_task = asyncio.create_task(
+                self._consume(), name=f"rabbitmq-mailbox-{self.mq_id}"
+            )
+        except BaseException:
+            # Close all acquired resources before allowing a fresh startup.
+            await self.close()
+            raise
 
     async def _consume(self) -> None:
         async with self._broker_queue.iterator() as iterator:

@@ -123,6 +123,38 @@ class BlockingConsumer:
 
 
 class TestKafkaChannelLifecycle:
+    @pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+    async def test_failed_start_closes_consumer_and_allows_retry(self, monkeypatch, failure):
+        """A partially started consumer must be released before a fresh attempt."""
+        event = make_event()
+        error = failure("startup interrupted")
+        failed = FakeKafkaConsumer()
+        failed.start = AsyncMock(side_effect=error)
+        failed.stop = AsyncMock()
+        ready = FakeKafkaConsumer()
+        ready.items = [SimpleNamespace(value=event_to_json(event))]
+        factory = MagicMock(side_effect=[failed, ready])
+        monkeypatch.setitem(sys.modules, "aiokafka", SimpleNamespace(AIOKafkaConsumer=factory))
+        channel = KafkaChannel(
+            mq_id="node-a", bootstrap_servers="broker:9092",
+            topic_prefix="mailbox", group_id_prefix="nodes",
+        )
+        try:
+            with pytest.raises(failure) as raised:
+                await channel.start()
+            assert raised.value is error
+            failed.stop.assert_awaited_once()
+
+            await channel.start()
+            received = await asyncio.wait_for(channel.get(), 1)
+            assert received.event_id == event.event_id
+            channel.task_done()
+            assert factory.call_count == 2
+        finally:
+            await channel.close()
+        assert ready.stopped
+        failed.stop.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_start_consume_idempotence_and_close(self, monkeypatch):
         event = make_event()
@@ -255,6 +287,50 @@ class FakeRabbitConnection:
 
 
 class TestRabbitChannelLifecycle:
+    @pytest.mark.parametrize("stage", ["channel", "set_qos", "declare_exchange", "declare_queue", "bind"])
+    @pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+    async def test_failed_start_closes_resources_and_allows_retry(self, monkeypatch, stage, failure):
+        """Every failure after connection acquisition releases the partial setup."""
+        event = make_event()
+        error = failure("startup interrupted")
+        failed_queue = FakeRabbitQueue([])
+        failed_channel = FakeRabbitBrokerChannel(failed_queue)
+        failed_connection = FakeRabbitConnection(failed_channel)
+        owner = (
+            failed_connection if stage == "channel"
+            else failed_queue if stage == "bind"
+            else failed_channel
+        )
+        monkeypatch.setattr(owner, stage, AsyncMock(side_effect=error))
+        ready_queue = FakeRabbitQueue([FakeMessage(event_to_json(event))])
+        ready_channel = FakeRabbitBrokerChannel(ready_queue)
+        ready_connection = FakeRabbitConnection(ready_channel)
+        connect = AsyncMock(side_effect=[failed_connection, ready_connection])
+        monkeypatch.setitem(
+            sys.modules, "aio_pika",
+            SimpleNamespace(connect_robust=connect, ExchangeType=SimpleNamespace(DIRECT="direct")),
+        )
+        channel = RabbitMQChannel(
+            mq_id="node-a", url="amqp://localhost/", exchange="events",
+            queue_prefix="mailbox", prefetch_count=7,
+        )
+        try:
+            with pytest.raises(failure) as raised:
+                await channel.start()
+            assert raised.value is error
+            assert failed_connection.closed
+            assert failed_channel.closed is (stage != "channel")
+
+            await channel.start()
+            received = await asyncio.wait_for(channel.get(), 1)
+            assert received.event_id == event.event_id
+            channel.task_done()
+            assert connect.await_count == 2
+        finally:
+            await channel.close()
+        assert ready_channel.closed
+        assert ready_connection.closed
+
     @pytest.mark.asyncio
     async def test_start_consume_idempotence_and_close(self, monkeypatch):
         event = make_event()

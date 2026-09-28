@@ -52,7 +52,6 @@ class Logger:
     flush_event = asyncio.Event()
     flush_task = None
     running = False
-    cache_lock = asyncio.Lock()
     lifecycle_lock = asyncio.Lock()
     
     COLOR_CODES = {
@@ -358,13 +357,13 @@ class Logger:
     @classmethod
     async def flush(cls):
 
-        async with cls.cache_lock:
-            if not cls.log_cache:
-                return
+        if not cls.log_cache:
+            return
 
-            cache = cls.log_cache
-            cls.log_cache = deque(maxlen=LOG_BUFFER_SIZE)
-            cls.log_cache_size = 0
+        # Detach the batch before awaiting I/O; asyncio callers cannot interleave here.
+        cache = cls.log_cache
+        cls.log_cache = deque(maxlen=LOG_BUFFER_SIZE)
+        cls.log_cache_size = 0
 
         await asyncio.to_thread(
             cls._flush_to_disk,

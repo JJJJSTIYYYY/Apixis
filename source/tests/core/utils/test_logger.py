@@ -21,7 +21,6 @@ async def log_output(monkeypatch, tmp_path):
     monkeypatch.setattr(Logger, "flush_event", asyncio.Event())
     monkeypatch.setattr(Logger, "flush_task", None)
     monkeypatch.setattr(Logger, "running", False)
-    monkeypatch.setattr(Logger, "cache_lock", asyncio.Lock())
     monkeypatch.setattr(Logger, "lifecycle_lock", asyncio.Lock())
     monkeypatch.setattr(Logger, "current_log_file_index", {})
     monkeypatch.setattr(Logger, "current_log_date", {})
