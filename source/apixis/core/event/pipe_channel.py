@@ -222,7 +222,7 @@ class _BufferedMailboxChannel(ReadableEventChannel):
         """
         try:
             event = event_from_json(payload)
-        except (UnicodeDecodeError, TypeError, ValueError) as exc:
+        except Exception as exc:
             logger.warning(f"{type(self).__name__} discarded an invalid external event: {exc}")
             return
 

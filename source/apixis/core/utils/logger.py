@@ -394,9 +394,14 @@ class Logger:
                 log_dir
             )
 
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write("\n".join(messages))
-                f.write("\n")
+            try:
+                with open(log_file, "a", encoding="utf-8") as f:
+                    f.write("\n".join(messages))
+                    f.write("\n")
+            except Exception as e:
+                print(f"\033[91m=== LOG FLUSH ERROR ===\033[0m")
+                print(traceback.print_exc())
+
 
     @classmethod
     def _get_log_file(cls, logger_name: str, log_dir: str) -> str:
