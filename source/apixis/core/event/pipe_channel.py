@@ -84,14 +84,19 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
-def encode_event(event: ApixEvent) -> bytes:
-    """Encode an event for Kafka or RabbitMQ."""
+def _encode_json(payload: Any) -> bytes:
+    """Encode broker and gateway payloads with the same custom type support."""
     return json.dumps(
-        event_to_json(event),
+        payload,
         ensure_ascii=False,
         separators=(",", ":"),
         default=_json_default,
     ).encode("utf-8")
+
+
+def encode_event(event: ApixEvent) -> bytes:
+    """Encode an event for Kafka or RabbitMQ."""
+    return _encode_json(event_to_json(event))
 
 
 class BaseEventChannel(ABC):
@@ -466,6 +471,13 @@ class GatewayChannel(WritableEventChannel):
             self._client = httpx.AsyncClient(timeout=self.timeout)
 
     async def _request(self, method: str, **kwargs: Any) -> httpx.Response:
+        # Encode the complete envelope once and reuse its bytes for retries.
+        if "json" in kwargs:
+            kwargs["content"] = _encode_json(kwargs.pop("json"))
+            kwargs["headers"] = {
+                **kwargs.get("headers", {}),
+                "Content-Type": "application/json",
+            }
         await self.start()
         assert self._client is not None
 

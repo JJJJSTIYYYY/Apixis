@@ -1,7 +1,10 @@
 """Tests for queue compatibility and node-side event routing."""
 
 import asyncio
+import json
 import time
+from dataclasses import dataclass
+from enum import Enum
 from unittest.mock import AsyncMock
 
 import httpx
@@ -228,6 +231,77 @@ class TestExternalChannels:
 
 
 class TestGatewayChannel:
+    @pytest.mark.parametrize("action", ["route", "broadcast"])
+    @pytest.mark.parametrize("context_kind", ["nested", "dataclass", "enum"])
+    async def test_custom_context_serialization_through_httpx(self, action, context_kind):
+        """Exercise real HTTPX encoding and preserve the broker wire format."""
+        class Status(Enum):
+            READY = "ready"
+
+        @dataclass
+        class Item:
+            label: str
+            status: Status
+
+        @dataclass
+        class Batch:
+            items: list[Item]
+
+        batch = Batch([Item("测试", Status.READY)])
+        batch_json = {"items": [{"label": "测试", "status": "ready"}]}
+        contexts = {
+            "nested": (
+                {"batch": batch, "statuses": [Status.READY]},
+                {"batch": batch_json, "statuses": ["ready"]},
+            ),
+            "dataclass": (batch, batch_json),
+            "enum": (Status.READY, "ready"),
+        }
+        event = make_event()
+        event.context, expected = contexts[context_kind]
+        requests = []
+
+        def handle(request):
+            requests.append(request)
+            return httpx.Response(200, json={"ok": True})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            gateway = make_gateway(client)
+            if action == "route":
+                await gateway.put(event, recipient="node-b")
+            else:
+                assert await gateway.broadcast(event) == {"ok": True}
+
+        [request] = requests
+        assert request.headers["content-type"] == "application/json"
+        payload = json.loads(request.content)
+        assert payload["action"] == action
+        assert payload["sender"]["node_id"] == "node-a"
+        if action == "route":
+            assert payload["recipient"] == "node-b"
+        assert isinstance(payload["event"], dict)
+        assert payload["event"]["context"] == expected
+        assert payload["event"] == json.loads(encode_event(event))
+        assert event_from_json(payload).context == expected
+        assert event.context is contexts[context_kind][0]
+
+    @pytest.mark.parametrize("action", ["route", "broadcast"])
+    async def test_unsupported_context_fails_before_transport(self, action):
+        """Unsupported objects remain errors instead of being stringified."""
+        event = make_event()
+        event.context = {"unsupported": object()}
+
+        def handle(request):
+            pytest.fail("An invalid payload must not reach the transport.")
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            gateway = make_gateway(client)
+            with pytest.raises(TypeError, match="not JSON serializable"):
+                if action == "route":
+                    await gateway.put(event, recipient="node-b")
+                else:
+                    await gateway.broadcast(event)
+
     @pytest.mark.asyncio
     async def test_route_protocol_contains_sender_recipient_and_event(self):
         client = FakeClient([response()])
@@ -236,16 +310,18 @@ class TestGatewayChannel:
         await gateway.put(make_event(), recipient="node-b")
 
         method, url, kwargs = client.requests[0]
+        payload = json.loads(kwargs["content"])
         assert method == "POST"
         assert url == "http://gateway/api/pipe"
-        assert kwargs["json"]["action"] == "route"
-        assert kwargs["json"]["sender"] == {
+        assert kwargs["headers"]["Content-Type"] == "application/json"
+        assert payload["action"] == "route"
+        assert payload["sender"] == {
             "tag": "Alice",
             "node_id": "node-a",
             "channel_type": "kafka",
         }
-        assert kwargs["json"]["recipient"] == "node-b"
-        assert kwargs["json"]["event"]["event_name"] == "test.event"
+        assert payload["recipient"] == "node-b"
+        assert payload["event"]["event_name"] == "test.event"
 
     @pytest.mark.asyncio
     async def test_route_requires_recipient(self):
@@ -347,8 +423,8 @@ class TestApixEventPipeLifecycle:
         await pipe.stop()
 
         assert [entry[0] for entry in client.requests] == ["POST", "GET", "POST"]
-        assert client.requests[0][2]["json"]["event"]["event_name"] == "apixis.node.online"
-        assert client.requests[2][2]["json"]["event"]["event_name"] == "apixis.node.offline"
+        assert json.loads(client.requests[0][2]["content"])["event"]["event_name"] == "apixis.node.online"
+        assert json.loads(client.requests[2][2]["content"])["event"]["event_name"] == "apixis.node.offline"
 
     @pytest.mark.asyncio
     async def test_disabled_lifecycle_does_not_contact_gateway(self):

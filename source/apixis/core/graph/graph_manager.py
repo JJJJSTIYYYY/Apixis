@@ -59,6 +59,8 @@ class GraphManager:
         """
         if isinstance(node_func, BaseNode):
             node = node_func
+            if node_name is not None:
+                node.name = node_name
         else:
             node = Node(node_func, node_name, timeout=timeout)
 
