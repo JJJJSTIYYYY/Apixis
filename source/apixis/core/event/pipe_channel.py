@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Coroutine, Mapping
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from typing import Any
@@ -99,8 +99,28 @@ def encode_event(event: ApixEvent) -> bytes:
     return _encode_json(event_to_json(event))
 
 
+async def _complete_cleanup[T](cleanup: Coroutine[Any, Any, T], *, name: str) -> T:
+    """Finish owned cleanup before propagating even repeated caller cancellation."""
+    task = asyncio.create_task(cleanup, name=name)
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+    result = task.result()
+    if cancellation is not None:
+        raise cancellation
+    return result
+
+
 class BaseEventChannel(ABC):
     """Lifecycle shared by all event channels, independent of I/O capabilities."""
+
+    @property
+    def is_running(self) -> bool:
+        """Return receiver health; channels without background workers are healthy."""
+        return True
 
     async def start(self) -> None:
         """Open connections and start background consumers when required."""
@@ -228,24 +248,6 @@ class _BufferedMailboxChannel(ReadableEventChannel):
 
         await self._buffer.put(event)
 
-    async def _close_consumer_task(
-        self,
-        task: asyncio.Task[None] | None,
-    ) -> None:
-        """Cancel and collect a broker consumer without leaking its failure."""
-        if task is None:
-            return
-
-        if not task.done():
-            task.cancel()
-
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            logger.exception(f"{type(self).__name__} consumer task exited unexpectedly.")
-
     async def get(self) -> ApixEvent:
         return await self._buffer.get()
 
@@ -268,8 +270,82 @@ class _BufferedMailboxChannel(ReadableEventChannel):
         await self._buffer.join()
 
 
-class KafkaChannel(_BufferedMailboxChannel):
-    """Kafka mailbox consumer. ``aiokafka`` is imported only when started."""
+class _BrokerMailboxChannel(_BufferedMailboxChannel):
+    """Serialize broker ownership and expose the consumer's actual health."""
+
+    def __init__(self, maxsize: int) -> None:
+        super().__init__(maxsize)
+        self._lifecycle_lock = asyncio.Lock()
+        self._consumer_task: asyncio.Task[None] | None = None
+
+    @property
+    def is_running(self) -> bool:
+        return self._consumer_task is not None and not self._consumer_task.done()
+
+    async def start(self) -> None:
+        """Start once, replacing a failed or unexpectedly finished consumer."""
+        async with self._lifecycle_lock:
+            if self.is_running:
+                return
+            if self._consumer_task is not None:
+                await self._close_owned_resources()
+            try:
+                await self._open_transport()
+                self._consumer_task = asyncio.create_task(
+                    self._consume(), name=f"{type(self).__name__}-consumer",
+                )
+                self._consumer_task.add_done_callback(self._on_consumer_done)
+            except BaseException:
+                # Failed or cancelled startup still owns partially opened resources.
+                await self._close_owned_resources()
+                raise
+
+    def _on_consumer_done(self, task: asyncio.Task[None]) -> None:
+        """Retrieve failures immediately; start() replaces dead tasks under the lock."""
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                f"{type(self).__name__} consumer failed: {type(error).__name__}: {error}"
+            )
+        elif self._consumer_task is task:
+            logger.warning(f"{type(self).__name__} consumer exited unexpectedly.")
+
+    async def close(self) -> None:
+        """Close this generation completely before another caller can start it."""
+        async with self._lifecycle_lock:
+            await self._close_owned_resources()
+
+    async def _close_owned_resources(self) -> None:
+        await _complete_cleanup(
+            self._close_resources(), name=f"{type(self).__name__}-cleanup",
+        )
+
+    async def _close_resources(self) -> None:
+        task, self._consumer_task = self._consumer_task, None
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            # The completion callback reports failures; cleanup must still close I/O.
+            await asyncio.gather(task, return_exceptions=True)
+        await self._close_transport()
+
+    @abstractmethod
+    async def _open_transport(self) -> None:
+        """Acquire one broker connection; partial acquisitions remain owned here."""
+
+    @abstractmethod
+    async def _close_transport(self) -> None:
+        """Release every transport acquired by the current generation."""
+
+    @abstractmethod
+    async def _consume(self) -> None:
+        """Receive messages until cancellation or a transport failure."""
+
+
+class KafkaChannel(_BrokerMailboxChannel):
+    """Kafka mailbox with offsets committed only after local buffer admission."""
 
     def __init__(
         self,
@@ -286,11 +362,8 @@ class KafkaChannel(_BufferedMailboxChannel):
         self.group_id = f"{group_id_prefix}.{mq_id}"
         self.bootstrap_servers = bootstrap_servers
         self._consumer: Any = None
-        self._consumer_task: asyncio.Task[None] | None = None
 
-    async def start(self) -> None:
-        if self._consumer is not None:
-            return
+    async def _open_transport(self) -> None:
         try:
             from aiokafka import AIOKafkaConsumer
         except ImportError as exc:  # pragma: no cover - depends on deployment
@@ -302,38 +375,32 @@ class KafkaChannel(_BufferedMailboxChannel):
             self.topic,
             bootstrap_servers=self.bootstrap_servers,
             group_id=self.group_id,
-            enable_auto_commit=True,
-            auto_offset_reset="latest",
+            enable_auto_commit=False,
+            # A first record cancelled before admission has no committed offset.
+            # 'latest' would skip it when this group starts again.
+            auto_offset_reset="earliest",
         )
-        try:
-            await self._consumer.start()
-            self._consumer_task = asyncio.create_task(
-                self._consume(), name=f"kafka-mailbox-{self.mq_id}"
-            )
-        except BaseException:
-            # Failed or cancelled startup still owns a consumer that needs closing.
-            await self.close()
-            raise
+        await self._consumer.start()
 
     async def _consume(self) -> None:
+        from aiokafka import TopicPartition
+
         async for record in self._consumer:
             await self._enqueue(record.value)
+            # Commit only this partition's admitted record, never fetched positions.
+            # Invalid payloads are deliberately discarded by _enqueue and advance too.
+            await self._consumer.commit({
+                TopicPartition(record.topic, record.partition): record.offset + 1,
+            })
 
-    async def close(self) -> None:
-        consumer_task = self._consumer_task
-        self._consumer_task = None
-
-        await self._close_consumer_task(consumer_task)
-
-        consumer = self._consumer
-        self._consumer = None
-
+    async def _close_transport(self) -> None:
+        consumer, self._consumer = self._consumer, None
         if consumer is not None:
             await consumer.stop()
 
 
-class RabbitMQChannel(_BufferedMailboxChannel):
-    """RabbitMQ mailbox consumer. ``aio-pika`` is imported when started."""
+class RabbitMQChannel(_BrokerMailboxChannel):
+    """RabbitMQ mailbox that requeues deliveries interrupted before admission."""
 
     def __init__(
         self,
@@ -354,11 +421,8 @@ class RabbitMQChannel(_BufferedMailboxChannel):
         self._connection: Any = None
         self._broker_channel: Any = None
         self._broker_queue: Any = None
-        self._consumer_task: asyncio.Task[None] | None = None
 
-    async def start(self) -> None:
-        if self._connection is not None:
-            return
+    async def _open_transport(self) -> None:
         try:
             import aio_pika
         except ImportError as exc:  # pragma: no cover - depends on deployment
@@ -367,46 +431,31 @@ class RabbitMQChannel(_BufferedMailboxChannel):
             ) from exc
 
         self._connection = await aio_pika.connect_robust(self.url)
-        try:
-            self._broker_channel = await self._connection.channel()
-            await self._broker_channel.set_qos(prefetch_count=self.prefetch_count)
-            exchange = await self._broker_channel.declare_exchange(
-                self.exchange_name,
-                aio_pika.ExchangeType.DIRECT,
-                durable=True,
-            )
-            self._broker_queue = await self._broker_channel.declare_queue(
-                self.queue_name,
-                durable=True,
-            )
-            await self._broker_queue.bind(exchange, routing_key=self.mq_id)
-            self._consumer_task = asyncio.create_task(
-                self._consume(), name=f"rabbitmq-mailbox-{self.mq_id}"
-            )
-        except BaseException:
-            # Close all acquired resources before allowing a fresh startup.
-            await self.close()
-            raise
+        self._broker_channel = await self._connection.channel()
+        await self._broker_channel.set_qos(prefetch_count=self.prefetch_count)
+        exchange = await self._broker_channel.declare_exchange(
+            self.exchange_name,
+            aio_pika.ExchangeType.DIRECT,
+            durable=True,
+        )
+        self._broker_queue = await self._broker_channel.declare_queue(
+            self.queue_name,
+            durable=True,
+        )
+        await self._broker_queue.bind(exchange, routing_key=self.mq_id)
 
     async def _consume(self) -> None:
         async with self._broker_queue.iterator() as iterator:
             async for message in iterator:
-                async with message.process():
+                # Cancellation while the local buffer is full must return ownership
+                # to the broker. Invalid payloads return normally and are acknowledged.
+                async with message.process(requeue=True):
                     await self._enqueue(message.body)
 
-    async def close(self) -> None:
-        consumer_task = self._consumer_task
-        self._consumer_task = None
-
-        await self._close_consumer_task(consumer_task)
-
-        broker_channel = self._broker_channel
-        connection = self._connection
-
+    async def _close_transport(self) -> None:
+        broker_channel, self._broker_channel = self._broker_channel, None
+        connection, self._connection = self._connection, None
         self._broker_queue = None
-        self._broker_channel = None
-        self._connection = None
-
         try:
             if broker_channel is not None:
                 await broker_channel.close()

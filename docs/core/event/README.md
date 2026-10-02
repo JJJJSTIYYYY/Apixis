@@ -1,16 +1,16 @@
-# Event API
+# 事件 API
 
 事件 API 负责创建、发布、路由和处理 `ApixEvent`。常用接口可直接从 `apixis` 导入。
 
-## Core lifecycle
+## 共享事件系统
 
 ### `await start_core()`
 
-启动 event core 后台的消费者任务，该方法只发出启动命令，不保证返回时启动已完成。若重复调用此接口，接口检测到启动命令已成功发出后立即返回。
+唤起共享 event core。已运行时重复调用不会重复启动；返回不表示后台消费者已开始处理事件，也不表示已发布事件处理完成。启动连接时发生的异常会传播给调用方。
 
 共享 core 只构建一次，后续调用复用同一组 registry、pipe、handler registry 和 event loop。
 
-消费者任务退出（包括被直接取消）后会清除其启动状态，后续 getter 或 `start_core()` 可在同一个 asyncio loop 内重新发起启动。此行为不承诺跨 asyncio loop 复用已有队列或连接。
+本地消费者任务退出（包括被直接取消），或远程 mailbox 消费/转发任务退出后，core 不再报告已启动，后续 getter 或 `start_core()` 可在同一个 asyncio loop 内重新发起启动。此行为不承诺跨 asyncio loop 复用已有队列或连接。
 
 ```python
 from apixis import start_core
@@ -34,7 +34,7 @@ await start_core()
 - `await aget_handler_registry()`
 - `await aget_event_loop()`
 
-异步 getter，效果和同步接口维持一致。
+异步 getter 以 `await` 方式唤起并返回同一组共享组件，不等待已发布事件处理完成。
 
 ## `EventType`
 
@@ -55,7 +55,7 @@ from apixis import EventType
 
 ## `ApixEvent`
 
-```python
+```text
 ApixEvent(
     event_id: str,
     event_type: EventType,
@@ -67,6 +67,8 @@ ApixEvent(
     error_stack: list[ApixEventError]
 )
 ```
+
+`accepted` 默认为 `False`，`seen` 和 `error_stack` 各自默认为独立的空列表。
 
 主要字段：
 
@@ -111,7 +113,9 @@ await pipe.post_event(
 await pipe.join()
 ```
 
-`post_event()` 会创建 `ApixEvent` 并放入指定 channel。
+`post_event()` 会创建 `ApixEvent` 并放入指定 channel；本地队列满时等待空位。
+
+`pipe.join()` 等待队列项目完成交接，不等待 handler 执行结束。需要等待业务结果时，由处理器通过应用自己的结果对象或信号通知调用方，完整示例见[快速开始](../../quickstart.md)。
 
 ## `ApixEventPipe` 常用接口
 
@@ -164,16 +168,37 @@ unsubscribe("observe_job")
 - `is_registered(name)`：检查是否注册；
 - `get_unmatched_subscriptions(name)`：返回当前尚未观察到匹配事件名的订阅模式。
 
-## Event registry
+## 已观察到的事件名
 
-`ApixEventRegistry` 只记录本地运行时实际观察到的精确事件名，不持有事件对象，也不参与 dispatch。
+`ApixEventRegistry` 可查询本地已经观察到的精确事件名；它不保存事件内容，也不能用于查询某个事件是否处理完成。
 
 ```python
+from apixis import get_event_registry
+
 registry = get_event_registry()
 seen = registry.get_registered_events()  # frozenset[str]
 registry.clear()
 ```
 
-## 死锁风险
+## 在 handler 内发布和等待
 
-若一个事件 handler 依赖后续事件的上下文或处理结果，不推荐使用在前置事件的 handler 中等待一个 future，在后续事件的 handler 中 set_result，在并发量达到背压阈值时，容易由于前置事件 handler 被挂起、后续事件无法被处理而出现死锁。
+在 handler 内发布后续事件，优先使用 `pipe.post_event()`。它会在等待发布期间让出当前事件的调度容量。
+
+若 handler 等待另一个事件的处理结果，在并发容量耗尽时可能相互阻塞。优先将后续逻辑放到结果事件的订阅处理器中，避免把整条业务流程串成相互等待的 handler。图中的嵌套 `invoke()` 和 `interrupt()` 已提供相应的等待行为，见[图 API](../graph/README.md)。
+
+## 暂停消费与关闭通道
+
+应用入口可以显式管理共享组件：
+
+```python
+from apixis import get_event_loop, get_event_pipe
+
+event_loop = get_event_loop()
+pipe = get_event_pipe()
+await event_loop.stop()
+await pipe.stop()
+```
+
+`event_loop.stop()` 暂停取出新事件，保留队列和待分发事件；已经启动的前台处理和后台任务继续运行，停止接口不会等待它们完成。关闭应用前，应先等待应用自身需要完成的业务工作。`pipe.stop()` 的远程连接和消息保留行为见[事件通道](./channels.md)。
+
+[处理器](./handlers.md) · [事件通道](./channels.md) · [文档首页](../../README.md)

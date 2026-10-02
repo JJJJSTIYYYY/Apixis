@@ -1,8 +1,8 @@
-# Event handlers
+# 事件处理器
 
 ## `@subscribe(...)`
 
-```python
+```text
 subscribe(
     *event_names: str,
     exist_ok: bool = True,
@@ -44,17 +44,15 @@ async def observe(event):
 
 设置 `exist_ok=False` 时，同名注册会抛出 `EventHandlerAlreadyRegisteredError`。
 
-消费者取出事件时，会按当时的订阅、过滤条件和顺序生成 handler **引用列表**，随后才等待调度容量。此事件的前台执行、后台任务和取消通知都使用这份列表，不再查询 registry 或重新匹配。后续新增、注销、替换注册或调整排序，只影响之后取出的事件；暂停并重启消费者也不会重新解析已取出事件的列表。
+事件从队列取出时确定它使用的 handler 及执行顺序。之后的新增、注销、同名替换或排序调整，只影响后续取出的事件；已取出的事件仍使用原来的 handler，即使它尚未开始执行。
 
-例如，一个事件已取出并捕获了后台 handler A，随后同名注册被前台 handler B 替换：这个事件仍调用 A；之后取出的事件使用 B，并按前台方式执行。
-
-列表保存的是实例引用，不复制 handler 本身。直接修改已捕获实例的 callback 或执行选项（包括重新注册同一个实例时修改这些选项）仍会被观察到。
+直接修改同一个 handler 实例的 callback 或执行选项，仍可能影响已经取出的事件。需要保留旧事件的处理行为时，使用新的 handler 实例进行替换。
 
 ## 排序
 
 ### `priority`
 
-数值越大，排序越靠前。
+数值越大，排序越靠前；相同优先级按注册顺序执行。`subscribe()` 接受 `[-9999, 9999]` 范围内的有限数值，未指定排序参数时默认优先级为 `1`。
 
 ```python
 @subscribe("order.*", priority=100)
@@ -77,7 +75,7 @@ async def enrich(event):
 
 边界的一侧可以为 `None`，但不能两侧同时为 `None`。`between_handlers` 具体插入规则如下：
 
-- (left, right)：插入 left 与 right 之间，若其间已有 handler，则插入已由 handler 之后（即 right 前）
+- (left, right)：插入 left 与 right 之间，若其间已有 handler，则插入已有 handler 之后（即 right 前）
 - (left, None)：插入 left 之后
 - (None, right)：插入 right 之前
 - (None, None)：抛出 ValueError
@@ -126,11 +124,11 @@ handler.register("work.*")
 
 ### `time_out`
 
-正数表示每个被调用 callback 的超时时间。`None` 或非正值表示不限制。
+正数表示每个被调用 callback 的超时时间，单位秒。创建 handler 时 `None` 或非正值表示不限制；通过 `subscribe()` 配置已有 handler 实例时，`None` 保留原设置，非正值显式取消超时限制。
 
 ### `background`
 
-后台 handler，与前台 dispatch 解耦。后台 handler 的错误仍会记录日志并触发自身 `on_error`，但不会写入事件 `error_stack`，也不会阻断其他 handler。
+`background=True` 时，后续 handler 不等待此 handler 完成。后台 handler 的错误仍会记录日志并触发自身 `on_error`，但不会写入事件 `error_stack`，也不会阻断其他 handler。
 
 ## Accept
 
@@ -178,3 +176,5 @@ handler.unregister()
 ```
 
 这些实例方法与 `subscribe()` / `unsubscribe()` 使用同一套 registry 语义。
+
+[事件 API](./README.md) · [文档首页](../../README.md)

@@ -1,69 +1,32 @@
-# APIXIS 接口文档
+# APIXIS 使用文档
 
-本文档面向通过 PyPI 安装 APIXIS 的调用方，接口以当前 `apixis` / `apixis.core` 公共导出为准。除非调试框架本身，不建议依赖以下划线开头的属性或模块内部对象。
+APIXIS 为 Python `asyncio` 应用提供事件处理和图执行能力。应用可以单独使用事件系统，也可以通过图组织多步、并发和可中断的任务。
 
-## 安装与运行环境
+要求 Python 3.12 或更高版本。安装后，推荐直接从 `apixis` 导入公开接口：
 
 ```bash
 pip install apixis
 ```
 
-- Python：`>= 3.12`
-- 异步运行时：`asyncio`
-- 推荐直接从 `apixis` 导入稳定公共接口。
+## 从这里开始
 
-从源码开发、构建发行包和上传 PyPI 请参阅[打包与发布](./releasing.md)。
+1. [快速开始](./quickstart.md)：运行第一个图和事件订阅示例。
+2. [接口概览](./core/README.md)：选择事件、图或工具接口。
+3. [配置](./core/config/README.md)：调整队列容量、并发限制、日志和远程通道。
 
-## API 导航
+## 按任务查阅
 
-| 模块 | 用途 |
+| 你想做什么 | 文档 |
 | --- | --- |
-| [Event API](./core/event/README.md) | 事件发布、订阅、handler、event core 生命周期 |
-| [Event handlers](./core/event/handlers.md) | 排序、通配符、错误/accept/cancel 回调 |
-| [Event channels](./core/event/channels.md) | builtin、gateway、Kafka、RabbitMQ 通道 |
-| [Graph API](./core/graph/README.md) | 构图、执行、stream、context、interrupt |
-| [Graph state & commands](./core/graph/state.md) | `Command`、`AutoMerge`、`KeepRef`、`Reset`、并发下一跳 |
-| [Utilities](./core/utils/README.md) | 公共异常、logger、生命周期工具 |
-| [Configuration](./core/config/README.md) | 运行时配置项及默认值 |
+| 发布事件、管理共享事件系统 | [事件 API](./core/event/README.md) |
+| 订阅、排序、替换 handler，处理错误与取消 | [事件处理器](./core/event/handlers.md) |
+| 使用本地队列或跨节点收发事件 | [事件通道](./core/event/channels.md) |
+| 构建图、执行、流式输出、快照恢复和中断 | [图 API](./core/graph/README.md) |
+| 更新状态、选择下一跳和组织并发分支 | [图状态与 Command](./core/graph/state.md) |
+| 捕获框架异常、输出和保存日志 | [异常与日志](./core/utils/README.md) |
 
-## 最小图调用
+## 阅读约定
 
-```python
-from apixis import GraphManager
+[快速开始](./quickstart.md)中的示例可以保存为 Python 文件直接运行。接口页中的短示例省略了应用入口；含 `await` 的代码应放在异步函数内，并在运行中的 asyncio 事件循环中调用。
 
-
-def step(state: dict) -> dict:
-    return {"count": state.get("count", 0) + 1}
-
-
-graph = (
-    GraphManager()
-    .add_node(step)
-    .compile_graph(entry_point="step")
-)
-
-result = await graph.invoke({"count": 0})
-graph.decompose()
-```
-
-## 最小事件调用
-
-```python
-from apixis import EventType, get_event_pipe, start_core, subscribe
-
-
-@subscribe("app.*")
-async def observe(event):
-    print(event.event_name, event.context)
-
-
-await start_core()
-await get_event_pipe().post_event(
-    event_type=EventType.INFO,
-    event_name="app.started",
-    context={"ready": True},
-)
-await get_event_pipe().join()
-```
-
-`get_*()` 与 `aget_*()`：它们会返回共享组件，并在已有 event loop 时触发后台启动，但不保证启动已经完成。其获取到的组件接口可用性均不依赖是否启动完成。
+共享 event core 应在同一个 asyncio 事件循环中使用。以下划线开头的属性和模块内部对象不属于应用应依赖的接口。

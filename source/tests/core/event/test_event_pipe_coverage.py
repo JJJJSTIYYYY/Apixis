@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from aiokafka import TopicPartition
 
 from apixis.core.event import get_event_registry
 
@@ -97,6 +98,7 @@ class FakeKafkaConsumer:
         self.items = list(type(self).records)
         self.started = False
         self.stopped = False
+        self.commit = AsyncMock()
         type(self).instances.append(self)
 
     async def start(self):
@@ -110,7 +112,7 @@ class FakeKafkaConsumer:
 
     async def __anext__(self):
         if not self.items:
-            raise StopAsyncIteration
+            await asyncio.Future()
         return self.items.pop(0)
 
 
@@ -132,9 +134,9 @@ class TestKafkaChannelLifecycle:
         failed.start = AsyncMock(side_effect=error)
         failed.stop = AsyncMock()
         ready = FakeKafkaConsumer()
-        ready.items = [SimpleNamespace(value=event_to_json(event))]
+        ready.items = [SimpleNamespace(value=event_to_json(event), topic="mailbox.node-a", partition=0, offset=0)]
         factory = MagicMock(side_effect=[failed, ready])
-        monkeypatch.setitem(sys.modules, "aiokafka", SimpleNamespace(AIOKafkaConsumer=factory))
+        monkeypatch.setitem(sys.modules, "aiokafka", SimpleNamespace(AIOKafkaConsumer=factory, TopicPartition=TopicPartition))
         channel = KafkaChannel(
             mq_id="node-a", bootstrap_servers="broker:9092",
             topic_prefix="mailbox", group_id_prefix="nodes",
@@ -158,12 +160,12 @@ class TestKafkaChannelLifecycle:
     @pytest.mark.asyncio
     async def test_start_consume_idempotence_and_close(self, monkeypatch):
         event = make_event()
-        FakeKafkaConsumer.records = [SimpleNamespace(value=event_to_json(event))]
+        FakeKafkaConsumer.records = [SimpleNamespace(value=event_to_json(event), topic="mailbox.node-a", partition=0, offset=0)]
         FakeKafkaConsumer.instances.clear()
         monkeypatch.setitem(
             sys.modules,
             "aiokafka",
-            SimpleNamespace(AIOKafkaConsumer=FakeKafkaConsumer),
+            SimpleNamespace(AIOKafkaConsumer=FakeKafkaConsumer, TopicPartition=TopicPartition),
         )
         channel = KafkaChannel(
             mq_id="node-a",
@@ -173,12 +175,12 @@ class TestKafkaChannelLifecycle:
         )
 
         await channel.start()
-        await channel._consumer_task
+        received = await asyncio.wait_for(channel.get(), 1)
         await channel.start()
 
         consumer = FakeKafkaConsumer.instances[-1]
         assert consumer.started is True
-        assert (await channel.get()).event_id == event.event_id
+        assert received.event_id == event.event_id
         channel.task_done()
         await channel.close()
         assert consumer.stopped is True
@@ -216,7 +218,7 @@ class FakeMessage:
     def __init__(self, body):
         self.body = body
 
-    def process(self):
+    def process(self, *, requeue=False):
         return AsyncContext()
 
 
@@ -235,7 +237,7 @@ class FakeQueueIterator:
 
     async def __anext__(self):
         if not self.messages:
-            raise StopAsyncIteration
+            await asyncio.Future()
         return self.messages.pop(0)
 
 
@@ -355,12 +357,12 @@ class TestRabbitChannelLifecycle:
         )
 
         await channel.start()
-        await channel._consumer_task
+        received = await asyncio.wait_for(channel.get(), 1)
         await channel.start()
 
         assert broker_channel.qos == {"prefetch_count": 7}
         assert queue.bind_calls == [("exchange", "node-a")]
-        assert (await channel.get()).event_id == event.event_id
+        assert received.event_id == event.event_id
         channel.task_done()
         await channel.close()
         assert broker_channel.closed is True

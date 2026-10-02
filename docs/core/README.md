@@ -1,39 +1,39 @@
-# Core API
+# 接口概览
 
-`apixis.core` 汇总导出 Event、Graph 和 Utils 的公共接口；顶层 `apixis` 再次导出同一组接口，并额外提供 `VERSION` 和 `__version__`（两者与发行包版本一致）。
-
-推荐应用代码直接使用：
+推荐应用代码直接从 `apixis` 导入接口。`apixis.core` 提供相同的核心接口；顶层还提供 `VERSION` 和 `__version__` 供查询版本。
 
 ```python
-from apixis import GraphManager, subscribe
+from apixis import GraphManager, EventType, subscribe, __version__
 ```
 
-而不是依赖内部文件路径。
+## 事件系统
 
-## Event
+| 接口 | 用途 |
+| --- | --- |
+| `start_core()`、`get_*()`、`aget_*()` | 唤起并访问共享事件系统 |
+| `ApixEvent`、`EventType` | 表示事件及其类别 |
+| `subscribe()`、`unsubscribe()`、`ApixEventHandler` | 注册、配置与注销处理器 |
+| `ApixEventPipe` | 发布本地事件、跨节点发送、检查队列 |
+| `BuiltinChannel`、`GatewayChannel`、`KafkaChannel`、`RabbitMQChannel` | 配置事件收发通道 |
 
-事件系统负责：
+详见[事件 API](./event/README.md)、[处理器](./event/handlers.md)和[通道](./event/channels.md)。
 
-- 发布与消费 `ApixEvent`；
-- 按事件名或 glob 通配符匹配 handler；
-- handler 排序、accept、错误与取消通知；
-- 本地队列与可选远程通道；
-- 全局共享 event core 生命周期。
+## 图执行
 
-详见 [Event API](./event/README.md)。
+| 接口 | 用途 |
+| --- | --- |
+| `GraphManager`、`NodeGraph` | 注册节点、编译和执行图 |
+| `Command` | 更新状态并指定下一跳 |
+| `AutoMerge`、`KeepRef`、`Reset` | 声明状态合并和复制行为 |
+| `GraphContext` | 查看执行状态、保存快照与恢复 |
+| `get_stream_writer()` | 从节点发送流式数据 |
+| `interrupt()`、`Block` | 等待外部输入并恢复执行 |
 
-## Graph
+详见[图 API](./graph/README.md)和[状态与 Command](./graph/state.md)。
 
-图系统负责：
+## 配置与工具
 
-- 使用 `GraphManager` 构建并编译 `NodeGraph`；
-- 通过 `Command` 更新 state 和选择下一跳；
-- 并行节点/并行下一跳；
-- `GraphContext`、快照恢复、stream；
-- `interrupt()` / `Block` 中断交互。
+- [配置](./config/README.md)：队列、并发、日志及远程服务参数。
+- [异常与日志](./utils/README.md)：框架异常和日志接口。
 
-详见 [Graph API](./graph/README.md)。
-
-## API 稳定边界
-
-公共 API 以各模块 `__all__` 为准。测试、诊断或框架开发中虽然可以访问内部属性，但 PyPI 使用方不应把 `_started`、内部 queue、registry 字典等实现细节作为兼容契约。
+[返回文档首页](../README.md)

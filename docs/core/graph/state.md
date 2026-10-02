@@ -1,4 +1,4 @@
-# Graph state & commands
+# 图状态与 Command
 
 ## 节点返回值
 
@@ -22,7 +22,7 @@ def step(state):
 
 ## `Command`
 
-```python
+```text
 Command(
     update: dict = {},
     goto: str | list[str] | None = None,
@@ -105,3 +105,5 @@ Command(goto=["a", "b"])
 ```
 
 这表示下一批次并发执行 `a`、`b`。结果应用顺序仍按列表顺序确定。
+
+[图 API](./README.md) · [文档首页](../../README.md)

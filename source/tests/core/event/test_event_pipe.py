@@ -401,11 +401,11 @@ class TestApixEventPipeLifecycle:
         await pipe.stop()
 
     @pytest.mark.asyncio
-    async def test_start_broadcasts_then_fetches_and_stop_broadcasts(self):
+    async def test_start_fetches_then_broadcasts_and_stop_broadcasts(self):
         client = FakeClient(
             [
-                response(200),
                 response(200, {"nodes": [{"tag": "B", "node_id": "node-b", "status": "ok"}]}),
+                response(200),
                 response(200),
             ]
         )
@@ -422,8 +422,8 @@ class TestApixEventPipeLifecycle:
         assert pipe.nodes["node-b"]["status"] == "ok"
         await pipe.stop()
 
-        assert [entry[0] for entry in client.requests] == ["POST", "GET", "POST"]
-        assert json.loads(client.requests[0][2]["content"])["event"]["event_name"] == "apixis.node.online"
+        assert [entry[0] for entry in client.requests] == ["GET", "POST", "POST"]
+        assert json.loads(client.requests[1][2]["content"])["event"]["event_name"] == "apixis.node.online"
         assert json.loads(client.requests[2][2]["content"])["event"]["event_name"] == "apixis.node.offline"
 
     @pytest.mark.asyncio

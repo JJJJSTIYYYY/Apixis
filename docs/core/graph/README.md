@@ -1,4 +1,4 @@
-# Graph API
+# 图 API
 
 Graph API 的主要入口是 `GraphManager`。它负责注册节点与 state 策略，`compile_graph()` 返回可执行的 `NodeGraph`。
 
@@ -62,9 +62,7 @@ def choose(state):
 `max_steps` 按节点执行批次计数，并发步也只计一步；完成图不占额外步数。
 `no_snapshot=True` 关闭执行前快照。
 
-新建 context 时，目标设置为图的入口；执行期间始终以 context 的 `target_node_name` 为准。
-恢复 context 时保留快照中的目标和步数，不重新选择入口。
-第一条 dispatch 直接执行入口节点，没有额外的开始事件。使用 `goto=None` / `[]` 结束分支。
+新建 context 从图的入口开始；恢复 context 从快照记录的目标与步数继续。节点返回 `goto=None` / `[]` 时结束当前分支。
 
 ## 执行
 
@@ -113,7 +111,7 @@ writer.write({"progress": 0.5})
 context = graph.create_context(initial_state)
 ```
 
-新建或恢复的 context 处于 `pending`，图不会持有它。`invoke()` / `stream()` 开始执行后，图只管理 `running` context；完成、失败或中止时立即解除管理。context 的 `graph_id` 归属不变，不能跨图使用。
+新建或恢复的 context 处于 `pending`，开始执行后为 `running`，结束后为 `finished`、`failed` 或 `aborted`。context 属于创建它的图，不能跨图使用，也不能重复或并发执行同一个已接纳的 context；需要重新执行时，创建或恢复新的 context。
 
 常用属性：
 
@@ -182,16 +180,16 @@ async def on_interrupted(block):
     block.resolve("yes")
 ```
 
-如果图发送了 `Block` 但没有可执行的 interruption hook，默认 handler 会抛出 `BlockHookNotRegisteredError`，避免 invocation 永久挂起。
-如果 hook 正常返回后，`Block` 仍未完成且没有调用 `block.accept()`，默认 handler 会抛出 `BlockNotResolvedError`。需要暂存 Block、稍后由外部响应时，必须在 hook 返回前调用 `block.accept()`；它只声明接管，不会恢复图执行，仍需稍后调用 `resolve()`、`fail()` 或 `cancel()`。hook 自身抛出的异常会传播到等待中断的节点。
+如果图发送了 `Block` 但没有可执行的 interruption hook，调用会因 `BlockHookNotRegisteredError` 失败。
+如果 hook 正常返回后，`Block` 仍未完成且没有调用 `block.accept()`，调用会因 `BlockNotResolvedError` 失败。需要暂存 Block、稍后由外部响应时，必须在 hook 返回前调用 `block.accept()`；它只声明接管，不会恢复图执行，仍需稍后调用 `resolve()`、`fail()` 或 `cancel()`。hook 自身抛出的异常会传播到等待中断的节点。
 
 `Block` 常用接口：
 
 ```python
-block.resolve(value) # 向图内 interrupt 中断处回传结果
-block.fail(error) # 向图内 interrupt 中断处回传 error 并中断图的后续调度
-block.cancel() # 仅中断图的后续调度
-block.accept() # 标记 block 已被处理，可用于 block 暂存后的异步处理逻辑
+block.resolve(value)  # Return a value to interrupt().
+block.fail(error)  # Fail the interrupted operation.
+block.cancel()  # Cancel the interrupted operation.
+block.accept()  # Take ownership for a later response.
 ```
 
 ## 生命周期
@@ -212,3 +210,5 @@ with graph:
 ```
 
 上下文管理器退出时自动分解图。
+
+[状态与 Command](./state.md) · [文档首页](../../README.md)

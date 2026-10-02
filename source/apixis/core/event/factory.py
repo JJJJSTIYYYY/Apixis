@@ -30,7 +30,7 @@ class EventCore:
     def started(self) -> bool:
         if not self.event_pipe or not self.event_loop:
             return False
-        if self.event_pipe._started and self.event_loop._started:
+        if self.event_pipe.is_running and self.event_loop._started:
             return True
         return False
 

@@ -47,8 +47,11 @@ from apixis.core.event.pipe_channel import (
     ReadWriteEventChannel,
     UnavailableMailboxChannel,
     WritableEventChannel,
+    _complete_cleanup,
 )
-from apixis.core.utils.exception import EventChannelPermissionError
+from apixis.core.utils.exception import (
+    EventChannelPermissionError, EventChannelUnavailableError,
+)
 from apixis.core.utils.logger import logger
 
 
@@ -133,6 +136,19 @@ class ApixEventPipe:
         raise ValueError(
             "EVENT_CHANNEL.type must be either 'kafka' or 'rabbitmq', "
             f"got {channel_type!r}."
+        )
+
+    @property
+    def is_running(self) -> bool:
+        """Return whether this pipe's receiving tasks are still available."""
+        if not self._started:
+            return False
+        if not self.remote_enabled:
+            return True
+        return (
+            self.get_channel("mailbox").is_running
+            and self._mailbox_forwarder is not None
+            and not self._mailbox_forwarder.done()
         )
 
     @property
@@ -329,50 +345,72 @@ class ApixEventPipe:
             self._pending_mailbox_event = None
             mailbox.task_done()
 
+    def _on_forwarder_done(self, task: asyncio.Task[None]) -> None:
+        """Report forwarding failures immediately; health checks detect task exit."""
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logger.error(f"Mailbox forwarding failed: {type(error).__name__}: {error}")
+
     async def start(self) -> None:
-        """Start channels once, waiting for any previous shutdown to finish."""
+        """Start once, rebuilding receivers that have exited since startup."""
         async with self._lifecycle_lock:
-            if self._started:
+            if self.is_running:
                 return
+            if self._started:
+                if self._mailbox_forwarder is not None and self._mailbox_forwarder.done():
+                    # Its failure has already been reported. Retiring a dead worker
+                    # must not make the first recovery attempt fail again.
+                    if not self._mailbox_forwarder.cancelled():
+                        self._mailbox_forwarder.exception()
+                    self._mailbox_forwarder = None
+                await self._stop()
+            online_attempted = False
             try:
                 await self.get_channel("builtin").start()
                 if self.remote_enabled:
-                    await self.get_channel("mailtruck").start()
+                    mailtruck = self.get_channel("mailtruck")
+                    await mailtruck.start()
                     await self.get_channel("mailbox").start()
                     self._mailbox_forwarder = asyncio.create_task(
                         self._forward_mailbox(),
                         name=f"mailbox-forwarder-{self.mq_id}",
                     )
-                    await self.broadcast(self._lifecycle_event(online=True))
-                    mailtruck = self.get_channel("mailtruck")
+                    self._mailbox_forwarder.add_done_callback(self._on_forwarder_done)
                     if hasattr(mailtruck, "fetch_nodes"):
                         self._update_nodes(
                             await mailtruck.fetch_nodes()  # type: ignore[attr-defined]
                         )
+                    # Publish availability last. Even a failed/cancelled HTTP request
+                    # may already have reached the gateway and needs compensation.
+                    online_attempted = True
+                    await self.broadcast(self._lifecycle_event(online=True))
+                self._started = True
+                if not self.is_running:
+                    raise EventChannelUnavailableError("Mailbox receiver exited during startup.")
             except BaseException:
-                await self._close_channels()
+                self._started = False
+                errors = await self._close_channels(announce_offline=online_attempted)
+                for error in errors:
+                    logger.error(f"Startup rollback failed: {type(error).__name__}: {error}")
                 raise
-            self._started = True
 
-    async def _close_channels(self) -> list[BaseException]:
-        """Finish cleanup before propagating cancellation, including repeat cancels."""
-        cleanup = asyncio.create_task(
-            self._close_resources(), name=f"pipe-cleanup-{self.mq_id}",
+    async def _close_channels(self, *, announce_offline: bool = False) -> list[BaseException]:
+        """Finish rollback and cleanup before propagating repeated cancellation."""
+        return await _complete_cleanup(
+            self._close_resources(announce_offline=announce_offline),
+            name=f"pipe-cleanup-{self.mq_id}",
         )
-        cancellation: asyncio.CancelledError | None = None
-        while not cleanup.done():
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError as exc:
-                cancellation = exc
-        errors = cleanup.result()
-        if cancellation is not None:
-            raise cancellation
-        return errors
 
-    async def _close_resources(self) -> list[BaseException]:
+    async def _close_resources(self, *, announce_offline: bool = False) -> list[BaseException]:
         """Stop forwarding and close every channel, collecting individual failures."""
         errors: list[BaseException] = []
+        if announce_offline:
+            try:
+                await self.broadcast(self._lifecycle_event(online=False))
+            except BaseException as exc:
+                # A failed compensation must not prevent transport cleanup.
+                errors.append(exc)
         if self._mailbox_forwarder is not None:
             self._mailbox_forwarder.cancel()
             forwarder_result = await asyncio.gather(
@@ -406,20 +444,24 @@ class ApixEventPipe:
         and stop() calls wait for that cleanup rather than reopening resources.
         """
         async with self._lifecycle_lock:
-            if not self._started:
-                return
-            self._started = False
-            errors: list[BaseException] = []
-            try:
-                if self.remote_enabled:
-                    try:
-                        await self.broadcast(self._lifecycle_event(online=False))
-                    except Exception as exc:
-                        errors.append(exc)
-            finally:
-                errors.extend(await self._close_channels())
-            if errors:
-                raise errors[0]
+            await self._stop()
+
+    async def _stop(self) -> None:
+        """Retire an owned session, including one with a failed receiver."""
+        if not self._started:
+            return
+        self._started = False
+        errors: list[BaseException] = []
+        try:
+            if self.remote_enabled:
+                try:
+                    await self.broadcast(self._lifecycle_event(online=False))
+                except Exception as exc:
+                    errors.append(exc)
+        finally:
+            errors.extend(await self._close_channels())
+        if errors:
+            raise errors[0]
 
 
 __all__ = ["ApixEventPipe"]
