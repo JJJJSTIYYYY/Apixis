@@ -6,10 +6,7 @@ from typing import Annotated, TypedDict
 import pytest
 
 from apixis.core.graph.base import _END
-import pytest_asyncio
 
-from apixis.core.event.factory import get_event_loop
-from apixis.core.event.factory import get_event_pipe
 from apixis.core.graph import AutoMerge, Command, GraphManager
 from apixis.core.utils.exception import InvalidContextError
 from apixis.core.graph.context import get_stream_writer
@@ -25,14 +22,6 @@ class AbortState(TypedDict, total=False):
     route: str
     slow_result: str
     final_result: str
-
-
-@pytest_asyncio.fixture(autouse=True, scope="module", loop_scope="session")
-async def clean_graph_runtime_after_module():
-    """Leave the shared event runtime clean for other integration modules."""
-    yield
-    await get_event_loop().stop()
-    await get_event_pipe().clear()
 
 
 async def test_abort_invoke_returns_last_completed_snapshot_and_stops_routing():

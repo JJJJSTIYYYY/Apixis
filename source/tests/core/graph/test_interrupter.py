@@ -6,14 +6,9 @@ import time
 import pytest
 
 from apixis.core.graph import Command
-import pytest_asyncio
 
 from apixis.core.event import ApixEvent, EventType, unsubscribe
-from apixis.core.event.factory import (
-    get_event_loop,
-    get_handler_registry,
-    get_event_pipe,
-)
+from apixis.core.event.factory import get_handler_registry
 from apixis.core.graph import GLOBALNS, GraphManager
 from apixis.core.graph.context import apix_graph_context
 from apixis.core.graph.interrupter import Block, interrupt, interrupted_hook
@@ -21,14 +16,6 @@ from apixis.core.graph.utils.namespace import get_graph_interrupted_name
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
-
-
-@pytest_asyncio.fixture(autouse=True, scope="module", loop_scope="session")
-async def stop_event_loop_after_module():
-    """Leave the process-global event worker clean for later test modules."""
-    yield
-    await get_event_loop().stop()
-    await get_event_pipe().clear()
 
 
 def _block(*, data=None) -> Block:

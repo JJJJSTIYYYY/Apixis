@@ -27,20 +27,6 @@ from apixis.core.utils.exception import (
 from apixis.core.config.core_config import EVENT_LOOP_BACKPRESSURE
 
 
-@pytest.fixture(autouse=True)
-def reset_global_handler_registry():
-    """Isolate the process-global singleton for every registry test."""
-    get_handler_registry().registry.clear()
-    get_handler_registry().priority_buckets.clear()
-    get_handler_registry().cached_chain.clear()
-    get_handler_registry()._register_order = 0
-    yield
-    get_handler_registry().registry.clear()
-    get_handler_registry().priority_buckets.clear()
-    get_handler_registry().cached_chain.clear()
-    get_handler_registry()._register_order = 0
-
-
 def make_entry(
     name: str,
     *,

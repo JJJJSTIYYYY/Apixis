@@ -6,10 +6,7 @@ from typing import Annotated, Any, TypedDict
 import pytest
 
 from apixis.core.graph.base import _END
-import pytest_asyncio
 
-from apixis.core.event.factory import get_event_loop
-from apixis.core.event.factory import get_event_pipe
 from apixis.core.graph import (
     AutoMerge,
     Command,
@@ -20,17 +17,6 @@ from apixis.core.graph import (
 )
 from apixis.core.graph import copy_state, parse_state_schema
 from apixis.core.graph.context import noop_stream_writer
-
-
-@pytest_asyncio.fixture(
-    autouse=True,
-    scope="module",
-    loop_scope="session",
-)
-async def stop_event_runtime_after_module():
-    yield
-    await get_event_loop().stop()
-    await get_event_pipe().clear()
 
 
 class MutableResource:

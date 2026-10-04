@@ -96,7 +96,7 @@ asyncio.run(master())
 
 # APIXIS
 
-[English] | [中文](#chinese)
+English | [中文](#chinese)
 
 Event-driven graph orchestration for Python asyncio applications.
 

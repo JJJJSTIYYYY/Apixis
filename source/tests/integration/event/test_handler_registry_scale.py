@@ -42,7 +42,6 @@ def _make_handler(
     return entry
 
 
-
 def _observe_event(event_name: str, event_index: int) -> None:
     """Record one exact event name without retaining its event object."""
     get_event_registry().record_event(
@@ -54,24 +53,6 @@ def _observe_event(event_name: str, event_index: int) -> None:
             timestamp=0,
         )
     )
-
-
-@pytest.fixture(autouse=True)
-def reset_event_registries():
-    """Isolate the process-global registries around every scale test."""
-    get_handler_registry().registry.clear()
-    get_handler_registry().priority_buckets.clear()
-    get_handler_registry().cached_chain.clear()
-    get_handler_registry()._register_order = 0
-    get_event_registry().clear()
-
-    yield
-
-    get_handler_registry().registry.clear()
-    get_handler_registry().priority_buckets.clear()
-    get_handler_registry().cached_chain.clear()
-    get_handler_registry()._register_order = 0
-    get_event_registry().clear()
 
 
 def test_twenty_thousand_event_glob_matrix_resolves_exact_ordered_chains():
@@ -246,7 +227,7 @@ def test_thirty_thousand_observed_events_keep_handler_chains_lazy():
 
 
 @pytest.mark.asyncio
-async def test_two_thousand_four_hundred_events_dispatch_through_glob_handlers():
+async def test_two_thousand_four_hundred_events_dispatch_through_glob_handlers(wait_for_dispatch):
     """Publish and execute thousands of events through the complete runtime."""
     call_counts: Counter[str] = Counter()
 
@@ -310,7 +291,7 @@ async def test_two_thousand_four_hundred_events_dispatch_through_glob_handlers()
                 event_name = event_pattern.format(tenant=tenant_id)
                 event = ApixEvent(event_name, EventType.WORKFLOW, event_name, [], 0)
                 await pipe.put(event)
-                await asyncio.wait_for(pipe.join(), 1)
+                await wait_for_dispatch(event_loop)
                 assert event.accepted is False
                 assert event.context == expected_trace
                 dispatched += 1

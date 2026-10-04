@@ -18,7 +18,7 @@ maintainers = [
     { name = "JJJJSTIYYYY", email = "wavejustiy@gmail.com" },
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Framework :: AsyncIO",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
@@ -71,3 +71,8 @@ addopts = "--import-mode=importlib"
 asyncio_mode = "auto"
 asyncio_default_test_loop_scope = "session"
 asyncio_default_fixture_loop_scope = "session"
+markers = [
+    "unit: focused component contracts and regressions",
+    "integration: interactions through the complete event and graph runtime",
+    "performance: opt-in concurrent graph workloads and timing reports",
+]

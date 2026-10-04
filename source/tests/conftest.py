@@ -1,54 +1,78 @@
-"""Shared pytest isolation for process-global runtime registries."""
+"""Centralized isolation and dispatch synchronization for the shared runtime."""
 
 import asyncio
 
 import pytest
 import pytest_asyncio
 
-from apixis.core.event.factory import (
-    start_core,
-    get_handler_registry,
-    get_event_loop,
-    get_event_pipe,
-)
-from apixis.core.graph.base import GRAPH_DISPATCH, _namespace_graphs
+from apixis.core.event import factory
+from apixis.core.graph.base import _namespace_graphs
 
 
-def _clear_node_graph_listeners() -> None:
-    """Remove listeners registered by NodeGraph instances from prior tests."""
+def _clear_registries(core) -> None:
+    """Reset test-owned registrations only after their tasks have stopped."""
     for graph in tuple(_namespace_graphs.values()):
         graph.decompose()
     _namespace_graphs.clear()
-
-    handler_names = {
-        name
-        for name in get_handler_registry().registry
-        if name.startswith(f"{GRAPH_DISPATCH}_")
-    }
-    for handler_name in handler_names:
-        get_handler_registry().unregister_handler(handler_name)
-
-
-@pytest.fixture(autouse=True)
-def isolate_node_graph_listeners():
-    """Give every test a clean global NodeGraph listener namespace."""
-    _clear_node_graph_listeners()
-    yield
-    _clear_node_graph_listeners()
+    registry = core.handler_registry
+    registry.registry.clear()
+    registry.priority_buckets.clear()
+    registry.cached_chain.clear()
+    registry._register_order = 0
+    core.event_registry.clear()
 
 
 @pytest_asyncio.fixture(autouse=True, loop_scope="session")
-async def cleanup_event_runtime(isolate_node_graph_listeners):
-    """Release test-owned tasks explicitly now that stop only halts consumption."""
-    await start_core()
-    event_loop, event_pipe = get_event_loop(), get_event_pipe()
-    yield
-    # Reuse captured components so cleanup does not schedule a restart.
-    await event_loop.stop()
-    tasks = list(event_loop._dispatch_tasks | event_loop._background_handler_tasks)
-    for task in tasks:
-        task.cancel()
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-    await event_pipe.clear()
-    await event_pipe.stop()
+async def cleanup_event_runtime():
+    """Release test-owned tasks explicitly now that stop only halts consumption.
+
+    Keep all private runtime cleanup here. Tests may pause the consumer or
+    replace the factory; captured components keep teardown from waking it again.
+    """
+    core = factory._get_core()
+    _clear_registries(core)
+    await factory.start_core(core)
+    try:
+        yield
+    finally:
+        # Graph decomposition can schedule startup through public getters.
+        for graph in tuple(_namespace_graphs.values()):
+            graph.decompose()
+        if core.start_task is not None:
+            await asyncio.gather(core.start_task, return_exceptions=True)
+        loop, pipe = core.event_loop, core.event_pipe
+        await loop.stop()
+        tasks = tuple(loop._dispatch_tasks | loop._background_handler_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        # stop() preserves a dequeued event; isolation must acknowledge it too.
+        if loop._pending_dispatch is not None:
+            loop._pending_dispatch = None
+            pipe.task_done()
+        await pipe.clear()
+        await pipe.stop()
+        _clear_registries(core)
+
+
+@pytest.fixture
+def wait_for_dispatch():
+    """Wait for foreground work explicitly; pipe.join() only acknowledges dispatch.
+
+    Keep task inspection in this test helper instead of changing the public
+    join contract or relying on arbitrary delays in individual assertions.
+    Background handlers are deliberately excluded and need their own signals.
+    """
+    async def wait(event_loop):
+        async with asyncio.timeout(2):
+            while True:
+                await event_loop._event_pipe.join()
+                tasks = tuple(event_loop._dispatch_tasks)
+                if not tasks:
+                    return
+                await asyncio.gather(*tasks, return_exceptions=True)
+                # Finished tasks may still have queued capacity-release callbacks.
+                await asyncio.sleep(0)
+
+    return wait

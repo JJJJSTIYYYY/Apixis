@@ -26,6 +26,10 @@ jobs:
         run: uv sync --extra dev --locked --python '${{ matrix.python-version }}'
       - name: Run tests
         run: uv run --no-sync pytest
+      - name: Check graph performance workloads at a small scale
+        run: >-
+          uv run --no-sync pytest source/tests/performance --run-performance
+          --graph-count 32 --graph-nodes 8 --graph-repeats 1
       - name: Build wheel and source distribution
         run: uv run --no-sync python -m build
       - name: Check distribution metadata

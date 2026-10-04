@@ -5,10 +5,7 @@ import asyncio
 import pytest
 
 from apixis.core.graph import Command
-import pytest_asyncio
 
-from apixis.core.event.factory import get_event_loop
-from apixis.core.event.factory import get_event_pipe
 from apixis.core.graph import GraphManager
 from apixis.core.graph.context import get_stream_writer
 from apixis.core.graph.context.stream_writer import StreamChannel
@@ -16,14 +13,6 @@ from apixis.core.utils.exception import InvalidContextError
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
-
-
-@pytest_asyncio.fixture(autouse=True, scope="module", loop_scope="session")
-async def stop_event_loop_after_module():
-    """Stop the shared event worker after this module's tests finish."""
-    yield
-    await get_event_loop().stop()
-    await get_event_pipe().clear()
 
 
 async def _collect(graph, state):

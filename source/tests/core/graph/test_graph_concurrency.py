@@ -6,22 +6,12 @@ from typing import Annotated, TypedDict
 import pytest
 
 from apixis.core.graph.base import _END
-import pytest_asyncio
 
-from apixis.core.event.factory import get_event_loop, get_event_pipe
 from apixis.core.graph import AutoMerge, Command, GraphManager, ParallelNode
 from apixis.core.graph.context import GraphContext, get_graph_context
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
-
-
-@pytest_asyncio.fixture(autouse=True, scope="module", loop_scope="session")
-async def stop_event_loop_after_module():
-    """Stop the shared event worker after this module's tests finish."""
-    yield
-    await get_event_loop().stop()
-    await get_event_pipe().clear()
 
 
 class HistoryState(TypedDict, total=False):

@@ -30,7 +30,7 @@ from apixis.core.utils.exception import EventChannelPermissionError
 from apixis.core.event.handler_registry import ApixHandlerRegistry
 from apixis.core.config.core_config import EVENT_LOOP_BACKPRESSURE
 
-from .test_event_pipe import FakeClient, make_event, make_gateway, response
+from .helpers import FakeClient, make_event, make_gateway, response
 
 
 class TestSmallUncoveredContracts:

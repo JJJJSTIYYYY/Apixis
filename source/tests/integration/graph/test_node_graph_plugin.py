@@ -3,11 +3,9 @@
 import pytest
 
 from apixis.core.graph.base import _END
-import pytest_asyncio
 
 from apixis.core.event import ApixEvent, unsubscribe, subscribe
 from apixis.core.event.factory import get_handler_registry
-from apixis.core.event.factory import get_event_loop
 from apixis.core.event.factory import get_event_pipe
 from apixis.core.graph import (
     GLOBALNS,
@@ -21,18 +19,6 @@ GLOBAL_DISPATCH = get_graph_dispatch_name()
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
-
-
-@pytest_asyncio.fixture(
-    autouse=True,
-    scope="module",
-    loop_scope="session",
-)
-async def stop_event_loop_after_module():
-    """Stop and clear the shared event runtime after this module."""
-    yield
-    await get_event_loop().stop()
-    await get_event_pipe().clear()
 
 
 @pytest.mark.parametrize("namespace", [None, "", "<global>", "plugin-demo"])
