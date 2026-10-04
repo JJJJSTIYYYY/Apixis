@@ -12,12 +12,20 @@ import pytest
 from apixis.core.config.core_config import EVENT_LOOP_BACKPRESSURE, EVENT_PIPE_MAX_LEN
 
 
-@pytest.fixture
+@pytest.fixture(params=[
+    pytest.param((1000, 16), id="1000-invocations-16-nodes"),
+    pytest.param((3000, 32), id="3000-invocations-32-nodes"),
+])
 def graph_settings(request):
-    return {
+    """Run both standard and stress workloads; allow small CI overrides."""
+    count, nodes = request.param
+    settings = {
         key: request.config.getoption(f"--graph-{key}")
         for key in ("count", "nodes", "width", "repeats", "timeout")
     }
+    settings["count"] = settings["count"] if settings["count"] is not None else count
+    settings["nodes"] = settings["nodes"] if settings["nodes"] is not None else nodes
+    return settings
 
 
 @pytest.fixture(autouse=True)

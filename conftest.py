@@ -12,8 +12,8 @@ def pytest_addoption(parser):
         help="Collect the opt-in graph performance suite.",
     )
     for option, default, help_text in (
-        ("--graph-count", 1000, "Concurrent invocations; independent mode builds this many graphs."),
-        ("--graph-nodes", 16, "Minimal graph nodes executed by each invocation."),
+        ("--graph-count", None, "Override concurrent invocations in both the 1000 and 3000 workloads."),
+        ("--graph-nodes", None, "Override nodes per invocation in both the 16 and 32 node workloads."),
         ("--graph-width", 4, "Maximum nodes per concurrent graph step."),
         ("--graph-repeats", 3, "Measured rounds; every round includes fresh graph construction."),
     ):
@@ -54,5 +54,4 @@ def pytest_collection_modifyitems(config, items):
 def pytest_ignore_collect(collection_path, config):
     if collection_path.name == "performance":
         return not config.getoption("--run-performance")
-
 

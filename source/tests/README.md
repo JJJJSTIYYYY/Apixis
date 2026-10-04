@@ -28,7 +28,7 @@ uv run --no-sync pytest -m integration
 uv run --no-sync pytest source/tests/integration/graph
 ```
 
-默认不收集性能测试，原有规模正确性测试仍参与默认测试。CI 在默认测试后额外运行四种性能 workload 的小规模版本，验证测试本身能执行和清理，不设与硬件绑定的速度阈值。
+默认不收集性能测试，原有规模正确性测试仍参与默认测试。CI 在默认测试后额外运行八组性能 workload 的小规模版本，验证测试本身能执行和清理，不设与硬件绑定的速度阈值。
 
 ## Graph 性能测试
 
@@ -38,7 +38,7 @@ uv run --no-sync pytest source/tests/performance --run-performance
 
 运行结束后自动生成仓库根目录下的 `test-results/README.md`，文件仅包含本次运行场景的性能结果表格，并覆盖上次生成的表格。无需指定 `--graph-report`；该参数用于额外保存 JSON 原始指标。
 
-默认每组同时提交 1,000 次调用，每次执行 16 个节点。四组场景为：
+默认运行两档规模：1,000 次调用、每次 16 个节点，以及 3,000 次调用、每次 32 个节点。每档均覆盖四种场景，共八组：
 
 | 场景 | 建图数量 | 调度方式 |
 | --- | ---: | --- |
@@ -46,33 +46,40 @@ uv run --no-sync pytest source/tests/performance --run-performance
 | `independent/parallel` | 1,000 | 每张独立图执行 4 层，每层 4 个并发节点 |
 | `shared/chain` | 1 | 同一张 16 节点图并发调用 1,000 次 |
 | `shared/parallel` | 1 | 同一张 4 层并发图并发调用 1,000 次 |
+| `independent/chain` | 3,000 | 每张独立图执行 32 个串行节点 |
+| `independent/parallel` | 3,000 | 每张独立图执行 8 层，每层 4 个并发节点 |
+| `shared/chain` | 1 | 同一张 32 节点图并发调用 3,000 次 |
+| `shared/parallel` | 1 | 同一张 8 层并发图并发调用 3,000 次 |
 
 每组预热一轮，随后测量三轮；**每轮都重新注册节点并编译图**。同组所有调用通过共同的启动门同时释放；节点使用同步函数立即返回最小 `Command`，携带下一跳和一个用于事后校验的访问标记。保留默认状态复制、AutoMerge 与快照行为。普通日志及事件分发日志关闭，错误日志保留；默认配置下使用本地运行时，无需 Kafka、RabbitMQ 或外部服务。
 
-例如，增加到 3,000 张图、每张 32 个节点，并保存 JSON 指标：
+例如，只运行 3,000 规模的四组测试，并保存 JSON 指标：
 
 ```bash
 uv run --no-sync pytest source/tests/performance --run-performance \
-  --graph-count 3000 --graph-nodes 32 --graph-width 4 \
+  -k 3000 --graph-width 4 \
   --graph-repeats 3 --graph-timeout 180 \
   --graph-report=graph-performance.json
 ```
 
-只跑独立图或串行场景：
+只跑独立图、串行场景或 1,000 规模：
 
 ```bash
 uv run --no-sync pytest source/tests/performance --run-performance -k independent
 uv run --no-sync pytest source/tests/performance --run-performance -k chain
+uv run --no-sync pytest source/tests/performance --run-performance -k 1000
 ```
 
 | 参数 | 默认值 | 含义 |
 | --- | ---: | --- |
-| `--graph-count` | 1,000 | 每轮并发调用数；独立图模式的建图数也等于此值 |
-| `--graph-nodes` | 16 | 每次调用执行的节点总数 |
+| `--graph-count` | 分组使用 1,000／3,000 | 指定时覆盖两档的并发调用数；独立图模式的建图数也等于此值 |
+| `--graph-nodes` | 分组使用 16／32 | 指定时覆盖两档的每次调用节点总数 |
 | `--graph-width` | 4 | 并发图每层最大节点数；不整除时最后一层使用剩余节点 |
 | `--graph-repeats` | 3 | 测量轮数，另有一轮预热 |
 | `--graph-timeout` | 120 | 单轮建图至执行结束的超时秒数 |
 | `--graph-report` | 无 | JSON 输出路径；保留每轮原始指标及运行环境 |
+
+测试 ID 包含默认规模（如 `3000-invocations-32-nodes`），可用 `-k` 筛选。显式传入 `--graph-count` 或 `--graph-nodes` 会覆盖两档的对应值；例如 CI 使用 `--graph-count 32 --graph-nodes 8 --graph-repeats 1` 缩小全部八组 workload。结果表格和 JSON 记录实际运行规模。
 
 主指标 `total_seconds` 从首次建图开始，到全部调用完成为止，**包含建图、context 创建、任务创建、排队及执行**。吞吐量使用这个总耗时计算；p50/p95/p99 也从同一轮首次建图开始计时，因此包含建图等待。`build_seconds`、`prepare_seconds`、`execute_seconds` 分列对应开销，三项之和等于总耗时。终端显示各轮指标的中位数，JSON 保留完整原始值。
 
