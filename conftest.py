@@ -1,8 +1,27 @@
 """Repository-wide pytest selection and graph benchmark options."""
 
 import math
+from time import perf_counter
 
 import pytest
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionstart(session):
+    """Start session accounting before collection loads performance fixtures."""
+    if session.config.getoption("--run-performance"):
+        session.config._graph_session_started = perf_counter()
+        session.config._graph_test_durations = {}
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Use pytest's phase durations, including setup and final cleanup."""
+    report = yield
+    if item.config.getoption("--run-performance"):
+        phases = item.config._graph_test_durations.setdefault(item.nodeid, {})
+        phases[report.when] = report.duration
+    return report
 
 
 def pytest_addoption(parser):
@@ -12,8 +31,8 @@ def pytest_addoption(parser):
         help="Collect the opt-in graph performance suite.",
     )
     for option, default, help_text in (
-        ("--graph-count", None, "Override concurrent invocations in both the 1000 and 3000 workloads."),
-        ("--graph-nodes", None, "Override nodes per invocation in both the 16 and 32 node workloads."),
+        ("--graph-count", None, "Override concurrent invocations in all graph workloads, including the capacity sweep."),
+        ("--graph-nodes", None, "Override nodes per invocation in all graph workloads, including the capacity sweep."),
         ("--graph-width", 4, "Maximum nodes per concurrent graph step."),
         ("--graph-repeats", 3, "Measured rounds; every round includes fresh graph construction."),
     ):
@@ -54,4 +73,3 @@ def pytest_collection_modifyitems(config, items):
 def pytest_ignore_collect(collection_path, config):
     if collection_path.name == "performance":
         return not config.getoption("--run-performance")
-
