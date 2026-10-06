@@ -1,43 +1,14 @@
 """Core runtime settings backed by the shared configuration loader."""
 
 from typing import Literal
-from uuid import uuid4
-import uuid
 import os
 
 from apixis.core.config.base import _get_config
 
 
-# Remote gateway and node identity
-REMOTE_GATEWAY_ENABLE = _get_config("REMOTE_GATEWAY.enable", False) is True
-REMOTE_GATEWAY_BASE_URL = _get_config(
-    "REMOTE_GATEWAY.base_url", "http://localhost:28080"
-)
-REMOTE_GATEWAY_CONFIG_ENDPOINT = _get_config(
-    "REMOTE_GATEWAY.config_endpoint", "/api/config"
-)
-REMOTE_GATEWAY_PIPE_ENDPOINT = _get_config(
-    "REMOTE_GATEWAY.pipe_endpoint", "/api/pipe"
-)
-GATEWAY_MAX_RETRY = _get_config("REMOTE_GATEWAY.max_retry", 5)
-GATEWAY_RETRY_INITIAL_DELAY = _get_config(
-    "REMOTE_GATEWAY.retry_initial_delay", 1.0
-)
-GATEWAY_TIMEOUT = _get_config("REMOTE_GATEWAY.timeout", 10.0)
-
-
-def _create_node_id(remote_enabled: bool) -> str:
-    """Create a globally unique MQ id only for remote node mode."""
-    return uuid4().hex if remote_enabled else str(uuid.getnode())
-
-
-NODE_ID = _create_node_id(REMOTE_GATEWAY_ENABLE)
-
-
 # Shared data root and Apixis runtime paths
 BASE_DIR = _get_config("SERVER.base_dir", "./.apix/")
 APIXIS_BASE_DIR = os.path.join(BASE_DIR, "apixis")
-NODE_NAME = _get_config("SERVER.node_name", str(uuid.getnode()))
 
 
 # Log
@@ -60,7 +31,7 @@ if (
 
 
 # Pipeline
-# Bound the local event queue and external mailbox buffers.
+# Bound the local event queue.
 EVENT_PIPE_MAX_LEN = _get_config("PIPELINE.event_pipe_max_len", 65536)
 # Bound individual handler executions, independently of event queue capacity.
 EVENT_LOOP_BACKPRESSURE = _get_config("PIPELINE.event_loop_backpressure", 1024)
@@ -68,33 +39,3 @@ if EVENT_LOOP_BACKPRESSURE < 128:
     EVENT_LOOP_BACKPRESSURE = 128
 if EVENT_PIPE_MAX_LEN <= 0:
     raise ValueError("PIPELINE.event_pipe_max_len must be positive.")
-
-
-# External event mailbox
-EVENT_CHANNEL_CONFIG = _get_config(
-    "EVENT_CHANNEL", {}
-)
-EVENT_CHANNEL_TYPE: Literal["kafka", "rabbitmq"] = _get_config(
-    "EVENT_CHANNEL.type", "kafka"
-)
-KAFKA_BOOTSTRAP_SERVERS = _get_config(
-    "EVENT_CHANNEL.kafka.bootstrap_servers", ["localhost:9092"]
-)
-KAFKA_TOPIC_PREFIX = _get_config(
-    "EVENT_CHANNEL.kafka.topic_prefix", "apixis.mailbox"
-)
-KAFKA_GROUP_ID_PREFIX = _get_config(
-    "EVENT_CHANNEL.kafka.group_id_prefix", "apixis.node"
-)
-RABBITMQ_URL = _get_config(
-    "EVENT_CHANNEL.rabbitmq.url", "amqp://guest:guest@localhost/"
-)
-RABBITMQ_EXCHANGE = _get_config(
-    "EVENT_CHANNEL.rabbitmq.exchange", "apixis.events"
-)
-RABBITMQ_QUEUE_PREFIX = _get_config(
-    "EVENT_CHANNEL.rabbitmq.queue_prefix", "apixis.mailbox"
-)
-RABBITMQ_PREFETCH_COUNT = _get_config(
-    "EVENT_CHANNEL.rabbitmq.prefetch_count", 100
-)

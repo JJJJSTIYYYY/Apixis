@@ -1,30 +1,13 @@
-"""Tests for queue compatibility and node-side event routing."""
+"""Tests for local event queues and publication."""
 
 import asyncio
-import json
 import time
-from dataclasses import dataclass
-from enum import Enum
-from unittest.mock import AsyncMock
 
-import httpx
 import pytest
 
-from apixis.core.event.base import EventType
+from apixis.core.event import BuiltinChannel, EventType
 from apixis.core.event.factory import get_event_pipe
 from apixis.core.event.event_pipe import ApixEventPipe
-from apixis.core.utils.exception import EventChannelUnavailableError
-from apixis.core.event.pipe_channel import (
-    BuiltinChannel,
-    KafkaChannel,
-    RabbitMQChannel,
-    encode_event,
-    event_from_json,
-    event_to_json,
-)
-from apixis.core.utils.exception import EventChannelPermissionError
-
-from .helpers import FakeClient, make_event, make_gateway, response
 
 
 class TestBuiltinChannel:
@@ -66,11 +49,11 @@ class TestApixEventPipeEvents:
     def test_unbounded_builtin_is_rejected(self):
         """Custom local channels must preserve bounded admission."""
         with pytest.raises(ValueError, match="builtin channel must be bounded"):
-            ApixEventPipe(builtin=BuiltinChannel(maxsize=0), remote_enabled=False)
+            ApixEventPipe(builtin=BuiltinChannel(maxsize=0))
 
     @pytest.mark.asyncio
     async def test_post_event_builds_event_with_current_timestamp(self):
-        pipe = ApixEventPipe(remote_enabled=False)
+        pipe = ApixEventPipe()
         before = time.time()
 
         await pipe.post_event(
@@ -90,7 +73,7 @@ class TestApixEventPipeEvents:
 
     @pytest.mark.asyncio
     async def test_post_event_preserves_fifo_order(self):
-        pipe = ApixEventPipe(remote_enabled=False)
+        pipe = ApixEventPipe()
         for name in ("event.1", "event.2", "event.3"):
             await pipe.post_event(
                 event_type=EventType.INFO,
@@ -108,7 +91,7 @@ class TestApixEventPipeEvents:
 
     @pytest.mark.asyncio
     async def test_clear_acknowledges_all_queued_events(self):
-        pipe = ApixEventPipe(remote_enabled=False)
+        pipe = ApixEventPipe()
         await pipe.post_event(event_type=EventType.INFO, event_name="event.1")
         await pipe.post_event(event_type=EventType.INFO, event_name="event.2")
 
@@ -118,371 +101,52 @@ class TestApixEventPipeEvents:
         assert await pipe.clear() == 0
 
 
-class TestSerialization:
-    def test_event_round_trip(self):
-        event = make_event()
-        restored = event_from_json(encode_event(event))
 
-        assert event_to_json(restored) == event_to_json(event)
-
-    def test_gateway_envelope_is_accepted(self):
-        restored = event_from_json({"recipient": "node-a", "event": event_to_json(make_event())})
-        assert restored.event_name == "test.event"
-
-    def test_invalid_external_event_is_rejected(self):
-        with pytest.raises(TypeError, match="ApixEvent"):
-            event_to_json("not-an-event")
-        with pytest.raises(ValueError, match="missing fields"):
-            event_from_json({"event_name": "missing"})
-
-
-class TestExternalChannels:
-    def test_kafka_uses_node_id_for_topic_and_group(self):
-        channel = KafkaChannel(
-            mq_id="node-a",
-            bootstrap_servers=["broker:9092"],
-            topic_prefix="mailbox",
-            group_id_prefix="nodes",
-        )
-        assert channel.mq_id == "node-a"
-        assert channel.topic == "mailbox.node-a"
-        assert channel.group_id == "nodes.node-a"
-
-    def test_rabbitmq_uses_node_id_for_queue(self):
-        channel = RabbitMQChannel(
-            mq_id="node-a",
-            url="amqp://localhost/",
-            exchange="events",
-            queue_prefix="mailbox",
-            prefetch_count=5,
-        )
-        assert channel.mq_id == "node-a"
-        assert channel.queue_name == "mailbox.node-a"
-
-    @pytest.mark.asyncio
-    async def test_mailbox_rejects_push_and_disabled_mailbox_rejects_get(self):
-        pipe = ApixEventPipe(remote_enabled=False)
-        with pytest.raises(EventChannelPermissionError, match="receive-only"):
-            await pipe.put(make_event(), "mailbox")
-        with pytest.raises(EventChannelUnavailableError, match="disabled"):
-            await pipe.get("mailbox")
-
-    @pytest.mark.asyncio
-    async def test_mailtruck_rejects_read(self):
-        pipe = ApixEventPipe(remote_enabled=False)
-        with pytest.raises(EventChannelPermissionError, match="write-only"):
-            await pipe.get("mailtruck")
-        with pytest.raises(EventChannelPermissionError, match="write-only"):
-            pipe.qsize("mailtruck")
-
-    def test_unknown_channel_is_rejected(self):
-        pipe = ApixEventPipe(remote_enabled=False)
-        with pytest.raises(ValueError, match="Unknown event channel"):
-            pipe.get_channel("missing")
+async def test_pipe_lifecycle_preserves_pending_events_and_acknowledgements():
+    """Repeated local lifecycle transitions retain queue ownership and order."""
+    channel = BuiltinChannel(maxsize=2)
+    pipe = ApixEventPipe(builtin=channel)
+    first, second = object(), object()
+    pipe.put_nowait(first)
+    pipe.put_nowait(second)
+    assert pipe.get_channel() is channel
+    assert not pipe.is_running
+    await asyncio.gather(*(pipe.start() for _ in range(8)))
+    assert pipe.is_running
+    await asyncio.wait_for(asyncio.gather(*(pipe.stop() for _ in range(8))), 1)
+    assert not pipe.is_running
+    assert pipe.full()
+    await pipe.start()
+    assert await pipe.get() is first
+    pipe.task_done()
+    assert pipe.get_nowait() is second
+    pipe.task_done()
+    await asyncio.wait_for(pipe.join(), 1)
+    await pipe.stop()
 
 
-class TestGatewayChannel:
-    @pytest.mark.parametrize("action", ["route", "broadcast"])
-    @pytest.mark.parametrize("context_kind", ["nested", "dataclass", "enum"])
-    async def test_custom_context_serialization_through_httpx(self, action, context_kind):
-        """Exercise real HTTPX encoding and preserve the broker wire format."""
-        class Status(Enum):
-            READY = "ready"
-
-        @dataclass
-        class Item:
-            label: str
-            status: Status
-
-        @dataclass
-        class Batch:
-            items: list[Item]
-
-        batch = Batch([Item("测试", Status.READY)])
-        batch_json = {"items": [{"label": "测试", "status": "ready"}]}
-        contexts = {
-            "nested": (
-                {"batch": batch, "statuses": [Status.READY]},
-                {"batch": batch_json, "statuses": ["ready"]},
-            ),
-            "dataclass": (batch, batch_json),
-            "enum": (Status.READY, "ready"),
-        }
-        event = make_event()
-        event.context, expected = contexts[context_kind]
-        requests = []
-
-        def handle(request):
-            requests.append(request)
-            return httpx.Response(200, json={"ok": True})
-
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            gateway = make_gateway(client)
-            if action == "route":
-                await gateway.put(event, recipient="node-b")
-            else:
-                assert await gateway.broadcast(event) == {"ok": True}
-
-        [request] = requests
-        assert request.headers["content-type"] == "application/json"
-        payload = json.loads(request.content)
-        assert payload["action"] == action
-        assert payload["sender"]["node_id"] == "node-a"
-        if action == "route":
-            assert payload["recipient"] == "node-b"
-        assert isinstance(payload["event"], dict)
-        assert payload["event"]["context"] == expected
-        assert payload["event"] == json.loads(encode_event(event))
-        assert event_from_json(payload).context == expected
-        assert event.context is contexts[context_kind][0]
-
-    @pytest.mark.parametrize("action", ["route", "broadcast"])
-    async def test_unsupported_context_fails_before_transport(self, action):
-        """Unsupported objects remain errors instead of being stringified."""
-        event = make_event()
-        event.context = {"unsupported": object()}
-
-        def handle(request):
-            pytest.fail("An invalid payload must not reach the transport.")
-
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            gateway = make_gateway(client)
-            with pytest.raises(TypeError, match="not JSON serializable"):
-                if action == "route":
-                    await gateway.put(event, recipient="node-b")
-                else:
-                    await gateway.broadcast(event)
-
-    @pytest.mark.asyncio
-    async def test_route_protocol_contains_sender_recipient_and_event(self):
-        client = FakeClient([response()])
-        gateway = make_gateway(client)
-
-        await gateway.put(make_event(), recipient="node-b")
-
-        method, url, kwargs = client.requests[0]
-        payload = json.loads(kwargs["content"])
-        assert method == "POST"
-        assert url == "http://gateway/api/pipe"
-        assert kwargs["headers"]["Content-Type"] == "application/json"
-        assert payload["action"] == "route"
-        assert payload["sender"] == {
-            "tag": "Alice",
-            "node_id": "node-a",
-            "channel_type": "kafka",
-        }
-        assert payload["recipient"] == "node-b"
-        assert payload["event"]["event_name"] == "test.event"
-
-    @pytest.mark.asyncio
-    async def test_route_requires_recipient(self):
-        gateway = make_gateway(FakeClient([]))
-        with pytest.raises(ValueError, match="recipient mq_id"):
-            await gateway.put(make_event())
-
-    @pytest.mark.asyncio
-    async def test_503_uses_exponential_backoff(self, monkeypatch):
-        client = FakeClient([response(503), response(503), response(200)])
-        gateway = make_gateway(client)
-        sleep = AsyncMock()
-        monkeypatch.setattr("apixis.core.event.pipe_channel.asyncio.sleep", sleep)
-
-        await gateway.put(make_event(), recipient="node-b")
-
-        assert len(client.requests) == 3
-        assert [call.args[0] for call in sleep.await_args_list] == [0.1, 0.2]
-
-    @pytest.mark.asyncio
-    async def test_503_raises_after_max_retries(self, monkeypatch):
-        client = FakeClient([response(503), response(503), response(503)])
-        gateway = make_gateway(client)
-        monkeypatch.setattr(
-            "apixis.core.event.pipe_channel.asyncio.sleep", AsyncMock()
-        )
-
-        with pytest.raises(httpx.HTTPStatusError):
-            await gateway.put(make_event(), recipient="node-b")
-        assert len(client.requests) == 3
-
-    @pytest.mark.asyncio
-    async def test_request_error_is_retried(self, monkeypatch):
-        request = httpx.Request("POST", "http://gateway/api/pipe")
-        client = FakeClient(
-            [httpx.ConnectError("offline", request=request), response(200)]
-        )
-        gateway = make_gateway(client)
-        sleep = AsyncMock()
-        monkeypatch.setattr("apixis.core.event.pipe_channel.asyncio.sleep", sleep)
-
-        await gateway.put(make_event(), recipient="node-b")
-        sleep.assert_awaited_once_with(0.1)
-
-    @pytest.mark.asyncio
-    async def test_fetch_nodes_normalises_list(self):
-        gateway = make_gateway(
-            FakeClient(
-                [response(200, {"nodes": [{"tag": "B", "node_id": "node-b", "status": "ok"}]})]
-            )
-        )
-        assert await gateway.fetch_nodes() == {
-            "node-b": {"tag": "B", "node_id": "node-b", "status": "ok"}
-        }
+async def test_local_context_preserves_arbitrary_python_objects():
+    """Local event payloads are passed by reference without serialization."""
+    context = {"object": object(), "values": {1, 2}}
+    pipe = ApixEventPipe()
+    await pipe.post_event(event_type=EventType.INFO, event_name="local.context", context=context)
+    event = await pipe.get()
+    assert event.context is context
+    assert event.context["object"] is context["object"]
+    pipe.task_done()
+    await pipe.join()
 
 
-class TestApixEventPipeLifecycle:
-    @pytest.mark.asyncio
-    async def test_mailbox_events_are_forwarded_to_builtin(self):
-        mailbox = BuiltinChannel(maxsize=2)
-        builtin = BuiltinChannel()
-        pipe = ApixEventPipe(
-            remote_enabled=True,
-            builtin=builtin,
-            mailbox=mailbox,
-            mailtruck=make_gateway(FakeClient([response(), response(), response()])),
-            mq_id="node-a",
-            node_name="Alice",
-        )
-
-        await pipe.start()
-        event = make_event("remote.event")
-        await mailbox.put(event)
-
-        assert await asyncio.wait_for(pipe.get(), timeout=0.1) is event
-        pipe.task_done()
-        await pipe.stop()
-
-    @pytest.mark.asyncio
-    async def test_start_fetches_then_broadcasts_and_stop_broadcasts(self):
-        client = FakeClient(
-            [
-                response(200, {"nodes": [{"tag": "B", "node_id": "node-b", "status": "ok"}]}),
-                response(200),
-                response(200),
-            ]
-        )
-        pipe = ApixEventPipe(
-            remote_enabled=True,
-            builtin=BuiltinChannel(),
-            mailbox=BuiltinChannel(),
-            mailtruck=make_gateway(client),
-            mq_id="node-a",
-            node_name="Alice",
-        )
-
-        await pipe.start()
-        assert pipe.nodes["node-b"]["status"] == "ok"
-        await pipe.stop()
-
-        assert [entry[0] for entry in client.requests] == ["GET", "POST", "POST"]
-        assert json.loads(client.requests[1][2]["content"])["event"]["event_name"] == "apixis.node.online"
-        assert json.loads(client.requests[2][2]["content"])["event"]["event_name"] == "apixis.node.offline"
-
-    @pytest.mark.asyncio
-    async def test_disabled_lifecycle_does_not_contact_gateway(self):
-        client = FakeClient([])
-        pipe = ApixEventPipe(
-            remote_enabled=False,
-            mailtruck=make_gateway(client),
-        )
-        await pipe.start()
-        assert await pipe.broadcast(make_event()) == {}
-        await pipe.stop()
-        assert client.requests == []
-
-
-class TestChannelCapabilities:
-    @pytest.mark.asyncio
-    async def test_custom_writer_only_requires_sending_and_lifecycle(self):
-        """A sender can route events without implementing queue methods."""
-        from apixis.core.event import WritableEventChannel
-
-        class Sender(WritableEventChannel):
-            def __init__(self):
-                self.deliveries = []
-                self.closed = False
-
-            async def put(self, event, **kwargs):
-                self.deliveries.append((event, kwargs["recipient"]))
-
-            async def close(self):
-                self.closed = True
-
-        sender = Sender()
-        pipe = ApixEventPipe(mailtruck=sender, remote_enabled=False)
-        event = make_event()
-        await pipe.start()
-        await pipe.send(event, "node-b")
-        assert sender.deliveries == [(event, "node-b")]
-        await pipe.stop()
-        assert sender.closed
-
-    @pytest.mark.asyncio
-    async def test_custom_reader_forwards_and_acknowledges(self):
-        """A receiver integrates without implementing either write operation."""
-        from apixis.core.event import ReadableEventChannel
-
-        class Mailbox(ReadableEventChannel):
-            def __init__(self, event):
-                self.queue = asyncio.Queue(maxsize=1)
-                self.queue.put_nowait(event)
-                self.closed = False
-
-            @property
-            def maxsize(self):
-                return self.queue.maxsize
-
-            async def get(self):
-                return await self.queue.get()
-
-            def get_nowait(self):
-                return self.queue.get_nowait()
-
-            def empty(self):
-                return self.queue.empty()
-
-            def full(self):
-                return self.queue.full()
-
-            def qsize(self):
-                return self.queue.qsize()
-
-            def task_done(self):
-                self.queue.task_done()
-
-            async def join(self):
-                await self.queue.join()
-
-            async def close(self):
-                self.closed = True
-
-        event = make_event()
-        mailbox = Mailbox(event)
-        pipe = ApixEventPipe(mailbox=mailbox,
-            mailtruck=make_gateway(FakeClient([response(), response(), response()])),
-            remote_enabled=True,
-        )
-        await pipe.start()
-        try:
-            assert await asyncio.wait_for(pipe.get(), timeout=1) is event
-            pipe.task_done()
-            await asyncio.wait_for(mailbox.join(), timeout=1)
-            await asyncio.wait_for(pipe.join(), timeout=1)
-        finally:
-            await pipe.stop()
-        assert mailbox.closed
-
-    @pytest.mark.parametrize(
-        "operation", ["get_nowait", "empty", "full", "qsize", "task_done"]
-    )
-    def test_pipe_enforces_mailtruck_role(self, operation):
-        """Role validation also applies to senders with extra queue capabilities."""
-        pipe = ApixEventPipe(mailtruck=BuiltinChannel(), remote_enabled=False)
-        with pytest.raises(EventChannelPermissionError, match="write-only"):
-            getattr(pipe, operation)("mailtruck")
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("operation", ["get", "join", "clear"])
-    async def test_pipe_enforces_mailtruck_role_for_async_operations(self, operation):
-        pipe = ApixEventPipe(mailtruck=BuiltinChannel(), remote_enabled=False)
-        with pytest.raises(EventChannelPermissionError, match="write-only"):
-            await getattr(pipe, operation)("mailtruck")
+async def test_nowait_queue_errors_and_join_wait_for_acknowledgement():
+    pipe = ApixEventPipe(builtin=BuiltinChannel(maxsize=1))
+    pipe.put_nowait("first")
+    with pytest.raises(asyncio.QueueFull):
+        pipe.put_nowait("second")
+    assert pipe.get_nowait() == "first"
+    with pytest.raises(asyncio.QueueEmpty):
+        pipe.get_nowait()
+    joined = asyncio.create_task(pipe.join())
+    await asyncio.sleep(0)
+    assert not joined.done()
+    pipe.task_done()
+    await asyncio.wait_for(joined, 1)

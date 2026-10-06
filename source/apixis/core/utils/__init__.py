@@ -3,9 +3,6 @@
 from apixis.core.utils.exception import (
     BlockHookNotRegisteredError,
     BlockNotResolvedError,
-    EventChannelError,
-    EventChannelPermissionError,
-    EventChannelUnavailableError,
     EventHandlerAlreadyRegisteredError,
     EventHandlerNotRegisteredError,
     GraphNodeError,
@@ -20,9 +17,6 @@ from apixis.core.utils.logger import (
 __all__ = [
     "BlockHookNotRegisteredError",
     "BlockNotResolvedError",
-    "EventChannelError",
-    "EventChannelPermissionError",
-    "EventChannelUnavailableError",
     "EventHandlerAlreadyRegisteredError",
     "EventHandlerNotRegisteredError",
     "GraphNodeError",

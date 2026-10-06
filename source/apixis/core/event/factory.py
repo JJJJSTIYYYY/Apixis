@@ -2,7 +2,7 @@
 
 Getters construct components on first access and schedule shared startup when
 called inside asyncio. Await start_core() when startup completion or errors
-must be observed directly. Construction itself never opens transports.
+must be observed directly. Construction itself never starts background consumers.
 """
 
 import asyncio

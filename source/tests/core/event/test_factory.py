@@ -11,7 +11,6 @@ from apixis.core.event import (
     ApixEventPipe,
     ApixEventRegistry,
     ApixHandlerRegistry,
-    BuiltinChannel,
     EventType,
     start_core,
     get_event_loop,
@@ -151,56 +150,6 @@ async def test_repeated_create_preserves_components_subscriptions_and_pending_ev
         unsubscribe(receive.__name__)
 
 
-async def test_concurrent_create_starts_remote_channels_once(fresh_core, monkeypatch, wait_for_dispatch):
-    entered, release = asyncio.Event(), asyncio.Event()
-    starts = []
-
-    class Mailbox(BuiltinChannel):
-        async def start(self):
-            starts.append("mailbox")
-            entered.set()
-            await release.wait()
-
-    class Gateway(BuiltinChannel):
-        async def start(self):
-            starts.append("gateway")
-
-        async def broadcast(self, message):
-            return {}
-
-    mailbox = Mailbox()
-    monkeypatch.setattr(
-        factory, "ApixEventPipe",
-        lambda: ApixEventPipe(mailbox=mailbox, mailtruck=Gateway(), remote_enabled=True),
-    )
-    tasks = [asyncio.create_task(start_core()) for _ in range(8)]
-    try:
-        await asyncio.wait_for(entered.wait(), 1)
-        assert not get_event_loop()._started
-        assert not any(task.done() for task in tasks)
-        release.set()
-        await asyncio.wait_for(asyncio.gather(*tasks), 1)
-        assert starts == ["gateway", "mailbox"]
-        observed = []
-
-        @subscribe("factory.remote")
-        async def receive(message):
-            observed.append(message.event_name)
-
-        try:
-            await mailbox.put(event("factory.remote"))
-            await asyncio.wait_for(mailbox.join(), 1)
-            await wait_for_dispatch(get_event_loop())
-            assert observed == ["factory.remote"]
-        finally:
-            unsubscribe(receive.__name__)
-    finally:
-        release.set()
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-
 @pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
 async def test_failed_start_can_retry_with_the_same_components(fresh_core, monkeypatch, failure):
     first = components()
@@ -228,7 +177,7 @@ async def test_independent_components_keep_dispatch_and_observations_isolated(wa
     observed = [[], []]
     for index in range(2):
         registry = ApixEventRegistry()
-        pipe = ApixEventPipe(remote_enabled=False)
+        pipe = ApixEventPipe()
         handlers = ApixHandlerRegistry(registry)
         loop = ApixEventLoop(handlers, pipe, registry)
 
@@ -273,7 +222,7 @@ async def test_each_getter_restarts_the_same_core(getter_name, fresh_core, wait_
 
 
 async def test_getters_share_one_startup_attempt(fresh_core, monkeypatch, wait_for_dispatch):
-    """Repeated getters do not open a second transport during slow startup."""
+    """Repeated getters do not schedule a second startup during slow startup."""
     core = factory._get_core()
     entered, release = asyncio.Event(), asyncio.Event()
     original_start = core.event_pipe.start

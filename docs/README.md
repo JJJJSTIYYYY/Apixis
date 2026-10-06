@@ -12,7 +12,7 @@ pip install apixis
 
 1. [快速开始](./quickstart.md)：运行第一个图和事件订阅示例。
 2. [接口概览](./core/README.md)：选择事件、图或工具接口。
-3. [配置](./core/config/README.md)：调整队列容量、并发限制、日志和远程通道。
+3. [配置](./core/config/README.md)：调整队列容量、并发限制、日志。
 
 ## 按任务查阅
 
@@ -20,7 +20,7 @@ pip install apixis
 | --- | --- |
 | 发布事件、管理共享事件系统 | [事件 API](./core/event/README.md) |
 | 订阅、排序、替换 handler，处理错误与取消 | [事件处理器](./core/event/handlers.md) |
-| 使用本地队列或跨节点收发事件 | [事件通道](./core/event/channels.md) |
+| 使用本地事件队列 | [事件通道](./core/event/channels.md) |
 | 构建图、执行、流式输出、快照恢复和中断 | [图 API](./core/graph/README.md) |
 | 更新状态、选择下一跳和组织并发分支 | [图状态与 Command](./core/graph/state.md) |
 | 捕获框架异常、输出和保存日志 | [异常与日志](./core/utils/README.md) |

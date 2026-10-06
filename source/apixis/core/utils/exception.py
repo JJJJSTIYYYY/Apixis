@@ -32,18 +32,6 @@ class EventHandlerAlreadyRegisteredError(Exception):
         return f"{self.message}; {error_details}"
 
 
-class EventChannelError(RuntimeError):
-    """Base exception raised by event channels."""
-
-
-class EventChannelPermissionError(PermissionError, EventChannelError):
-    """Raised when a channel is accessed in an unsupported direction."""
-
-
-class EventChannelUnavailableError(EventChannelError):
-    """Raised when a configured channel is not available."""
-
-
 class BlockHookNotRegisteredError(RuntimeError):
     """Raised when a graph emits a Block without a registered interruption hook."""
 

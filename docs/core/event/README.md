@@ -10,8 +10,6 @@
 
 共享 core 只构建一次，后续调用复用同一组 registry、pipe、handler registry 和 event loop。
 
-本地消费者任务退出（包括被直接取消），或远程 mailbox 消费/转发任务退出后，core 不再报告已启动，后续 getter 或 `start_core()` 可在同一个 asyncio loop 内重新发起启动。此行为不承诺跨 asyncio loop 复用已有队列或连接。
-
 ```python
 from apixis import start_core
 
@@ -113,27 +111,24 @@ await pipe.post_event(
 await pipe.join()
 ```
 
-`post_event()` 会创建 `ApixEvent` 并放入指定 channel；本地队列满时等待空位。
+`post_event()` 会创建 `ApixEvent` 并放入本地队列；本地队列满时等待空位。
 
 `pipe.join()` 等待队列项目完成交接，不等待 handler 执行结束。需要等待业务结果时，由处理器通过应用自己的结果对象或信号通知调用方，完整示例见[快速开始](../../quickstart.md)。
 
 ## `ApixEventPipe` 常用接口
 
 ```python
-await pipe.put(event, channel="builtin", recipient=None)
+await pipe.put(event)
 await pipe.post_event(...)
-pipe.put_nowait(event, channel="builtin")
+pipe.put_nowait(event)
 
-event = await pipe.get(channel="builtin")
-pipe.task_done(channel="builtin")
-await pipe.join(channel="builtin")
-await pipe.clear(channel="builtin")
-
-await pipe.send(event, recipient)
-await pipe.broadcast(event)
+event = await pipe.get()
+pipe.task_done()
+await pipe.join()
+await pipe.clear()
 ```
 
-本地应用通常使用默认 `builtin` channel。远程 channel 见 [Event channels](./channels.md)。
+所有事件均通过 `BuiltinChannel` 的本地队列处理，详见[事件通道](./channels.md)。
 
 ## 订阅
 
@@ -186,7 +181,7 @@ registry.clear()
 
 若 handler 等待另一个事件的处理结果，在并发容量耗尽时可能相互阻塞。优先将后续逻辑放到结果事件的订阅处理器中，避免把整条业务流程串成相互等待的 handler。图中的嵌套 `invoke()` 和 `interrupt()` 已提供相应的等待行为，见[图 API](../graph/README.md)。
 
-## 暂停消费与关闭通道
+## 暂停消费与停止管道
 
 应用入口可以显式管理共享组件：
 
@@ -199,6 +194,6 @@ await event_loop.stop()
 await pipe.stop()
 ```
 
-`event_loop.stop()` 暂停取出新事件，保留队列和待分发事件；已经启动的前台处理和后台任务继续运行，停止接口不会等待它们完成。关闭应用前，应先等待应用自身需要完成的业务工作。`pipe.stop()` 的远程连接和消息保留行为见[事件通道](./channels.md)。
+`event_loop.stop()` 暂停取出新事件，保留队列和待分发事件；已经启动的前台处理和后台任务继续运行，停止接口不会等待它们完成。关闭应用前，应先等待应用自身需要完成的业务工作。`pipe.stop()` 重置启动状态并保留队列内容，详见[事件通道](./channels.md)。
 
 [处理器](./handlers.md) · [事件通道](./channels.md) · [文档首页](../../README.md)

@@ -2,12 +2,12 @@
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 import pytest
 
 import apixis.core.event as event_package
-from apixis.core.event import ApixEventLoop, ApixHandlerRegistry, ApixEventHandler, BuiltinChannel
+from apixis.core.event import ApixEventLoop, ApixHandlerRegistry, ApixEventHandler
 from apixis.core.event.base import ApixEvent, EventType
 from apixis.core.event.event_pipe import ApixEventPipe
 from apixis.core.event.event_registry import ApixEventRegistry
@@ -69,7 +69,7 @@ def test_record_event_validates_input():
 
 @pytest.mark.asyncio
 async def test_post_event_only_buffers_before_dispatch():
-    pipe = ApixEventPipe(remote_enabled=False)
+    pipe = ApixEventPipe()
 
     await pipe.post_event(
         event_type=EventType.INFO,
@@ -82,7 +82,7 @@ async def test_post_event_only_buffers_before_dispatch():
 
 
 def test_put_nowait_only_buffers_events_and_other_queue_values():
-    pipe = ApixEventPipe(remote_enabled=False)
+    pipe = ApixEventPipe()
 
     pipe.put_nowait(make_event("runtime.nowait"))
     pipe.put_nowait("raw-value")
@@ -94,41 +94,7 @@ def test_put_nowait_only_buffers_events_and_other_queue_values():
     pipe.task_done()
 
 
-@pytest.mark.asyncio
-async def test_mailtruck_publish_does_not_record_local_observations():
-    mailtruck = AsyncMock()
-    pipe = ApixEventPipe(
-        remote_enabled=False,
-        mailtruck=mailtruck,
-    )
-    event = make_event("runtime.remote")
-
-    await pipe.put(event, "mailtruck", recipient="node-two")
-
-    mailtruck.put.assert_awaited_once_with(event, recipient="node-two")
-    assert get_event_registry().get_registered_events() == frozenset()
-
-
-@pytest.mark.asyncio
-async def test_failed_publish_does_not_record_event_name():
-    mailtruck = AsyncMock()
-    mailtruck.put.side_effect = RuntimeError("publish failed")
-    pipe = ApixEventPipe(
-        remote_enabled=False,
-        mailtruck=mailtruck,
-    )
-
-    with pytest.raises(RuntimeError, match="publish failed"):
-        await pipe.put(
-            make_event("runtime.failed"),
-            "mailtruck",
-            recipient="node-two",
-        )
-
-    assert get_event_registry().get_registered_events() == frozenset()
-
-
-@pytest.mark.parametrize("publication", ["post_event", "put", "put_nowait", "builtin", "mailbox"])
+@pytest.mark.parametrize("publication", ["post_event", "put", "put_nowait", "builtin"])
 @pytest.mark.parametrize("event_type, name", [
     (EventType.INFO, "runtime.observed"),
     (EventType.INTERNAL, "runtime.internal"),
@@ -140,13 +106,7 @@ async def test_recording_occurs_once_after_dispatch_capacity_is_acquired(
     """A pending event is observed only after it can enter dispatch."""
     registry = ApixEventRegistry()
     handlers = ApixHandlerRegistry(registry)
-    mailbox = BuiltinChannel()
-    gateway = AsyncMock()
-    gateway.broadcast.return_value = {}
-    gateway.fetch_nodes.return_value = {}
-    pipe = ApixEventPipe(
-        mailbox=mailbox, mailtruck=gateway, remote_enabled=publication == "mailbox",
-    )
+    pipe = ApixEventPipe()
     loop = ApixEventLoop(handlers, pipe, registry)
     capacity = asyncio.Semaphore(0)
     loop._event_semaphore = capacity
@@ -172,10 +132,7 @@ async def test_recording_occurs_once_after_dispatch_capacity_is_acquired(
         elif publication == "put_nowait":
             pipe.put_nowait(event)
         elif publication == "builtin":
-            await pipe.get_channel("builtin").put(event)
-        else:
-            await mailbox.put(event)
-            await asyncio.wait_for(mailbox.join(), 1)
+            await pipe.get_channel().put(event)
         assert registry.get_registered_events() == frozenset()
         record.assert_not_called()
         await loop.start()
@@ -196,12 +153,3 @@ async def test_recording_occurs_once_after_dispatch_capacity_is_acquired(
         await pipe.stop()
 
 
-async def test_broadcast_does_not_record_local_observations():
-    registry = get_event_registry()
-    gateway = AsyncMock()
-    gateway.broadcast.return_value = {}
-    pipe = ApixEventPipe(mailtruck=gateway, remote_enabled=True)
-    event = make_event("runtime.broadcast")
-    await pipe.broadcast(event)
-    gateway.broadcast.assert_awaited_once_with(event)
-    assert registry.get_registered_events() == frozenset()

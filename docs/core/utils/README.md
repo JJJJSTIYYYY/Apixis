@@ -8,9 +8,6 @@
 | --- | --- |
 | `BlockHookNotRegisteredError` | 图发生中断，但没有可执行的中断处理器 |
 | `BlockNotResolvedError` | 中断处理器返回时，Block 既未完成也未被接管 |
-| `EventChannelError` | 事件通道异常的基类 |
-| `EventChannelPermissionError` | 对通道执行了不支持的读写操作 |
-| `EventChannelUnavailableError` | 通道不可用 |
 | `EventHandlerAlreadyRegisteredError` | 禁止覆盖时注册了同名处理器 |
 | `EventHandlerNotRegisteredError` | 所需处理器尚未注册 |
 | `GraphNodeError` | 图节点执行错误 |

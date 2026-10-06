@@ -14,7 +14,7 @@ from apixis import GraphManager, EventType, subscribe, __version__
 | `ApixEvent`、`EventType` | 表示事件及其类别 |
 | `subscribe()`、`unsubscribe()`、`ApixEventHandler` | 注册、配置与注销处理器 |
 | `ApixEventPipe` | 发布本地事件、跨节点发送、检查队列 |
-| `BuiltinChannel`、`GatewayChannel`、`KafkaChannel`、`RabbitMQChannel` | 配置事件收发通道 |
+| `BuiltinChannel` | 使用本地事件队列 |
 
 详见[事件 API](./event/README.md)、[处理器](./event/handlers.md)和[通道](./event/channels.md)。
 
@@ -33,7 +33,7 @@ from apixis import GraphManager, EventType, subscribe, __version__
 
 ## 配置与工具
 
-- [配置](./config/README.md)：队列、并发、日志及远程服务参数。
+- [配置](./config/README.md)：队列、并发、日志参数。
 - [异常与日志](./utils/README.md)：框架异常和日志接口。
 
 [返回文档首页](../README.md)

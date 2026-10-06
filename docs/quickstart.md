@@ -6,7 +6,7 @@
 pip install apixis
 ```
 
-运行环境为 Python 3.12+ 和 `asyncio`。本地图执行和事件订阅不需要 Kafka、RabbitMQ 或网关服务。
+运行环境为 Python 3.12+ 和 `asyncio`。事件发布和图执行均在当前进程内运行。
 
 ## 执行一个图
 

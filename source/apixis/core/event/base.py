@@ -414,6 +414,3 @@ class ApixEventHandler:
         from apixis.core.event.subscription import unsubscribe
 
         unsubscribe(self.name, missing_ok=missing_ok)
-
-
-ChannelType = Literal["builtin", "mailbox", "mailtruck"]

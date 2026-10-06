@@ -268,7 +268,7 @@ async def test_two_thousand_four_hundred_events_dispatch_through_glob_handlers(w
     for handler in handlers:
         get_handler_registry().register_handler(handler)
 
-    pipe = ApixEventPipe(remote_enabled=False)
+    pipe = ApixEventPipe()
     event_loop = ApixEventLoop(get_handler_registry(), pipe, get_event_registry())
     variants = (
         ("api.v1.tenant.{tenant}.orders.create.success", [

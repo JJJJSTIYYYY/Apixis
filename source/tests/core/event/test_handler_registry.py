@@ -560,7 +560,7 @@ def test_global_unsubscribe_removes_entry():
 
 def test_builtin_put_nowait_does_not_resolve_chain():
     get_handler_registry().register_handler(make_entry("handler"))
-    pipe = ApixEventPipe(remote_enabled=False)
+    pipe = ApixEventPipe()
     event = ApixEvent("event-id", EventType.WORKFLOW, "event.one", None, 0)
     with patch.object(get_handler_registry(), "get_handlers_chain_for_event") as resolve:
         pipe.put_nowait(event)
@@ -680,7 +680,7 @@ def test_replacement_repositions_without_duplicate_bucket_records(name, between,
 @pytest.fixture
 async def runtime(monkeypatch):
     """Use real consumer scheduling with a private pipe and registry state."""
-    pipe = ApixEventPipe(remote_enabled=False)
+    pipe = ApixEventPipe()
     loop = ApixEventLoop(get_handler_registry(), pipe, get_event_registry())
     await pipe.start()
     await loop.start()
@@ -907,7 +907,7 @@ async def test_stop_preserves_started_calls_and_explicit_start_resumes(runtime, 
     # Leave an event queued while the consumer is stopped.
     await loop.stop()
     assert not loop._started
-    pipe.get_channel("builtin").put_nowait(
+    pipe.get_channel().put_nowait(
         ApixEvent("queued", EventType.INFO, "event.two", None, 0)
     )
     unsubscribe("target")
@@ -939,7 +939,7 @@ def test_replacement_can_disable_existing_instance_timeout(timeout):
 async def test_explicit_start_consumes_existing_ready_events(runtime):
     pipe, loop = runtime
     await loop.stop()
-    pipe.get_channel("builtin").put_nowait(
+    pipe.get_channel().put_nowait(
         ApixEvent("first", EventType.INFO, "event.one", None, 0)
     )
     assert not loop._started

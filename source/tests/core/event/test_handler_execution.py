@@ -8,7 +8,6 @@ import pytest
 from apixis.core.event import ApixEventPipe, get_event_registry
 
 from apixis.core.event import ApixEvent, ApixEventError, ApixEventHandler, EventType
-from apixis.core.event.pipe_channel import encode_event, event_from_json
 from apixis.core.event.event_loop import ApixEventLoop
 from apixis.core.event.factory import get_handler_registry
 from apixis.core.event.subscription import get_handler_meta, subscribe
@@ -189,19 +188,17 @@ async def test_cancellation_records_only_foreground_errors_and_preserves_excepti
     assert event.error_stack[-1].exception_type == "CancelledError"
     assert event.error_stack[-1].message == "callback cancelled"
     assert "raise original" in event.error_stack[-1].traceback
-    assert event_from_json(encode_event(event)).error_stack == event.error_stack
 
 
-async def test_error_stack_round_trip_and_instance_isolation():
+async def test_error_stack_instance_isolation():
     async def failing(event):
-        raise RuntimeError("serializable failure")
+        raise RuntimeError("handler failure")
 
     event = make_event()
     await ApixEventHandler(failing)(event)
-    restored = event_from_json(encode_event(event))
-    assert restored.error_stack == event.error_stack
-    assert restored.has_error
-    assert restored.error_stack is not event.error_stack
+    assert event.has_error
+    assert event.error_stack[-1].message == "handler failure"
+    assert make_event().error_stack is not event.error_stack
     assert not make_event().has_error
 
 
@@ -398,8 +395,6 @@ async def test_failing_on_error_is_not_called_recursively(background, hook_failu
     else:
         assert [item.phase for item in event.error_stack] == ["core_func", "on_error"]
         assert event.error_stack[-1].exception_type == ("TimeoutError" if hook_failure == "timeout" else "RuntimeError")
-        restored = event_from_json(encode_event(event))
-        assert restored.error_stack == event.error_stack
 
 
 async def test_on_error_receives_timeout_after_core_cleanup():
