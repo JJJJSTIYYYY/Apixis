@@ -95,10 +95,12 @@ def get_graph_interrupted_name(
     namespace_or_graph: str | NodeGraph | None = None,
     missing_ok: bool = True,
 ) -> str:
-    """Return the event and handler name for graph interrupted.
+    """Return the interruption event name and default user hook name.
 
-    Use the returned name with ``subscribe`` and as the graph handler boundary
-    in ``between_handlers``. No node name is needed.
+    Use the returned name with ``subscribe`` and to look up or unregister the
+    default handler registered by ``NodeGraph.add_interrupted_hook``. It can
+    also be used as that handler's boundary in ``between_handlers``. A custom
+    hook name must be used directly for handler lookup and boundaries.
 
     Args:
         namespace_or_graph: Graph namespace or graph instance. ``None`` and an empty string select

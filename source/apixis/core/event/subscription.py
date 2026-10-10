@@ -383,4 +383,5 @@ def get_unmatched_subscriptions(handler_name: str) -> list[str]:
 __all__ = [
     "subscribe", "unsubscribe", "get_handler", "get_handler_meta",
     "is_registered", "get_unmatched_subscriptions",
+    "await_for"
 ]

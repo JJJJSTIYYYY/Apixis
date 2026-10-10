@@ -150,9 +150,10 @@ async def test_graph_pauses_and_resumes_at_multiple_breakpoints(namespace):
         "answers": ["approved", {"edited": True}],
     }
 
-    assert capture_review_block.__name__ in (get_handler_registry().registry)
+    handler_name = get_graph_interrupted_name(graph)
+    assert handler_name in get_handler_registry().registry
     graph.decompose()
-    assert capture_review_block.__name__ not in (get_handler_registry().registry)
+    assert handler_name not in get_handler_registry().registry
 
     with pytest.raises(RuntimeError, match="NodeGraph has been decomposed"):
         graph.add_interrupted_hook(capture_review_block)
