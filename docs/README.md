@@ -16,9 +16,10 @@ pip install apixis
 
 ## 按任务查阅
 
-| 你想做什么 | 文档 |
+| 功能 | 文档 |
 | --- | --- |
 | 发布事件、管理共享事件系统 | [事件 API](./core/event/README.md) |
+| 等待事件，或先订阅回包再发布请求 | [事件 API：await_for 与 wait_for_event](./core/event/README.md#等待事件await_for-与-wait_for_event) |
 | 订阅、排序、替换 handler，处理错误与取消 | [事件处理器](./core/event/handlers.md) |
 | 使用本地事件队列 | [事件通道](./core/event/channels.md) |
 | 构建图、执行、流式输出、快照恢复和中断 | [图 API](./core/graph/README.md) |

@@ -113,7 +113,7 @@ await pipe.join()
 
 `post_event()` 会创建 `ApixEvent` 并放入本地队列；本地队列满时等待空位。
 
-`pipe.join()` 等待队列项目完成交接，不等待 handler 执行结束。需要等待业务结果时，由处理器通过应用自己的结果对象或信号通知调用方，完整示例见[快速开始](../../quickstart.md)。
+`pipe.join()` 等待队列项目完成交接，不等待 handler 执行结束。需要等待结果事件时，可使用下文的 `await_for()` 或 `wait_for_event()`；也可以由处理器通过应用自己的结果对象或信号通知调用方，完整示例见[快速开始](../../quickstart.md)。
 
 ## `ApixEventPipe` 常用接口
 
@@ -142,6 +142,89 @@ async def observe_job(event):
 ```
 
 支持 glob 风格模式。详细排序、错误语义与取消语义见 [Event handlers](./handlers.md)。
+
+## 等待事件：`await_for` 与 `wait_for_event`
+
+两个接口都通过临时 handler 接收第一个匹配事件，返回 `ApixEvent`，并支持相同的参数：
+
+```python
+from apixis import await_for, wait_for_event
+```
+
+```text
+event_name: str
+point: Literal["received", "processed"] = "received"
+filter: list[str] | str | None = None
+time_out: float | None = None
+```
+
+`event_name` 支持大小写敏感的 glob 模式；`filter` 排除匹配的事件名。`point="received"` 在普通前台 handler 之前取得事件；`point="processed"` 在普通前台 handler 完成后取得事件，不等待后台 handler。事件被 accept、发生前台错误或事件分发被取消时，适用的通知回调同样可以返回该事件；调用方可检查 `accepted`、`has_error` 和 `error_stack`。
+
+返回的是原始、可变的事件对象，不是内容快照。特别是 `received` 返回后，后续 handler 仍可修改同一个对象。
+
+### 关键差异：注册就绪与等待结果
+
+| 行为 | `await_for(...)` | `wait_for_event(...)` |
+| --- | --- | --- |
+| 使用方式 | `event = await await_for(...)` | `async with wait_for_event(...) as waiter`，然后 `event = await waiter.wait()` |
+| 注册时机 | 协程实际开始执行时注册，然后立即等待 | 进入上下文时注册，执行上下文主体前已经就绪 |
+| 调用后是否已经注册 | 创建协程或调用 `create_task()` 都不保证已注册 | 仅创建上下文管理器不注册；进入主体时保证已注册 |
+| 注册与等待之间能否发布请求 | 单个调用同时完成注册和等待；另建 task 时需要自行协调就绪 | 可以直接在上下文主体中发布请求，再调用 `.wait()` |
+| 结果如何获取 | `await` 的返回值 | `.wait()` 的返回值；调用前收到的事件保存在内部 Future 中 |
+| `time_out` 从何时计时 | 协程执行并注册后开始等待时 | 上下文进入、注册完成时，包括调用 `.wait()` 前的发布和其他工作 |
+| 订阅何时移除 | 返回、超时或调用方取消时 | 离开上下文时，包括主体异常、超时和取消 |
+| 适用场景 | 立即等待其他任务产生的事件 | 先订阅结果、再发起请求、最后获取结果 |
+
+**两个接口都不回放注册之前已经出队的事件。** 事件出队时即固定 handler 列表，随后才注册的 waiter 无法接收该事件。这是正常的订阅顺序语义。
+
+### `await_for`：注册后立即等待
+
+```python
+from apixis import await_for
+
+event = await await_for(
+    "job.finished",
+    point="processed",
+    time_out=40,
+)
+result = event.context["result"]
+```
+
+`await_for` 从开始执行到注册完成之间不会让出 asyncio 事件循环。但 `await_for(...)` 本身只创建协程，`asyncio.create_task(await_for(...))` 只安排其执行；`create_task()` 返回不表示订阅已注册。因此，创建 task 后立刻发布事件，不具备“先注册、再发布”的接口保证。调用方在注册之前主动让出执行权时，也可能让其他任务先消费目标事件。
+
+若需要请求／回包流程，使用 `wait_for_event` 显式建立就绪顺序，无需通过 `sleep(0)` 安排 waiter task 的执行。
+
+### `wait_for_event`：先注册，再发布和取结果
+
+```python
+from uuid import uuid4
+
+from apixis import EventType, get_event_pipe, wait_for_event
+
+
+async def execute(tool_call: dict) -> str:
+    # 每个请求使用独立回包名，避免并发调用取得其他请求的结果。
+    reply = f"tool.result.{uuid4().hex}"
+    async with wait_for_event(
+        reply, point="processed", time_out=40,
+    ) as waiter:
+        # 此处订阅已注册。请求处理器应向 context["reply"] 发布结果事件。
+        await get_event_pipe().post_event(
+            event_type=EventType.WORKFLOW,
+            event_name="tool.request",
+            context={"tool_call": tool_call, "reply": reply},
+        )
+        event = await waiter.wait()
+        return event.context["result"]
+```
+
+上下文返回 `EventWaiter`，而非已经到达的事件。即使顺序是“注册 → 发布 → 收到回包 → 调用 `.wait()`”，Future 也会保留第一个结果，`.wait()` 直接返回它。后续匹配事件不覆盖结果；在上下文内顺序重复调用 `.wait()` 会返回同一个事件。
+
+`time_out=None` 表示没有截止时间，非正值表示立即超时。超时从注册完成开始计时，事件需要在截止时间之前到达所选的 `point`。**截止时间限制结果等待，不会中断上下文主体**：即使发布仍在等待队列容量，超时也只使结果失效，随后 `.wait()` 抛出 `TimeoutError`。若事件已在截止时间前到达，之后再调用 `.wait()` 仍可取到结果。如需限制整个上下文主体的执行时间，可在外层使用 `asyncio.timeout()`。
+
+上下文在所有退出路径上注销订阅并释放计时器。未调用 `.wait()` 就退出时，尚未完成的 Future 会被取消；取消正在执行的 `.wait()` 也会取消尚未完成的结果。退出后再调用 `.wait()` 会抛出 `RuntimeError`。
+
+在 handler 内，两种接口都在实际等待结果时通过 `suspend_process()` 借出当前处理链的调度许可，结束等待时恢复。`wait_for_event` 的上下文进入本身不借出许可；上下文主体中的 `pipe.post_event()` 继续使用其自身的许可借出逻辑。
 
 ## 取消订阅与检查
 
@@ -179,7 +262,7 @@ registry.clear()
 
 在 handler 内发布后续事件，优先使用 `pipe.post_event()`。它会在等待发布期间让出当前事件的调度容量。
 
-若 handler 等待另一个事件的处理结果，在并发容量耗尽时可能相互阻塞。优先将后续逻辑放到结果事件的订阅处理器中，避免把整条业务流程串成相互等待的 handler。图中的嵌套 `invoke()` 和 `interrupt()` 已提供相应的等待行为，见[图 API](../graph/README.md)。
+handler 等待另一个事件时，可以使用 `await_for()` 或 `wait_for_event()`，它们会在等待结果期间借出当前处理链的调度许可。请求／回包流程使用 `wait_for_event()`，在发布请求前确保结果订阅已经注册。自行等待应用的 Future 或信号时，需要自行安排容量释放或将后续逻辑放到结果事件的订阅处理器中。图中的嵌套 `invoke()` 和 `interrupt()` 已提供相应的等待行为，见[图 API](../graph/README.md)。
 
 ## 暂停消费与停止管道
 

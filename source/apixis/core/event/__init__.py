@@ -46,7 +46,9 @@ from apixis.core.event.subscription import (
     get_handler,
     get_handler_meta,
     is_registered,
-    await_for
+    await_for,
+    wait_for_event,
+    EventWaiter,
 )
 from apixis.core.event.event_registry import (
     ApixEventRegistry,
@@ -85,5 +87,7 @@ __all__ = [
     "get_handler_meta",
     "is_registered",
     "await_for",
+    "wait_for_event",
+    "EventWaiter",
     "ApixEventRegistry",
 ]

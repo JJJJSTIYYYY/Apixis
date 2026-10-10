@@ -1,6 +1,8 @@
 """Subscription conveniences backed by the factory-managed handler registry."""
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from copy import copy
 from typing import Literal
 from uuid import uuid4
@@ -307,45 +309,89 @@ def get_handler_meta(
     }
 
 
-async def await_for(
-    event_name: str, 
-    *, 
-    point: Literal['received', 'processed'] = 'received', 
-    filter: list[str] | str | None = None,
-    time_out: float | None = None
-) -> dict:
-    """Wait a event, and return the event data when event is processing.
-    
-    Args:
-        event_name:
-            The event name to wait for. Glob-style patterns are supported.
-        point:
-            The point of the event to wait for. 
-            If 'received', wait for the event to be received and return the raw event data.
-            If 'processed', wait for the event to be processed by all foreground handlers and return the processed event data.
-        filter:
-            The event name to filter. Glob-style patterns are supported.
-            This method will not return when a filtered event is received or processed.
-        time_out:
-            The maximum time to wait for the event. If None, wait indefinitely.
-    """
-    future = asyncio.get_running_loop().create_future()
+class EventWaiter:
+    """One event result retained within a :func:`wait_for_event` context.
 
-    async def resolve_future(event: ApixEvent, *args, **kwargs) -> None:
-        """Resolve the future."""
-        if future.done():
+    Obtain this object through ``async with wait_for_event(...) as waiter``.
+    It stores the first matching event, including one received before ``wait()``
+    is called. The stored object is the original mutable :class:`ApixEvent`,
+    not a copy. Leaving the context closes the waiter.
+    """
+
+    def __init__(self) -> None:
+        self._future: asyncio.Future[ApixEvent] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._deadline: float | None = None
+        self._timeout_handle: asyncio.TimerHandle | None = None
+        self._closed = False
+
+    async def wait(self) -> ApixEvent:
+        """Return the stored event, or wait while lending the handler's permit.
+
+        The timeout is shared by all calls and starts at context entry, not at
+        this method call. A result received in time remains available even if
+        ``wait()`` is called after the deadline. Timeout raises ``TimeoutError``;
+        cancellation propagates and cancels the pending result. Sequential
+        calls return the same event. Calling after context exit raises
+        ``RuntimeError``.
+        """
+        if self._closed:
+            raise RuntimeError("The event waiter context has already exited.")
+        async with suspend_process():
+            return await self._future
+
+    def _start_timeout(self, time_out: float | None) -> None:
+        if time_out is not None:
+            loop = asyncio.get_running_loop()
+            self._deadline = loop.time() + time_out
+            self._timeout_handle = loop.call_at(self._deadline, self._expire)
+
+    def _expire(self) -> None:
+        if not self._future.done():
+            self._future.set_exception(TimeoutError("Timed out waiting for an event."))
+
+    async def _resolve(self, event: ApixEvent, *args, **kwargs) -> None:
+        if self._future.done():
             return
-        return future.set_result(event)
+        if (
+            self._deadline is not None
+            and asyncio.get_running_loop().time() >= self._deadline
+        ):
+            self._expire()
+            return
+        if self._timeout_handle is not None:
+            self._timeout_handle.cancel()
+        self._future.set_result(event)
+
+    def _close(self) -> None:
+        self._closed = True
+        if self._timeout_handle is not None:
+            self._timeout_handle.cancel()
+        if not self._future.done():
+            self._future.cancel()
+        elif not self._future.cancelled():
+            # The body may exit without wait(), including after a timeout.
+            self._future.exception()
+
+
+def _register_wait_handler(
+    waiter: EventWaiter,
+    event_name: str,
+    point: Literal['received', 'processed'],
+    filter: list[str] | str | None,
+) -> ApixEventHandler:
+    """Register without yielding so context entry is a subscription barrier."""
 
     if filter is not None and isinstance(filter, str):
         filter = [filter]
 
     handler = ApixEventHandler(
-        core_func=resolve_future,
-        on_accepted=resolve_future,
-        on_cancelled=resolve_future,
-        on_has_error=resolve_future,
-        on_error=resolve_future,
+        core_func=waiter._resolve,
+        on_accepted=waiter._resolve,
+        on_cancelled=waiter._resolve,
+        on_has_error=waiter._resolve,
+        on_error=waiter._resolve,
         stop_when_error=False,
         name='resolve_future-'+uuid4().hex
     )
@@ -355,14 +401,119 @@ async def await_for(
     handler.filter_event = filter
     registry = get_handler_registry()
     registry.register_handler(handler, exist_ok=True)
+    return handler
+
+
+@asynccontextmanager
+async def wait_for_event(
+    event_name: str,
+    *,
+    point: Literal['received', 'processed'] = 'received',
+    filter: list[str] | str | None = None,
+    time_out: float | None = None,
+) -> AsyncIterator[EventWaiter]:
+    """Register an event waiter before running the context body.
+
+    Unlike :func:`await_for`, this interface separates subscription readiness
+    from waiting for the result. Entering the context registers synchronously,
+    without yielding to other tasks before registration, then yields an
+    :class:`EventWaiter`. Publish the request inside the context and call
+    ``await waiter.wait()`` to get its reply. No task or ``sleep(0)`` is needed;
+    a reply received before ``wait()`` is retained.
+
+    Merely constructing this context manager does not register anything. Neither
+    interface replays events whose handler chains were captured before
+    registration. Each context stores only its first matching event.
+
+    Args:
+        event_name: Case-sensitive glob pattern to subscribe to.
+        point: ``'received'`` resolves before ordinary foreground handlers;
+            ``'processed'`` resolves after them. Background handlers are not
+            awaited. Both return the original mutable ``ApixEvent``.
+        filter: Glob pattern or list of patterns to exclude.
+        time_out: Seconds from registration until the matching event reaches
+            the selected point. ``None`` means no deadline; non-positive values
+            expire immediately. The deadline includes time spent publishing
+            or doing other work before ``wait()``. It expires the result, not
+            the context body: ``wait()`` raises ``TimeoutError``. A result
+            received before the deadline remains available afterwards.
+
+    The handler is unregistered on every context exit, including publication
+    errors, timeouts and cancellation. Exiting without waiting cancels a pending
+    result. Only ``wait()`` lends the current handler's dispatch permit; context
+    entry does not suspend the handler chain.
+
+    Example::
+
+        async with wait_for_event(reply, point="processed", time_out=40) as waiter:
+            await pipe.post_event(
+                event_type=EventType.WORKFLOW,
+                event_name="tool.request",
+                context={"reply": reply},
+            )
+            event = await waiter.wait()
+            result = event.context["result"]
+    """
+    waiter = EventWaiter()
+    handler = _register_wait_handler(waiter, event_name, point, filter)
+    try:
+        waiter._start_timeout(time_out)
+        yield waiter
+    finally:
+        waiter._close()
+        handler.unregister(missing_ok=True)
+
+
+async def await_for(
+    event_name: str,
+    *,
+    point: Literal['received', 'processed'] = 'received',
+    filter: list[str] | str | None = None,
+    time_out: float | None = None,
+) -> ApixEvent:
+    """Register and immediately wait for the first matching event.
+
+    Subscription starts when this coroutine actually executes. It registers
+    without yielding before awaiting the result. Calling ``await_for(...)``
+    only creates a coroutine; ``asyncio.create_task(await_for(...))`` schedules
+    it but does not guarantee registration when ``create_task`` returns. Events
+    dequeued before registration are not replayed. This is normal subscription
+    ordering, not an event-loop scheduling guarantee.
+
+    Use ``await await_for(...)`` to subscribe and immediately wait for an event
+    produced elsewhere. Use :func:`wait_for_event` for request/reply flows that
+    must register first, publish a request, then wait: its context entry is the
+    explicit readiness barrier and retains replies arriving before ``wait()``.
+
+    Args:
+        event_name: Case-sensitive glob pattern to subscribe to.
+        point: ``'received'`` resolves before ordinary foreground handlers;
+            ``'processed'`` resolves after them, without awaiting background
+            handlers. The returned ``ApixEvent`` is mutable, not a snapshot.
+        filter: Glob pattern or list of patterns to exclude.
+        time_out: Maximum seconds spent waiting after registration, or ``None``
+            for no limit. Time before this coroutine starts is not included.
+            Expiry raises ``TimeoutError``.
+
+    Waiting lends the current handler's dispatch permit via ``suspend_process``.
+    The temporary handler is removed on completion, timeout or cancellation.
+
+    Example::
+
+        event = await await_for("job.finished", point="processed", time_out=40)
+        result = event.context["result"]
+    """
+    waiter = EventWaiter()
+    handler = _register_wait_handler(waiter, event_name, point, filter)
 
     try:
         async with suspend_process():
             if time_out is not None:
-                result = await asyncio.wait_for(future, timeout=time_out)
+                result = await asyncio.wait_for(waiter._future, timeout=time_out)
             else:
-                result = await future
+                result = await waiter._future
     finally:
+        waiter._close()
         handler.unregister(missing_ok=True)
     return result
 
@@ -383,5 +534,5 @@ def get_unmatched_subscriptions(handler_name: str) -> list[str]:
 __all__ = [
     "subscribe", "unsubscribe", "get_handler", "get_handler_meta",
     "is_registered", "get_unmatched_subscriptions",
-    "await_for"
+    "await_for", "wait_for_event", "EventWaiter"
 ]
