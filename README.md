@@ -14,7 +14,8 @@
 
 [源码](https://github.com/JJJJSTIYYYY/Apixis) ·
 [问题](https://github.com/JJJJSTIYYYY/Apixis/issues) ·
-[API 参考](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/README.md)
+[API 参考](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/README.md) ·
+[示例](https://github.com/JJJJSTIYYYY/apixis-example)
 
 </div>
 
@@ -82,6 +83,7 @@ asyncio.run(master())
 - [图 API](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/core/graph/README.md)
 - [状态与命令](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/core/graph/state.md)
 - [工具与异常](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/core/utils/README.md)
+- **[使用示例](https://github.com/JJJJSTIYYYY/apixis-example)**
 
 ## 许可证
 
@@ -106,7 +108,8 @@ Event-driven graph orchestration for Python asyncio applications.
 
 [Source](https://github.com/JJJJSTIYYYY/Apixis) ·
 [Issues](https://github.com/JJJJSTIYYYY/Apixis/issues) ·
-[API Reference](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/README.md)
+[API Reference](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/README.md) ·
+[Example](https://github.com/JJJJSTIYYYY/apixis-example)
 
 </div>
 
@@ -174,6 +177,7 @@ asyncio.run(master())
 - [Graph API](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/core/graph/README.md)
 - [State and commands](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/core/graph/state.md)
 - [Utilities and exceptions](https://github.com/JJJJSTIYYYY/Apixis/blob/master/docs/core/utils/README.md)
+- **[Example](https://github.com/JJJJSTIYYYY/apixis-example)**
 
 ## License
 
